@@ -44,3 +44,16 @@ func TestDecodeEd25519PrivateKeyRejectsInvalidSeed(t *testing.T) {
 		t.Fatal("DecodeEd25519PrivateKey() error = nil, want error")
 	}
 }
+
+func TestDefaultConfigEnablesWebSurface(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.WebEnabled {
+		t.Fatal("WebEnabled = false, want true")
+	}
+	if cfg.WebConsolePath != "/console" {
+		t.Fatalf("WebConsolePath = %q, want /console", cfg.WebConsolePath)
+	}
+	if cfg.WebAppName == "" {
+		t.Fatal("WebAppName is empty")
+	}
+}

@@ -21,6 +21,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
+	"github.com/historysync/hsync-server/pkg/web"
 	"github.com/historysync/hsync-server/pkg/ws"
 )
 
@@ -119,6 +120,15 @@ func main() {
 
 	// Register all routes
 	h.RegisterRoutes(app)
+	web.Register(app, web.Options{
+		Enabled:      cfg.WebEnabled,
+		AppName:      cfg.WebAppName,
+		ConsolePath:  cfg.WebConsolePath,
+		SupportEmail: cfg.WebSupportEmail,
+		Edition:      "community",
+		APIPrefix:    "/api/v1",
+		AdminPath:    "/admin",
+	})
 
 	// ── Graceful Shutdown ─────────────────────────────────────
 	quit := make(chan os.Signal, 1)

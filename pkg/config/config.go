@@ -15,8 +15,12 @@ import (
 
 // Config holds all server configuration.
 type Config struct {
-	ListenAddr string         `mapstructure:"listen_addr"`
-	LogLevel   zerolog.Level  `mapstructure:"log_level"`
+	ListenAddr      string        `mapstructure:"listen_addr"`
+	LogLevel        zerolog.Level `mapstructure:"log_level"`
+	WebEnabled      bool          `mapstructure:"web_enabled"`
+	WebAppName      string        `mapstructure:"web_app_name"`
+	WebConsolePath  string        `mapstructure:"web_console_path"`
+	WebSupportEmail string        `mapstructure:"web_support_email"`
 
 	// Database
 	DatabaseURL string `mapstructure:"database_url"`
@@ -35,9 +39,9 @@ type Config struct {
 	JWTPrivateKey string `mapstructure:"jwt_private_key"` // Ed25519 private key, PEM or base64(raw seed)
 
 	// Stripe (optional)
-	StripeSecretKey    string `mapstructure:"stripe_secret_key"`
+	StripeSecretKey     string `mapstructure:"stripe_secret_key"`
 	StripeWebhookSecret string `mapstructure:"stripe_webhook_secret"`
-	StripeDisabled     bool   `mapstructure:"stripe_disabled"`
+	StripeDisabled      bool   `mapstructure:"stripe_disabled"`
 
 	// Admin
 	AdminKey string `mapstructure:"admin_key"`
@@ -46,23 +50,27 @@ type Config struct {
 // DefaultConfig returns a Config with reasonable defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr: ":8080",
-		LogLevel:   zerolog.InfoLevel,
-		DatabaseURL: "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
-		RedisURL:    "redis://localhost:6379/0",
-		S3Endpoint:  "localhost:9000",
-		S3Bucket:    "hsync-bundles",
-		S3UseSSL:    false,
-		StripeDisabled: true,
+		ListenAddr:      ":8080",
+		LogLevel:        zerolog.InfoLevel,
+		WebEnabled:      true,
+		WebAppName:      "HistorySync Cloud Server",
+		WebConsolePath:  "/console",
+		WebSupportEmail: "support@historysync.app",
+		DatabaseURL:     "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
+		RedisURL:        "redis://localhost:6379/0",
+		S3Endpoint:      "localhost:9000",
+		S3Bucket:        "hsync-bundles",
+		S3UseSSL:        false,
+		StripeDisabled:  true,
 	}
 }
 
 // Load reads configuration from file and environment.
 //
 // Precedence (lowest to highest):
-//   1. Default values
-//   2. config.yaml / configs/config.yaml
-//   3. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
+//  1. Default values
+//  2. config.yaml / configs/config.yaml
+//  3. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
 func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
@@ -78,6 +86,10 @@ func Load() (*Config, error) {
 	// Bind defaults
 	v.SetDefault("listen_addr", cfg.ListenAddr)
 	v.SetDefault("log_level", "info")
+	v.SetDefault("web_enabled", cfg.WebEnabled)
+	v.SetDefault("web_app_name", cfg.WebAppName)
+	v.SetDefault("web_console_path", cfg.WebConsolePath)
+	v.SetDefault("web_support_email", cfg.WebSupportEmail)
 	v.SetDefault("database_url", cfg.DatabaseURL)
 	v.SetDefault("redis_url", cfg.RedisURL)
 	v.SetDefault("s3_endpoint", cfg.S3Endpoint)

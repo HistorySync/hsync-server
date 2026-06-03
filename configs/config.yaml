@@ -4,6 +4,12 @@
 # HTTP server listen address
 listen_addr: ":8080"
 
+# Minimal web surface mounted by the backend for future console/dashboard use.
+web_enabled: true
+web_app_name: "HistorySync Cloud Server"
+web_console_path: "/console"
+web_support_email: "support@historysync.app"
+
 # Log level: debug, info, warn, error
 log_level: "info"
 

@@ -1,0 +1,33 @@
+# HistorySync Cloud Server - Default Configuration
+# All values can be overridden with HSYNC_* environment variables.
+
+# HTTP server listen address
+listen_addr: ":8080"
+
+# Log level: debug, info, warn, error
+log_level: "info"
+
+# PostgreSQL connection
+database_url: "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable"
+
+# Redis connection (optional — rate limiting is disabled if unavailable)
+redis_url: "redis://localhost:6379/0"
+
+# S3-compatible object storage
+s3_endpoint: "localhost:9000"
+s3_bucket: "hsync-bundles"
+s3_access_key: "minioadmin"
+s3_secret_key: "minioadmin"
+s3_use_ssl: false
+
+# JWT signing key (base64-encoded 32-byte Ed25519 seed)
+# Generate: openssl rand -base64 32
+# jwt_private_key: ""  # MUST be set via HSYNC_JWT_PRIVATE_KEY env var
+
+# Stripe billing (set stripe_disabled: true for self-hosted without billing)
+stripe_disabled: true
+# stripe_secret_key: ""
+# stripe_webhook_secret: ""
+
+# Admin API key (set to enable /admin/* endpoints)
+# admin_key: ""

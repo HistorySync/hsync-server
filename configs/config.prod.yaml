@@ -1,0 +1,6 @@
+# HistorySync Cloud Server - Production Config Override
+listen_addr: ":8080"
+log_level: "info"
+s3_use_ssl: true
+stripe_disabled: false
+# database_url, s3_*, jwt_private_key, stripe_* should come from HSYNC_* env vars

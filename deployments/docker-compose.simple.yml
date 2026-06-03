@@ -1,0 +1,92 @@
+# HistorySync Cloud Server - Self-Hosted (Single Instance)
+# Minimal deployment for personal VPS / NAS usage.
+# No billing, no Redis cluster, local MinIO for storage.
+#
+# Usage:
+#   1. Generate JWT key: openssl rand -base64 32
+#   2. Set DB_PASSWORD and JWT_PRIVATE_KEY in .env
+#   3. docker compose -f docker-compose.simple.yml up -d
+
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - HSYNC_DATABASE_URL=postgres://hsync:${DB_PASSWORD:-hsync}@postgres:5432/hsync?sslmode=disable
+      - HSYNC_REDIS_URL=redis://redis:6379/0
+      - HSYNC_S3_ENDPOINT=minio:9000
+      - HSYNC_S3_BUCKET=hsync-bundles
+      - HSYNC_S3_ACCESS_KEY=minioadmin
+      - HSYNC_S3_SECRET_KEY=minioadmin
+      - HSYNC_S3_USE_SSL=false
+      - HSYNC_JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - HSYNC_STRIPE_DISABLED=true
+      - HSYNC_LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - server_data:/app/data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hsync
+      POSTGRES_USER: hsync
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-hsync}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9001:9001"  # MinIO Console (optional, remove in production)
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  server_data:
+  pg_data:
+  redis_data:
+  minio_data:

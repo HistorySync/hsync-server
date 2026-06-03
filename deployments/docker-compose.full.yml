@@ -1,0 +1,158 @@
+# HistorySync Cloud Server - Production Deployment
+# Full stack with monitoring, billing, and redundancy.
+#
+# Requirements:
+#   - .env file with all secrets (DB_PASSWORD, JWT_PRIVATE_KEY,
+#     STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, REDIS_PASSWORD,
+#     S3_ACCESS_KEY, S3_SECRET_KEY, GRAFANA_PASSWORD)
+#   - DNS pointing to this host
+#   - TLS termination via reverse proxy (nginx/Caddy/Cloudflare)
+
+version: "3.9"
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - HSYNC_DATABASE_URL=postgres://hsync:${DB_PASSWORD}@postgres:5432/hsync?sslmode=disable
+      - HSYNC_REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - HSYNC_S3_ENDPOINT=minio:9000
+      - HSYNC_S3_BUCKET=hsync-bundles
+      - HSYNC_S3_ACCESS_KEY=${S3_ACCESS_KEY}
+      - HSYNC_S3_SECRET_KEY=${S3_SECRET_KEY}
+      - HSYNC_S3_USE_SSL=false
+      - HSYNC_JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - HSYNC_STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+      - HSYNC_STRIPE_WEBHOOK_SECRET=${STRIPE_WEBHOOK_SECRET}
+      - HSYNC_STRIPE_DISABLED=false
+      - HSYNC_ADMIN_KEY=${ADMIN_KEY}
+      - HSYNC_LOG_LEVEL=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 1G
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hsync
+      POSTGRES_USER: hsync
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./postgres/backup:/backup  # pg_dump output directory
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hsync"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+
+  # ── Monitoring Stack ───────────────────────────────────────
+
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:

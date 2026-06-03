@@ -1,0 +1,23 @@
+# Go build output
+build/
+tmp/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.out
+
+# Go vendor (if used)
+vendor/
+
+# Environment secrets (DO NOT COMMIT)
+.env
+.env.local
+.env.prod
+
+# IDE
+.idea/
+.vscode/

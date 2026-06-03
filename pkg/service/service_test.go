@@ -27,6 +27,33 @@ func TestVerifyPasswordRejectsMalformedHash(t *testing.T) {
 	}
 }
 
+func TestNormalizeEmail(t *testing.T) {
+	email, err := normalizeEmail(" User@Example.COM ")
+	if err != nil {
+		t.Fatalf("normalizeEmail() error = %v", err)
+	}
+	if email != "user@example.com" {
+		t.Fatalf("normalizeEmail() = %q, want user@example.com", email)
+	}
+}
+
+func TestNormalizeEmailRejectsInvalid(t *testing.T) {
+	for _, input := range []string{"", "not-an-email", "user@example.com other"} {
+		if _, err := normalizeEmail(input); err != ErrInvalidEmail {
+			t.Fatalf("normalizeEmail(%q) error = %v, want ErrInvalidEmail", input, err)
+		}
+	}
+}
+
+func TestValidatePassword(t *testing.T) {
+	if err := validatePassword("123456789"); err != ErrWeakPassword {
+		t.Fatalf("validatePassword() error = %v, want ErrWeakPassword", err)
+	}
+	if err := validatePassword("1234567890"); err != nil {
+		t.Fatalf("validatePassword() error = %v, want nil", err)
+	}
+}
+
 func TestIssueRefreshToken(t *testing.T) {
 	svc := &AuthService{}
 	token, hash, err := svc.issueRefreshToken(uuid.New())
@@ -51,6 +78,23 @@ func TestResetPasswordRejectsEmptyFields(t *testing.T) {
 	}
 	if err := svc.ResetPassword(context.Background(), ResetPasswordInput{Token: "token"}); err == nil || err.Error() != "new password is required" {
 		t.Fatalf("ResetPassword() error = %v, want new password is required", err)
+	}
+}
+
+func TestResetPasswordRejectsWeakPassword(t *testing.T) {
+	svc := &AuthService{}
+	if err := svc.ResetPassword(context.Background(), ResetPasswordInput{Token: "token", NewPassword: "short"}); err != ErrWeakPassword {
+		t.Fatalf("ResetPassword() error = %v, want ErrWeakPassword", err)
+	}
+}
+
+func TestRefreshAndLogoutRequireToken(t *testing.T) {
+	svc := &AuthService{}
+	if _, err := svc.RefreshAccessToken(context.Background(), ""); err != ErrRefreshTokenRequired {
+		t.Fatalf("RefreshAccessToken() error = %v, want ErrRefreshTokenRequired", err)
+	}
+	if err := svc.Logout(context.Background(), ""); err != ErrRefreshTokenRequired {
+		t.Fatalf("Logout() error = %v, want ErrRefreshTokenRequired", err)
 	}
 }
 

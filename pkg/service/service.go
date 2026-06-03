@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/mail"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -41,24 +43,27 @@ var Argon2Params = struct {
 
 // Common errors returned by services.
 var (
-	ErrEmailTaken               = errors.New("email already registered")
-	ErrInvalidCredentials       = errors.New("invalid email or password")
-	ErrQuotaExceeded            = errors.New("quota exceeded")
-	ErrDeviceLimit              = errors.New("device limit reached")
-	ErrBundleExists             = errors.New("bundle already exists")
-	ErrDeviceRevoked            = errors.New("device has been revoked")
-	ErrStripeDisabled           = errors.New("billing is not enabled")
-	ErrResetTokenRequired       = errors.New("reset token is required")
-	ErrNewPasswordRequired      = errors.New("new password is required")
-	ErrPasswordResetInvalid     = errors.New("invalid or expired password reset token")
-	ErrUserInactive             = errors.New("user not found or inactive")
-	ErrBundleNotFound           = errors.New("bundle not found")
-	ErrSnapshotNotFound         = errors.New("snapshot not found")
-	ErrUserNotFound             = errors.New("user not found")
-	ErrDeviceNotFound           = errors.New("device not found")
-	ErrDeviceAlreadyRevoked     = errors.New("device already revoked")
-	ErrDeviceNotRegistered      = errors.New("device not registered")
-	ErrBillingNotSupported      = errors.New("billing not supported")
+	ErrEmailTaken           = errors.New("email already registered")
+	ErrInvalidEmail         = errors.New("invalid email")
+	ErrInvalidCredentials   = errors.New("invalid email or password")
+	ErrWeakPassword         = errors.New("password must be at least 10 characters")
+	ErrQuotaExceeded        = errors.New("quota exceeded")
+	ErrDeviceLimit          = errors.New("device limit reached")
+	ErrBundleExists         = errors.New("bundle already exists")
+	ErrDeviceRevoked        = errors.New("device has been revoked")
+	ErrStripeDisabled       = errors.New("billing is not enabled")
+	ErrResetTokenRequired   = errors.New("reset token is required")
+	ErrNewPasswordRequired  = errors.New("new password is required")
+	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
+	ErrUserInactive         = errors.New("user not found or inactive")
+	ErrBundleNotFound       = errors.New("bundle not found")
+	ErrSnapshotNotFound     = errors.New("snapshot not found")
+	ErrUserNotFound         = errors.New("user not found")
+	ErrDeviceNotFound       = errors.New("device not found")
+	ErrDeviceAlreadyRevoked = errors.New("device already revoked")
+	ErrDeviceNotRegistered  = errors.New("device not registered")
+	ErrBillingNotSupported  = errors.New("billing not supported")
+	ErrRefreshTokenRequired = errors.New("refresh token is required")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -146,8 +151,17 @@ type RegisterResult struct {
 
 // Register creates a new user account and returns tokens.
 func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*RegisterResult, error) {
+	email, err := normalizeEmail(input.Email)
+	if err != nil {
+		return nil, err
+	}
+	displayName := strings.TrimSpace(input.DisplayName)
+	if err := validatePassword(input.Password); err != nil {
+		return nil, err
+	}
+
 	// Check for duplicate email
-	existing, err := s.repos.Users.GetByEmail(ctx, input.Email)
+	existing, err := s.repos.Users.GetByEmail(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("check email: %w", err)
 	}
@@ -162,9 +176,9 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	}
 
 	user := &model.User{
-		Email:        input.Email,
+		Email:        email,
 		PasswordHash: passwordHash,
-		DisplayName:  input.DisplayName,
+		DisplayName:  displayName,
 		Tier:         model.TierFree,
 		Status:       model.StatusActive,
 	}
@@ -216,7 +230,15 @@ type LoginInput struct {
 
 // Login authenticates a user and returns tokens.
 func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterResult, error) {
-	user, err := s.repos.Users.GetByEmail(ctx, input.Email)
+	email, err := normalizeEmail(input.Email)
+	if err != nil {
+		return nil, ErrInvalidCredentials
+	}
+	if strings.TrimSpace(input.Password) == "" {
+		return nil, ErrInvalidCredentials
+	}
+
+	user, err := s.repos.Users.GetByEmail(ctx, email)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
@@ -224,7 +246,7 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterRes
 		return nil, ErrInvalidCredentials
 	}
 	if user.Status != model.StatusActive {
-		return nil, fmt.Errorf("account is %s", user.Status)
+		return nil, ErrInvalidCredentials
 	}
 
 	// Verify password
@@ -264,7 +286,12 @@ type ResetPasswordInput struct {
 
 // StartPasswordReset creates a password reset token for an existing active user.
 func (s *AuthService) StartPasswordReset(ctx context.Context, email string) (string, error) {
-	user, err := s.repos.Users.GetByEmail(ctx, email)
+	normalizedEmail, err := normalizeEmail(email)
+	if err != nil {
+		return "", nil
+	}
+
+	user, err := s.repos.Users.GetByEmail(ctx, normalizedEmail)
 	if err != nil {
 		return "", fmt.Errorf("get user: %w", err)
 	}
@@ -295,6 +322,9 @@ func (s *AuthService) ResetPassword(ctx context.Context, input ResetPasswordInpu
 	}
 	if input.NewPassword == "" {
 		return ErrNewPasswordRequired
+	}
+	if err := validatePassword(input.NewPassword); err != nil {
+		return err
 	}
 
 	tokenHash := hashToken(input.Token)
@@ -337,6 +367,10 @@ func (s *AuthService) ResetPassword(ctx context.Context, input ResetPasswordInpu
 
 // RefreshAccessToken validates a refresh token and issues a new access token.
 func (s *AuthService) RefreshAccessToken(ctx context.Context, refreshToken string) (string, error) {
+	if strings.TrimSpace(refreshToken) == "" {
+		return "", ErrRefreshTokenRequired
+	}
+
 	tokenHash := hashToken(refreshToken)
 	valid, err := s.repos.RefreshTokens.IsTokenValid(ctx, tokenHash)
 	if err != nil {
@@ -372,6 +406,10 @@ func (s *AuthService) RefreshAccessToken(ctx context.Context, refreshToken strin
 
 // Logout revokes a refresh token.
 func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
+	if strings.TrimSpace(refreshToken) == "" {
+		return ErrRefreshTokenRequired
+	}
+
 	tokenHash := hashToken(refreshToken)
 	return s.repos.RefreshTokens.RevokeRefreshToken(ctx, tokenHash)
 }
@@ -389,6 +427,25 @@ func (s *AuthService) issueRefreshToken(userID uuid.UUID) (tokenStr string, toke
 func hashToken(token string) []byte {
 	h := sha256.Sum256([]byte(token))
 	return h[:]
+}
+
+func normalizeEmail(raw string) (string, error) {
+	email := strings.ToLower(strings.TrimSpace(raw))
+	if email == "" {
+		return "", ErrInvalidEmail
+	}
+	addr, err := mail.ParseAddress(email)
+	if err != nil || addr.Address != email {
+		return "", ErrInvalidEmail
+	}
+	return email, nil
+}
+
+func validatePassword(password string) error {
+	if len(password) < 10 {
+		return ErrWeakPassword
+	}
+	return nil
 }
 
 // ── Password Helpers ────────────────────────────────────────

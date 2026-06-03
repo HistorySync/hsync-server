@@ -81,6 +81,16 @@ func TestNormalizeOptionsDefaultsAdminPath(t *testing.T) {
 	if opts.AdminPath != "/admin" {
 		t.Fatalf("AdminPath = %q, want /admin", opts.AdminPath)
 	}
+	if opts.OverviewPath != "/api/meta/overview" {
+		t.Fatalf("OverviewPath = %q, want /api/meta/overview", opts.OverviewPath)
+	}
+}
+
+func TestNormalizeOptionsDefaultsEnterpriseOverviewPath(t *testing.T) {
+	opts := normalizeOptions(Options{Edition: "enterprise"})
+	if opts.OverviewPath != "/api/v1/meta/overview/enterprise" {
+		t.Fatalf("OverviewPath = %q, want /api/v1/meta/overview/enterprise", opts.OverviewPath)
+	}
 }
 
 func TestLandingPageIncludesRuntimeShell(t *testing.T) {
@@ -104,5 +114,18 @@ func TestLandingPageIncludesRuntimeShell(t *testing.T) {
 	}
 	if !strings.Contains(body, "/api/meta/overview") {
 		t.Fatal("landing page missing overview api reference")
+	}
+}
+
+func TestLandingPageIncludesEnterpriseOverviewRoute(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:   true,
+		AppName:   "HistorySync Enterprise",
+		Edition:   "enterprise",
+		APIPrefix: "/api/v1",
+	}))
+
+	if !strings.Contains(body, "/api/v1/meta/overview/enterprise") {
+		t.Fatal("landing page missing enterprise overview route")
 	}
 }

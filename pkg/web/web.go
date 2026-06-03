@@ -17,6 +17,7 @@ type Options struct {
 	Edition      string
 	APIPrefix    string
 	AdminPath    string
+	OverviewPath string
 }
 
 // Register mounts a minimal HTML landing page and console placeholder.
@@ -65,6 +66,13 @@ func normalizeOptions(opts Options) Options {
 	if strings.TrimSpace(opts.AdminPath) == "" {
 		opts.AdminPath = "/admin"
 	}
+	if strings.TrimSpace(opts.OverviewPath) == "" {
+		if strings.EqualFold(strings.TrimSpace(opts.Edition), "enterprise") {
+			opts.OverviewPath = "/api/v1/meta/overview/enterprise"
+		} else {
+			opts.OverviewPath = "/api/meta/overview"
+		}
+	}
 	return opts
 }
 
@@ -73,6 +81,7 @@ func landingPage(opts Options) string {
 	apiPrefixEscaped := htmlEscape(opts.APIPrefix)
 	adminPathEscaped := htmlEscape(opts.AdminPath)
 	consolePathEscaped := htmlEscape(opts.ConsolePath)
+	overviewPathEscaped := htmlEscape(opts.OverviewPath)
 	var builder strings.Builder
 	builder.WriteString("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
 	builder.WriteString("<title>")
@@ -92,13 +101,15 @@ func landingPage(opts Options) string {
 	builder.WriteString(htmlEscape(opts.ConsolePath))
 	builder.WriteString("</div></div><div class=\"card\"><div class=\"label\">Admin route</div><div class=\"value\">")
 	builder.WriteString(adminPathEscaped)
+	builder.WriteString("</div></div><div class=\"card\"><div class=\"label\">Overview route</div><div class=\"value\">")
+	builder.WriteString(overviewPathEscaped)
 	builder.WriteString("</div></div></div><div id=\"status-banner\"></div><div class=\"layout\"><div class=\"stack\"><div class=\"panel\"><div class=\"label\">Runtime checks</div><ul class=\"endpoint-list\" id=\"runtime-checks\"><li><span>Web metadata</span><span class=\"status\" data-check=\"meta\"><span class=\"dot\"></span>pending</span></li><li><span>Health probe</span><span class=\"status\" data-check=\"health\"><span class=\"dot\"></span>pending</span></li><li><span>Readiness probe</span><span class=\"status\" data-check=\"ready\"><span class=\"dot\"></span>pending</span></li><li><span>Overview API</span><span class=\"status\" data-check=\"overview\"><span class=\"dot\"></span>pending</span></li><li><span>Admin surface</span><span class=\"status\" data-check=\"admin\"><span class=\"dot\"></span>pending</span></li></ul><div class=\"actions\"><button class=\"button\" id=\"refresh-checks\" type=\"button\">Refresh probes</button><a class=\"button subtle\" href=\"")
 	builder.WriteString(consolePathEscaped)
 	builder.WriteString("\">Reload console route</a></div></div><div class=\"panel\"><div class=\"label\">Platform contract</div><ul><li>Public web mount stays separate from product APIs</li><li>Future SPA assets can be served here without moving backend routes</li><li>Both CE and EE read the same meta contract from <code class=\"inline\">/api/meta/web</code></li></ul></div></div><div class=\"stack\"><div class=\"panel\"><div class=\"label\">Quick metrics</div><div class=\"metric-grid\"><div class=\"metric\"><span class=\"muted\">Edition</span><strong id=\"metric-edition\">")
 	builder.WriteString(htmlEscape(opts.Edition))
 	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">API prefix</span><strong id=\"metric-prefix\">")
 	builder.WriteString(apiPrefixEscaped)
-	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">Health status</span><strong id=\"metric-health\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Admin status</span><strong id=\"metric-admin\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview users</span><strong id=\"metric-users\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview storage</span><strong id=\"metric-storage\">pending</strong></div></div></div><div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\"><li><span>Quota API</span><span>")
+	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">Health status</span><strong id=\"metric-health\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Admin status</span><strong id=\"metric-admin\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview users</span><strong id=\"metric-users\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview storage</span><strong id=\"metric-storage\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview active users</span><strong id=\"metric-active-users\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview cost</span><strong id=\"metric-cost\">pending</strong></div></div></div><div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\"><li><span>Quota API</span><span>")
 	builder.WriteString(htmlEscape(opts.APIPrefix))
 	builder.WriteString("/quota</span></li><li><span>Billing webhook</span><span>")
 	builder.WriteString(htmlEscape(opts.APIPrefix))
@@ -121,6 +132,7 @@ func metaPayload(opts Options) fiber.Map {
 		"console_path":  opts.ConsolePath,
 		"api_prefix":    opts.APIPrefix,
 		"admin_path":    opts.AdminPath,
+		"overview_path": opts.OverviewPath,
 		"support_email": opts.SupportEmail,
 	}
 }
@@ -145,6 +157,8 @@ const healthMetric=document.getElementById("metric-health");
 const adminMetric=document.getElementById("metric-admin");
 const usersMetric=document.getElementById("metric-users");
 const storageMetric=document.getElementById("metric-storage");
+const activeUsersMetric=document.getElementById("metric-active-users");
+const costMetric=document.getElementById("metric-cost");
 
 function setCheck(name,state,text){
 	const node=document.querySelector('[data-check="'+name+'"]');
@@ -175,7 +189,7 @@ async function probe(){
 		{name:'meta',url:'/api/meta/web',ok:[200]},
 		{name:'health',url:'/healthz',ok:[200]},
 		{name:'ready',url:'/readyz',ok:[200,503]},
-		{name:'overview',url:'/api/meta/overview',ok:[200]},
+		{name:'overview',url:%s,ok:[200]},
 		{name:'admin',url:adminPath+'/stats',ok:[200,401,403]},
 	];
 
@@ -202,11 +216,16 @@ async function probe(){
 			if(check.name==='overview'){
 				try{
 					const body=await response.clone().json();
-					usersMetric.textContent=String(body.summary.total_users);
-					storageMetric.textContent=String(body.summary.total_storage_bytes);
+					const summary=body.summary||{};
+					usersMetric.textContent=String(summary.total_users??'n/a');
+					storageMetric.textContent=String(summary.total_storage_bytes??'n/a');
+					activeUsersMetric.textContent=String(summary.monthly_active_users??summary.active_devices??'n/a');
+					costMetric.textContent=String(summary.estimated_cost_usd??'n/a');
 				}catch(_err){
 					usersMetric.textContent='unavailable';
 					storageMetric.textContent='unavailable';
+					activeUsersMetric.textContent='unavailable';
+					costMetric.textContent='unavailable';
 				}
 			}
 
@@ -224,6 +243,8 @@ async function probe(){
 			if(check.name==='overview'){
 				usersMetric.textContent='offline';
 				storageMetric.textContent='offline';
+				activeUsersMetric.textContent='offline';
+				costMetric.textContent='offline';
 			}
 			setBanner('At least one runtime probe failed. Inspect server logs and infrastructure dependencies.');
 		}
@@ -232,7 +253,7 @@ async function probe(){
 
 document.getElementById('refresh-checks').addEventListener('click',probe);
 probe();
-})();`, jsStringLiteral(opts.APIPrefix), jsStringLiteral(opts.AdminPath))
+})();`, jsStringLiteral(opts.APIPrefix), jsStringLiteral(opts.AdminPath), jsStringLiteral(opts.OverviewPath))
 }
 
 func htmlEscape(input string) string {

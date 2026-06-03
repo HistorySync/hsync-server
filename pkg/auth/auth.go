@@ -4,6 +4,10 @@ package auth
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
@@ -65,7 +69,13 @@ func (tm *TokenManager) IssueAccessToken(userID uuid.UUID, tier string) (string,
 func (tm *TokenManager) IssueRefreshToken(userID uuid.UUID) (tokenStr string, tokenHash []byte, err error) {
 	// Refresh tokens are random 256-bit strings, not JWTs.
 	// This avoids JWT revocation problems — the server stores a hash.
-	return "", nil, nil // Placeholder — implemented in auth_service.go
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", nil, err
+	}
+	tokenStr = base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(tokenStr))
+	return tokenStr, sum[:], nil
 }
 
 // ValidateAccessToken parses and validates an access token.
@@ -136,10 +146,12 @@ func AdminMiddleware(adminKey string) fiber.Handler {
 		}
 		key := c.Get("X-Admin-Key")
 		if key == "" {
+			key = c.Get("x-admin-key")
+		}
+		if key == "" {
 			return fiber.NewError(fiber.StatusUnauthorized, "missing X-Admin-Key header")
 		}
-		// Constant-time comparison to prevent timing attacks
-		if !strings.EqualFold(key, adminKey) {
+		if subtle.ConstantTimeCompare([]byte(key), []byte(adminKey)) != 1 {
 			return fiber.NewError(fiber.StatusForbidden, "invalid admin key")
 		}
 		return c.Next()

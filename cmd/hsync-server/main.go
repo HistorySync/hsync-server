@@ -93,7 +93,7 @@ func main() {
 	})
 
 	// ── WebSocket Hub ─────────────────────────────────────────
-	hub := ws.NewHub()
+	hub := ws.NewHub(repos.Devices)
 	go hub.Run()
 
 	// ── HTTP Handlers ─────────────────────────────────────────
@@ -101,7 +101,9 @@ func main() {
 		Services:     svcs,
 		TokenManager: tokenManager,
 		Hub:          hub,
+		DB:           pgPool,
 		Redis:        redisClient,
+		BlobStore:    blobStore,
 		AdminKey:     cfg.AdminKey,
 	})
 

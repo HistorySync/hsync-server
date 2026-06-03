@@ -19,6 +19,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
 )
@@ -40,13 +41,24 @@ var Argon2Params = struct {
 
 // Common errors returned by services.
 var (
-	ErrEmailTaken         = errors.New("email already registered")
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrQuotaExceeded      = errors.New("quota exceeded")
-	ErrDeviceLimit        = errors.New("device limit reached")
-	ErrBundleExists       = errors.New("bundle already exists")
-	ErrDeviceRevoked      = errors.New("device has been revoked")
-	ErrStripeDisabled     = errors.New("billing is not enabled")
+	ErrEmailTaken               = errors.New("email already registered")
+	ErrInvalidCredentials       = errors.New("invalid email or password")
+	ErrQuotaExceeded            = errors.New("quota exceeded")
+	ErrDeviceLimit              = errors.New("device limit reached")
+	ErrBundleExists             = errors.New("bundle already exists")
+	ErrDeviceRevoked            = errors.New("device has been revoked")
+	ErrStripeDisabled           = errors.New("billing is not enabled")
+	ErrResetTokenRequired       = errors.New("reset token is required")
+	ErrNewPasswordRequired      = errors.New("new password is required")
+	ErrPasswordResetInvalid     = errors.New("invalid or expired password reset token")
+	ErrUserInactive             = errors.New("user not found or inactive")
+	ErrBundleNotFound           = errors.New("bundle not found")
+	ErrSnapshotNotFound         = errors.New("snapshot not found")
+	ErrUserNotFound             = errors.New("user not found")
+	ErrDeviceNotFound           = errors.New("device not found")
+	ErrDeviceAlreadyRevoked     = errors.New("device already revoked")
+	ErrDeviceNotRegistered      = errors.New("device not registered")
+	ErrBillingNotSupported      = errors.New("billing not supported")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -64,6 +76,7 @@ type Services struct {
 	Repos        *repository.Repos
 	Auth         *AuthService
 	Bundle       *BundleService
+	Snapshot     *SnapshotService
 	Quota        *QuotaService
 	Billing      *BillingService
 	Notification *NotificationService
@@ -83,11 +96,17 @@ func New(deps Deps) *Services {
 		blobStore: deps.BlobStore,
 		quota:     quotaSvc,
 	}
+	snapshotSvc := &SnapshotService{
+		repos:     deps.Repos,
+		blobStore: deps.BlobStore,
+		quota:     quotaSvc,
+	}
 	billingSvc := &BillingService{
 		repos:      deps.Repos,
 		stripeKey:  deps.StripeKey,
 		webhookKey: deps.StripeWebhook,
 		disabled:   deps.StripeDisabled,
+		provider:   provider.Registry().Billing,
 	}
 	notifSvc := &NotificationService{}
 
@@ -95,6 +114,7 @@ func New(deps Deps) *Services {
 		Repos:        deps.Repos,
 		Auth:         authSvc,
 		Bundle:       bundleSvc,
+		Snapshot:     snapshotSvc,
 		Quota:        quotaSvc,
 		Billing:      billingSvc,
 		Notification: notifSvc,
@@ -236,6 +256,85 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterRes
 	}, nil
 }
 
+// RefreshPasswordInput contains the fields required to complete a password reset.
+type ResetPasswordInput struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
+// StartPasswordReset creates a password reset token for an existing active user.
+func (s *AuthService) StartPasswordReset(ctx context.Context, email string) (string, error) {
+	user, err := s.repos.Users.GetByEmail(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("get user: %w", err)
+	}
+	if user == nil || user.Status != model.StatusActive {
+		return "", nil
+	}
+
+	if err := s.repos.PasswordResets.DeleteByUser(ctx, user.ID); err != nil {
+		return "", fmt.Errorf("delete existing password reset tokens: %w", err)
+	}
+
+	resetToken, tokenHash, err := s.issueRefreshToken(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("issue password reset token: %w", err)
+	}
+
+	if err := s.repos.PasswordResets.Save(ctx, user.ID, tokenHash, time.Now().Add(time.Hour)); err != nil {
+		return "", fmt.Errorf("save password reset token: %w", err)
+	}
+
+	return resetToken, nil
+}
+
+// ResetPassword validates a password reset token and updates the user's password.
+func (s *AuthService) ResetPassword(ctx context.Context, input ResetPasswordInput) error {
+	if input.Token == "" {
+		return ErrResetTokenRequired
+	}
+	if input.NewPassword == "" {
+		return ErrNewPasswordRequired
+	}
+
+	tokenHash := hashToken(input.Token)
+	userID, err := s.repos.PasswordResets.GetUserIDByToken(ctx, tokenHash)
+	if err != nil {
+		return fmt.Errorf("get password reset token user: %w", err)
+	}
+	if userID == nil {
+		return ErrPasswordResetInvalid
+	}
+
+	user, err := s.repos.Users.GetByID(ctx, *userID)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	if user == nil || user.Status != model.StatusActive {
+		return ErrUserInactive
+	}
+
+	passwordHash, err := hashPassword(input.NewPassword)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+
+	if err := s.repos.Users.UpdatePassword(ctx, user.ID, passwordHash); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	if err := s.repos.PasswordResets.MarkUsed(ctx, tokenHash); err != nil {
+		return fmt.Errorf("mark password reset token used: %w", err)
+	}
+	if err := s.repos.PasswordResets.DeleteByUser(ctx, user.ID); err != nil {
+		return fmt.Errorf("delete password reset tokens: %w", err)
+	}
+	if err := s.repos.RefreshTokens.RevokeAllUserTokens(ctx, user.ID); err != nil {
+		return fmt.Errorf("revoke user refresh tokens: %w", err)
+	}
+
+	return nil
+}
+
 // RefreshAccessToken validates a refresh token and issues a new access token.
 func (s *AuthService) RefreshAccessToken(ctx context.Context, refreshToken string) (string, error) {
 	tokenHash := hashToken(refreshToken)
@@ -244,15 +343,31 @@ func (s *AuthService) RefreshAccessToken(ctx context.Context, refreshToken strin
 		return "", fmt.Errorf("check token: %w", err)
 	}
 	if !valid {
-		return "", errors.New("invalid or expired refresh token")
+		return "", ErrPasswordResetInvalid
 	}
 
-	// We need user info. We'll do it lazily by looking up the token.
-	// For now, we revoke the old and issue new pair.
-	// In a full implementation, the token would include the user ID.
-	_ = s.repos.RefreshTokens.RevokeRefreshToken(ctx, tokenHash)
+	userID, err := s.repos.RefreshTokens.GetUserIDByTokenHash(ctx, tokenHash)
+	if err != nil {
+		return "", fmt.Errorf("get token user: %w", err)
+	}
+	if userID == nil {
+		return "", ErrPasswordResetInvalid
+	}
 
-	return "", errors.New("refresh requires user context - implement with user_id in token payload")
+	user, err := s.repos.Users.GetByID(ctx, *userID)
+	if err != nil {
+		return "", fmt.Errorf("get user: %w", err)
+	}
+	if user == nil || user.Status != model.StatusActive {
+		return "", ErrUserInactive
+	}
+
+	accessToken, err := s.tokenManager.IssueAccessToken(user.ID, string(user.Tier))
+	if err != nil {
+		return "", fmt.Errorf("issue access token: %w", err)
+	}
+
+	return accessToken, nil
 }
 
 // Logout revokes a refresh token.
@@ -302,7 +417,7 @@ func hashPassword(password string) (string, error) {
 func verifyPassword(password, encoded string) bool {
 	// Parse the encoded format: $argon2id$v=19$m=<memory>,t=<time>,p=<threads>$<b64salt>$<b64hash>
 	parts := splitPHC(encoded)
-	if len(parts) != 6 || parts[0] != "argon2id" {
+	if len(parts) != 5 || parts[0] != "argon2id" || parts[1] != "v=19" {
 		return false
 	}
 
@@ -388,7 +503,7 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		return nil, fmt.Errorf("get device: %w", err)
 	}
 	if device == nil {
-		return nil, fmt.Errorf("device not registered")
+		return nil, ErrDeviceNotRegistered
 	}
 	if device.RevokedAt != nil {
 		return nil, ErrDeviceRevoked
@@ -423,6 +538,11 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		_ = s.blobStore.Delete(ctx, key)
 		return nil, fmt.Errorf("create bundle meta: %w", err)
 	}
+	if err := s.repos.Quota.AddBundleUsage(ctx, userID, input.SizeBytes); err != nil {
+		_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
+		_ = s.blobStore.Delete(ctx, key)
+		return nil, fmt.Errorf("update bundle quota usage: %w", err)
+	}
 
 	return meta, nil
 }
@@ -434,7 +554,7 @@ func (s *BundleService) DownloadBundle(ctx context.Context, userID uuid.UUID, bu
 		return nil, nil, fmt.Errorf("get bundle meta: %w", err)
 	}
 	if meta == nil {
-		return nil, nil, errors.New("bundle not found")
+		return nil, nil, ErrBundleNotFound
 	}
 
 	key := storage.BundleKey(userID.String(), bundleID)
@@ -460,7 +580,144 @@ func (s *BundleService) ListBundles(ctx context.Context, userID uuid.UUID, devic
 
 // DeleteBundle soft-deletes a bundle.
 func (s *BundleService) DeleteBundle(ctx context.Context, userID uuid.UUID, bundleID string) error {
-	return s.repos.Bundles.SoftDelete(ctx, userID, bundleID)
+	meta, err := s.repos.Bundles.SoftDelete(ctx, userID, bundleID)
+	if err != nil {
+		if errors.Is(err, ErrBundleNotFound) {
+			return err
+		}
+		return err
+	}
+	if err := s.repos.Quota.RemoveBundleUsage(ctx, userID, meta.SizeBytes); err != nil {
+		return fmt.Errorf("update bundle quota usage: %w", err)
+	}
+	return nil
+}
+
+// SnapshotService handles snapshot upload, lookup, and download.
+type SnapshotService struct {
+	repos     *repository.Repos
+	blobStore storage.BlobStorage
+	quota     *QuotaService
+}
+
+// UploadSnapshotInput contains the metadata for a snapshot upload.
+type UploadSnapshotInput struct {
+	SnapshotID    string    `json:"snapshot_id"`
+	BaseHLC       int64     `json:"base_hlc"`
+	SizeBytes     int64     `json:"size_bytes"`
+	CipherID      int16     `json:"cipher_id"`
+	KeyGeneration int16     `json:"key_generation"`
+	Reader        io.Reader `json:"-"`
+	ContentType   string    `json:"-"`
+}
+
+// UploadSnapshot validates and persists a snapshot.
+func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
+	if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+		return nil, err
+	}
+
+	count, err := s.repos.Snapshots.CountByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("count snapshots: %w", err)
+	}
+	user, err := s.repos.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+	limits := model.TierLimits(user.Tier)
+	if count >= limits.MaxSnapshots {
+		pruned, err := s.repos.Snapshots.PruneOldest(ctx, userID, limits.MaxSnapshots-1)
+		if err != nil {
+			return nil, fmt.Errorf("prune old snapshots: %w", err)
+		}
+		for _, snapshot := range pruned {
+			if err := s.repos.Quota.RemoveSnapshotUsage(ctx, userID, snapshot.SizeBytes); err != nil {
+				return nil, fmt.Errorf("update snapshot quota usage after prune: %w", err)
+			}
+		}
+	}
+
+	key := storage.SnapshotKey(userID.String(), input.SnapshotID)
+	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
+		return nil, fmt.Errorf("store snapshot: %w", err)
+	}
+
+	meta := &model.SnapshotMeta{
+		SnapshotID:    input.SnapshotID,
+		UserID:        userID,
+		BaseHLC:       input.BaseHLC,
+		SizeBytes:     input.SizeBytes,
+		CipherID:      input.CipherID,
+		KeyGeneration: input.KeyGeneration,
+	}
+	if err := s.repos.Snapshots.Create(ctx, meta); err != nil {
+		_ = s.blobStore.Delete(ctx, key)
+		return nil, fmt.Errorf("create snapshot meta: %w", err)
+	}
+	if err := s.repos.Quota.AddSnapshotUsage(ctx, userID, input.SizeBytes); err != nil {
+		_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
+		_ = s.blobStore.Delete(ctx, key)
+		return nil, fmt.Errorf("update snapshot quota usage: %w", err)
+	}
+
+	return meta, nil
+}
+
+// DownloadSnapshot retrieves a snapshot blob for download.
+func (s *SnapshotService) DownloadSnapshot(ctx context.Context, userID uuid.UUID, snapshotID string) (io.ReadCloser, *model.SnapshotMeta, error) {
+	meta, err := s.repos.Snapshots.GetByID(ctx, userID, snapshotID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get snapshot meta: %w", err)
+	}
+	if meta == nil {
+		return nil, nil, ErrSnapshotNotFound
+	}
+
+	key := storage.SnapshotKey(userID.String(), snapshotID)
+	reader, err := s.blobStore.Get(ctx, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get snapshot blob: %w", err)
+	}
+	return reader, meta, nil
+}
+
+// RevokeDevice revokes a device owned by the user and records the event.
+func (s *AuthService) RevokeDevice(ctx context.Context, userID, deviceUUID uuid.UUID) error {
+	device, err := s.repos.Devices.GetByUserAndUUID(ctx, userID, deviceUUID)
+	if err != nil {
+		return fmt.Errorf("get device: %w", err)
+	}
+	if device == nil {
+		return ErrDeviceNotFound
+	}
+	if device.RevokedAt != nil {
+		return ErrDeviceAlreadyRevoked
+	}
+
+	if err := s.repos.Devices.Revoke(ctx, userID, deviceUUID); err != nil {
+		return fmt.Errorf("revoke device: %w", err)
+	}
+	if err := s.repos.DeviceRevocations.RecordRevocation(ctx, userID, deviceUUID, userID); err != nil {
+		return fmt.Errorf("record revocation: %w", err)
+	}
+
+	return nil
+}
+
+// ListRevocations returns recent device revocation events for a user.
+func (s *AuthService) ListRevocations(ctx context.Context, userID uuid.UUID) ([]model.DeviceRevocation, error) {
+	revs, err := s.repos.DeviceRevocations.ListByUser(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list revocations: %w", err)
+	}
+	if revs == nil {
+		return []model.DeviceRevocation{}, nil
+	}
+	return revs, nil
 }
 
 // ── QuotaService ─────────────────────────────────────────────
@@ -504,7 +761,7 @@ func (s *QuotaService) CheckStorageQuota(ctx context.Context, userID uuid.UUID, 
 		return fmt.Errorf("get user: %w", err)
 	}
 	if user == nil {
-		return errors.New("user not found")
+		return ErrUserNotFound
 	}
 
 	limits := model.TierLimits(user.Tier)
@@ -540,32 +797,78 @@ type BillingService struct {
 	stripeKey  string
 	webhookKey string
 	disabled   bool
+	provider   provider.BillingProvider
 }
 
-// CreateCheckoutSession initiates a Stripe checkout.
+// CreateCheckoutSession initiates a checkout session through the configured billing provider.
 func (s *BillingService) CreateCheckoutSession(ctx context.Context, userID uuid.UUID, priceID string) (string, error) {
-	if s.disabled {
+	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return "", ErrStripeDisabled
 	}
-	// TODO: Integrate Stripe SDK, create checkout session
-	return "", errors.New("stripe integration not implemented")
+	url, err := s.provider.CreateCheckoutSession(userID.String(), priceID)
+	if err != nil {
+		if errors.Is(err, provider.ErrBillingNotSupported) {
+			return "", ErrBillingNotSupported
+		}
+		return "", err
+	}
+	return url, nil
 }
 
-// HandleWebhook processes incoming Stripe webhook events.
+// CreatePortalSession initiates a customer billing portal session.
+func (s *BillingService) CreatePortalSession(ctx context.Context, userID uuid.UUID) (string, error) {
+	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
+		return "", ErrStripeDisabled
+	}
+	url, err := s.provider.CreatePortalSession(userID.String())
+	if err != nil {
+		if errors.Is(err, provider.ErrBillingNotSupported) {
+			return "", ErrBillingNotSupported
+		}
+		return "", err
+	}
+	return url, nil
+}
+
+// HandleWebhook processes incoming billing webhook events.
 func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, signature string) error {
-	if s.disabled {
+	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return ErrStripeDisabled
 	}
-	// TODO: Verify Stripe signature, process events
-	return errors.New("stripe webhook not implemented")
+	if err := s.provider.HandleWebhook(payload, signature); err != nil {
+		if errors.Is(err, provider.ErrBillingNotSupported) {
+			return ErrBillingNotSupported
+		}
+		return err
+	}
+	return nil
 }
 
 // GetSubscription returns the current subscription status.
 func (s *BillingService) GetSubscription(ctx context.Context, userID uuid.UUID) (map[string]any, error) {
-	if s.disabled {
+	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return map[string]any{"status": "disabled"}, nil
 	}
-	return map[string]any{"status": "active"}, nil
+	sub, err := s.provider.GetSubscription(userID.String())
+	if err != nil {
+		return nil, err
+	}
+	if sub == nil {
+		return map[string]any{"status": "none"}, nil
+	}
+	return map[string]any{
+		"tier":               sub.Tier,
+		"status":             sub.Status,
+		"current_period_end": sub.CurrentPeriodEnd,
+	}, nil
+}
+
+// ListInvoices returns recent invoices for a user.
+func (s *BillingService) ListInvoices(ctx context.Context, userID uuid.UUID) ([]map[string]any, error) {
+	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
+		return []map[string]any{}, nil
+	}
+	return nil, ErrBillingNotSupported
 }
 
 // ── NotificationService ──────────────────────────────────────

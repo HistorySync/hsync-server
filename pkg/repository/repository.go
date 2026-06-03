@@ -18,25 +18,29 @@ import (
 
 // Repos aggregates all repository instances.
 type Repos struct {
-	Users            *UserRepo
-	Devices          *DeviceRepo
-	Bundles          *BundleRepo
-	Snapshots        *SnapshotRepo
-	Quota            *QuotaRepo
-	RefreshTokens    *RefreshTokenRepo
-	DeviceRevocations *DeviceRevocationRepo
+	Users              *UserRepo
+	Devices            *DeviceRepo
+	Bundles            *BundleRepo
+	Snapshots          *SnapshotRepo
+	Quota              *QuotaRepo
+	RefreshTokens      *RefreshTokenRepo
+	DeviceRevocations  *DeviceRevocationRepo
+	EmailVerifications *EmailVerificationRepo
+	PasswordResets     *PasswordResetRepo
 }
 
 // New creates all repository instances with the given database connections.
 func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 	return &Repos{
-		Users:             &UserRepo{pool: pgPool},
-		Devices:           &DeviceRepo{pool: pgPool},
-		Bundles:           &BundleRepo{pool: pgPool},
-		Snapshots:         &SnapshotRepo{pool: pgPool},
-		Quota:             &QuotaRepo{pool: pgPool, redis: redisClient},
-		RefreshTokens:     &RefreshTokenRepo{pool: pgPool},
-		DeviceRevocations: &DeviceRevocationRepo{pool: pgPool},
+		Users:              &UserRepo{pool: pgPool},
+		Devices:            &DeviceRepo{pool: pgPool},
+		Bundles:            &BundleRepo{pool: pgPool},
+		Snapshots:          &SnapshotRepo{pool: pgPool},
+		Quota:              &QuotaRepo{pool: pgPool, redis: redisClient},
+		RefreshTokens:      &RefreshTokenRepo{pool: pgPool},
+		DeviceRevocations:  &DeviceRevocationRepo{pool: pgPool},
+		EmailVerifications: &EmailVerificationRepo{pool: pgPool},
+		PasswordResets:     &PasswordResetRepo{pool: pgPool},
 	}
 }
 
@@ -177,6 +181,60 @@ func (r *UserRepo) VerifyEmail(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
+// List returns active users ordered by creation time descending.
+func (r *UserRepo) List(ctx context.Context, limit, offset int32) ([]model.User, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	const q = `
+		SELECT id, email, password_hash, display_name, tier, status,
+		       email_verified, stripe_customer_id, created_at, updated_at, deleted_at
+		FROM users WHERE deleted_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2`
+
+	rows, err := r.pool.Query(ctx, q, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	return scanUsers(rows)
+}
+
+// Count returns the number of non-deleted users.
+func (r *UserRepo) Count(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`
+	var count int64
+	err := r.pool.QueryRow(ctx, q).Scan(&count)
+	return count, err
+}
+
+// CountByStatus returns user counts grouped by account status.
+func (r *UserRepo) CountByStatus(ctx context.Context) (map[model.UserStatus]int64, error) {
+	const q = `SELECT status, COUNT(*) FROM users WHERE deleted_at IS NULL GROUP BY status`
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("count users by status: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[model.UserStatus]int64)
+	for rows.Next() {
+		var status model.UserStatus
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("scan user status count: %w", err)
+		}
+		counts[status] = count
+	}
+	return counts, rows.Err()
+}
+
 // ListDeletedBefore returns users soft-deleted before the given time (for cleanup).
 func (r *UserRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.User, error) {
 	const q = `
@@ -191,6 +249,20 @@ func (r *UserRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]m
 	}
 	defer rows.Close()
 
+	var users []model.User
+	for rows.Next() {
+		var u model.User
+		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName,
+			&u.Tier, &u.Status, &u.EmailVerified, &u.StripeCustomerID,
+			&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
+func scanUsers(rows pgx.Rows) ([]model.User, error) {
 	var users []model.User
 	for rows.Next() {
 		var u model.User
@@ -299,6 +371,14 @@ func (r *DeviceRepo) CountActiveByUser(ctx context.Context, userID uuid.UUID) (i
 	return count, err
 }
 
+// CountActive returns the number of non-revoked devices.
+func (r *DeviceRepo) CountActive(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL`
+	var count int64
+	err := r.pool.QueryRow(ctx, q).Scan(&count)
+	return count, err
+}
+
 // Revoke marks a device as revoked.
 func (r *DeviceRepo) Revoke(ctx context.Context, userID, deviceUUID uuid.UUID) error {
 	now := time.Now()
@@ -312,6 +392,27 @@ func (r *DeviceRepo) UpdateTokenHash(ctx context.Context, id uuid.UUID, hash []b
 	const q = `UPDATE devices SET token_hash = $1 WHERE id = $2`
 	_, err := r.pool.Exec(ctx, q, hash, id)
 	return err
+}
+
+// GetByTokenHash fetches a device by its current token hash. Returns nil if not found.
+func (r *DeviceRepo) GetByTokenHash(ctx context.Context, hash []byte) (*model.Device, error) {
+	const q = `
+		SELECT id, user_id, device_uuid, device_name, platform, app_version,
+		       token_hash, last_sync_at, revoked_at, created_at
+		FROM devices WHERE token_hash = $1`
+
+	d := &model.Device{}
+	err := r.pool.QueryRow(ctx, q, hash).Scan(
+		&d.ID, &d.UserID, &d.DeviceUUID, &d.DeviceName, &d.Platform, &d.AppVersion,
+		&d.TokenHash, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get device by token hash: %w", err)
+	}
+	return d, nil
 }
 
 // UpdateLastSync updates the last_sync_at timestamp for a device.
@@ -433,18 +534,30 @@ func (r *BundleRepo) ListByUser(ctx context.Context, userID uuid.UUID, cursor st
 	return scanBundles(rows)
 }
 
-// SoftDelete marks a bundle as deleted.
-func (r *BundleRepo) SoftDelete(ctx context.Context, userID uuid.UUID, bundleID string) error {
+// SoftDelete marks a bundle as deleted and returns the deleted metadata.
+func (r *BundleRepo) SoftDelete(ctx context.Context, userID uuid.UUID, bundleID string) (*model.BundleMeta, error) {
 	now := time.Now()
-	const q = `UPDATE bundles SET deleted_at = $1 WHERE user_id = $2 AND bundle_id = $3 AND deleted_at IS NULL`
-	tag, err := r.pool.Exec(ctx, q, now, userID, bundleID)
+	const q = `
+		UPDATE bundles
+		SET deleted_at = $1
+		WHERE user_id = $2 AND bundle_id = $3 AND deleted_at IS NULL
+		RETURNING bundle_id, user_id, uploader_device_uuid,
+		          lamport_lo, lamport_hi, event_count, size_bytes,
+		          cipher_id, key_generation, uploaded_at, deleted_at`
+
+	meta := &model.BundleMeta{}
+	err := r.pool.QueryRow(ctx, q, now, userID, bundleID).Scan(
+		&meta.BundleID, &meta.UserID, &meta.UploaderDeviceUUID,
+		&meta.LamportLo, &meta.LamportHi, &meta.EventCount, &meta.SizeBytes,
+		&meta.CipherID, &meta.KeyGeneration, &meta.UploadedAt, &meta.DeletedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, fmt.Errorf("bundle not found")
+	}
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("bundle not found or already deleted")
-	}
-	return nil
+	return meta, nil
 }
 
 // SumSizeByUser returns the total size of all non-deleted bundles for a user.
@@ -461,6 +574,22 @@ func (r *BundleRepo) CountByUser(ctx context.Context, userID uuid.UUID) (int32, 
 	var count int32
 	err := r.pool.QueryRow(ctx, q, userID).Scan(&count)
 	return count, err
+}
+
+// CountAll returns the number of non-deleted bundles.
+func (r *BundleRepo) CountAll(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM bundles WHERE deleted_at IS NULL`
+	var count int64
+	err := r.pool.QueryRow(ctx, q).Scan(&count)
+	return count, err
+}
+
+// SumSizeAll returns the total size of all non-deleted bundles.
+func (r *BundleRepo) SumSizeAll(ctx context.Context) (int64, error) {
+	const q = `SELECT COALESCE(SUM(size_bytes), 0) FROM bundles WHERE deleted_at IS NULL`
+	var total int64
+	err := r.pool.QueryRow(ctx, q).Scan(&total)
+	return total, err
 }
 
 // ListDeletedBefore returns bundles soft-deleted before the given time (for cleanup).
@@ -562,12 +691,27 @@ func (r *SnapshotRepo) GetByID(ctx context.Context, userID uuid.UUID, snapshotID
 	return s, nil
 }
 
-// SoftDelete marks a snapshot as deleted.
-func (r *SnapshotRepo) SoftDelete(ctx context.Context, userID uuid.UUID, snapshotID string) error {
+// SoftDelete marks a snapshot as deleted and returns the deleted metadata.
+func (r *SnapshotRepo) SoftDelete(ctx context.Context, userID uuid.UUID, snapshotID string) (*model.SnapshotMeta, error) {
 	now := time.Now()
-	const q = `UPDATE snapshots SET deleted_at = $1 WHERE user_id = $2 AND snapshot_id = $3 AND deleted_at IS NULL`
-	_, err := r.pool.Exec(ctx, q, now, userID, snapshotID)
-	return err
+	const q = `
+		UPDATE snapshots
+		SET deleted_at = $1
+		WHERE user_id = $2 AND snapshot_id = $3 AND deleted_at IS NULL
+		RETURNING snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at`
+
+	meta := &model.SnapshotMeta{}
+	err := r.pool.QueryRow(ctx, q, now, userID, snapshotID).Scan(
+		&meta.SnapshotID, &meta.UserID, &meta.BaseHLC, &meta.SizeBytes,
+		&meta.CipherID, &meta.KeyGeneration, &meta.CreatedAt, &meta.DeletedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, fmt.Errorf("snapshot not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return meta, nil
 }
 
 // CountByUser returns the number of non-deleted snapshots for a user.
@@ -578,18 +722,54 @@ func (r *SnapshotRepo) CountByUser(ctx context.Context, userID uuid.UUID) (int32
 	return count, err
 }
 
-// PruneOldest deletes the oldest snapshots beyond the given limit.
-func (r *SnapshotRepo) PruneOldest(ctx context.Context, userID uuid.UUID, keep int32) error {
+// CountAll returns the number of non-deleted snapshots.
+func (r *SnapshotRepo) CountAll(ctx context.Context) (int64, error) {
+	const q = `SELECT COUNT(*) FROM snapshots WHERE deleted_at IS NULL`
+	var count int64
+	err := r.pool.QueryRow(ctx, q).Scan(&count)
+	return count, err
+}
+
+// SumSizeAll returns the total size of all non-deleted snapshots.
+func (r *SnapshotRepo) SumSizeAll(ctx context.Context) (int64, error) {
+	const q = `SELECT COALESCE(SUM(size_bytes), 0) FROM snapshots WHERE deleted_at IS NULL`
+	var total int64
+	err := r.pool.QueryRow(ctx, q).Scan(&total)
+	return total, err
+}
+
+// PruneOldest marks the oldest snapshots beyond the given limit as deleted and returns them.
+func (r *SnapshotRepo) PruneOldest(ctx context.Context, userID uuid.UUID, keep int32) ([]model.SnapshotMeta, error) {
 	const q = `
-		UPDATE snapshots SET deleted_at = now()
-		WHERE user_id = $1 AND deleted_at IS NULL
-		      AND snapshot_id NOT IN (
-		          SELECT snapshot_id FROM snapshots
-		          WHERE user_id = $1 AND deleted_at IS NULL
-		          ORDER BY created_at DESC LIMIT $2
-		      )`
-	_, err := r.pool.Exec(ctx, q, userID, keep)
-	return err
+		WITH pruned AS (
+			UPDATE snapshots
+			SET deleted_at = now()
+			WHERE user_id = $1 AND deleted_at IS NULL
+			      AND snapshot_id NOT IN (
+			          SELECT snapshot_id FROM snapshots
+			          WHERE user_id = $1 AND deleted_at IS NULL
+			          ORDER BY created_at DESC LIMIT $2
+		      )
+			RETURNING snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
+		)
+		SELECT snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
+		FROM pruned`
+
+	rows, err := r.pool.Query(ctx, q, userID, keep)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var snapshots []model.SnapshotMeta
+	for rows.Next() {
+		var s model.SnapshotMeta
+		if err := rows.Scan(&s.SnapshotID, &s.UserID, &s.BaseHLC, &s.SizeBytes, &s.CipherID, &s.KeyGeneration, &s.CreatedAt, &s.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan pruned snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	return snapshots, rows.Err()
 }
 
 // ── QuotaRepo ────────────────────────────────────────────────
@@ -666,6 +846,68 @@ func (r *QuotaRepo) CreateUsage(ctx context.Context, userID uuid.UUID) error {
 	return err
 }
 
+// AddBundleUsage increments storage usage counters for a stored bundle.
+func (r *QuotaRepo) AddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	const q = `
+		INSERT INTO storage_usage (user_id, total_bytes, bundle_count)
+		VALUES ($1, $2, 1)
+		ON CONFLICT (user_id) DO UPDATE SET
+			total_bytes = storage_usage.total_bytes + EXCLUDED.total_bytes,
+			bundle_count = storage_usage.bundle_count + EXCLUDED.bundle_count,
+			updated_at = now()`
+	_, err := r.pool.Exec(ctx, q, userID, sizeBytes)
+	if err != nil {
+		return fmt.Errorf("add bundle usage: %w", err)
+	}
+	return nil
+}
+
+// RemoveBundleUsage decrements storage usage counters for a deleted bundle.
+func (r *QuotaRepo) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	const q = `
+		UPDATE storage_usage
+		SET total_bytes = GREATEST(total_bytes - $2, 0),
+		    bundle_count = GREATEST(bundle_count - 1, 0),
+		    updated_at = now()
+		WHERE user_id = $1`
+	_, err := r.pool.Exec(ctx, q, userID, sizeBytes)
+	if err != nil {
+		return fmt.Errorf("remove bundle usage: %w", err)
+	}
+	return nil
+}
+
+// AddSnapshotUsage increments storage usage counters for a stored snapshot.
+func (r *QuotaRepo) AddSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	const q = `
+		INSERT INTO storage_usage (user_id, total_bytes, snap_count)
+		VALUES ($1, $2, 1)
+		ON CONFLICT (user_id) DO UPDATE SET
+			total_bytes = storage_usage.total_bytes + EXCLUDED.total_bytes,
+			snap_count = storage_usage.snap_count + EXCLUDED.snap_count,
+			updated_at = now()`
+	_, err := r.pool.Exec(ctx, q, userID, sizeBytes)
+	if err != nil {
+		return fmt.Errorf("add snapshot usage: %w", err)
+	}
+	return nil
+}
+
+// RemoveSnapshotUsage decrements storage usage counters for a deleted snapshot.
+func (r *QuotaRepo) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	const q = `
+		UPDATE storage_usage
+		SET total_bytes = GREATEST(total_bytes - $2, 0),
+		    snap_count = GREATEST(snap_count - 1, 0),
+		    updated_at = now()
+		WHERE user_id = $1`
+	_, err := r.pool.Exec(ctx, q, userID, sizeBytes)
+	if err != nil {
+		return fmt.Errorf("remove snapshot usage: %w", err)
+	}
+	return nil
+}
+
 // ── Refresh Token Repo ──────────────────────────────────────
 
 // RefreshTokenRepo manages refresh token storage.
@@ -708,6 +950,115 @@ func (r *RefreshTokenRepo) IsTokenValid(ctx context.Context, tokenHash []byte) (
 	var valid bool
 	err := r.pool.QueryRow(ctx, q, tokenHash).Scan(&valid)
 	return valid, err
+}
+
+// GetUserIDByTokenHash returns the owning user ID for a valid refresh token.
+func (r *RefreshTokenRepo) GetUserIDByTokenHash(ctx context.Context, tokenHash []byte) (*uuid.UUID, error) {
+	const q = `
+		SELECT user_id
+		FROM refresh_tokens
+		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+		LIMIT 1`
+
+	var userID uuid.UUID
+	if err := r.pool.QueryRow(ctx, q, tokenHash).Scan(&userID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get refresh token user: %w", err)
+	}
+	return &userID, nil
+}
+
+// ── Email Verification Repo ────────────────────────────────
+
+// EmailVerificationRepo manages email verification tokens.
+type EmailVerificationRepo struct {
+	pool *pgxpool.Pool
+}
+
+// Save stores a hashed email verification token.
+func (r *EmailVerificationRepo) Save(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) error {
+	const q = `
+		INSERT INTO email_verifications (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)`
+	_, err := r.pool.Exec(ctx, q, userID, tokenHash, expiresAt)
+	return err
+}
+
+// GetUserIDByToken returns the user ID for a valid verification token.
+func (r *EmailVerificationRepo) GetUserIDByToken(ctx context.Context, tokenHash []byte) (*uuid.UUID, error) {
+	const q = `
+		SELECT user_id
+		FROM email_verifications
+		WHERE token_hash = $1 AND expires_at > now()
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	var userID uuid.UUID
+	if err := r.pool.QueryRow(ctx, q, tokenHash).Scan(&userID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get email verification token: %w", err)
+	}
+	return &userID, nil
+}
+
+// DeleteByUser removes all verification tokens for a user.
+func (r *EmailVerificationRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) error {
+	const q = `DELETE FROM email_verifications WHERE user_id = $1`
+	_, err := r.pool.Exec(ctx, q, userID)
+	return err
+}
+
+// ── Password Reset Repo ────────────────────────────────────
+
+// PasswordResetRepo manages password reset tokens.
+type PasswordResetRepo struct {
+	pool *pgxpool.Pool
+}
+
+// Save stores a hashed password reset token.
+func (r *PasswordResetRepo) Save(ctx context.Context, userID uuid.UUID, tokenHash []byte, expiresAt time.Time) error {
+	const q = `
+		INSERT INTO password_resets (user_id, token_hash, expires_at)
+		VALUES ($1, $2, $3)`
+	_, err := r.pool.Exec(ctx, q, userID, tokenHash, expiresAt)
+	return err
+}
+
+// GetUserIDByToken returns the user ID for a valid reset token.
+func (r *PasswordResetRepo) GetUserIDByToken(ctx context.Context, tokenHash []byte) (*uuid.UUID, error) {
+	const q = `
+		SELECT user_id
+		FROM password_resets
+		WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+		ORDER BY created_at DESC
+		LIMIT 1`
+
+	var userID uuid.UUID
+	if err := r.pool.QueryRow(ctx, q, tokenHash).Scan(&userID); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get password reset token: %w", err)
+	}
+	return &userID, nil
+}
+
+// MarkUsed marks a password reset token as used.
+func (r *PasswordResetRepo) MarkUsed(ctx context.Context, tokenHash []byte) error {
+	const q = `UPDATE password_resets SET used_at = now() WHERE token_hash = $1 AND used_at IS NULL`
+	_, err := r.pool.Exec(ctx, q, tokenHash)
+	return err
+}
+
+// DeleteByUser removes all password reset tokens for a user.
+func (r *PasswordResetRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) error {
+	const q = `DELETE FROM password_resets WHERE user_id = $1`
+	_, err := r.pool.Exec(ctx, q, userID)
+	return err
 }
 
 // ── Device Revocation Repo ──────────────────────────────────

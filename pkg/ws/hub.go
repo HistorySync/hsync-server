@@ -7,7 +7,10 @@
 package ws
 
 import (
+	"context"
+	"crypto/sha256"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +19,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
+
+	"github.com/historysync/hsync-server/pkg/repository"
 )
 
 const (
@@ -127,14 +132,16 @@ type Hub struct {
 	clients    map[uuid.UUID]map[*Client]bool // userID -> set of clients
 	register   chan *Client
 	unregister chan *Client
+	devices    *repository.DeviceRepo
 }
 
 // NewHub creates a new Hub and starts its run loop.
-func NewHub() *Hub {
+func NewHub(devices *repository.DeviceRepo) *Hub {
 	return &Hub{
 		clients:    make(map[uuid.UUID]map[*Client]bool),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
+		devices:    devices,
 	}
 }
 
@@ -264,18 +271,38 @@ func (h *Hub) UpgradeHandler(c fiber.Ctx) error {
 	// Fiber v3 uses fasthttp; adapt gorilla/websocket via fasthttpadaptor.
 	fasthttpadaptor.NewFastHTTPHandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			// Extract device token from query string
-			// TODO: validate device token against database
-			// For now, accept any connection as a placeholder.
-			_deviceID := uuid.New() // placeholder
-			_userID := uuid.New()   // placeholder
+			if h.devices == nil {
+				http.Error(w, "websocket device repository not configured", http.StatusInternalServerError)
+				return
+			}
+
+			token := strings.TrimSpace(r.URL.Query().Get("token"))
+			if token == "" {
+				http.Error(w, "missing device token", http.StatusUnauthorized)
+				return
+			}
+
+			tokenHash := sha256.Sum256([]byte(token))
+			device, err := h.devices.GetByTokenHash(context.Background(), tokenHash[:])
+			if err != nil {
+				log.Error().Err(err).Msg("ws device token lookup failed")
+				http.Error(w, "failed to validate device token", http.StatusInternalServerError)
+				return
+			}
+			if device == nil || device.RevokedAt != nil {
+				http.Error(w, "invalid device token", http.StatusUnauthorized)
+				return
+			}
 
 			conn, err := upgrader.Upgrade(w, r, nil)
 			if err != nil {
 				log.Error().Err(err).Msg("ws upgrade failed")
 				return
 			}
-			h.RegisterClient(_userID, _deviceID, conn)
+			if err := h.devices.UpdateLastSync(context.Background(), device.ID); err != nil {
+				log.Warn().Err(err).Str("device_id", device.DeviceUUID.String()).Msg("failed to update device last_sync_at")
+			}
+			h.RegisterClient(device.UserID, device.DeviceUUID, conn)
 		},
 	)(c.RequestCtx())
 

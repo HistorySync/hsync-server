@@ -6,17 +6,20 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"strconv"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/service"
+	"github.com/historysync/hsync-server/pkg/storage"
 	"github.com/historysync/hsync-server/pkg/ws"
 )
 
@@ -25,7 +28,9 @@ type Deps struct {
 	Services     *service.Services
 	TokenManager *auth.TokenManager
 	Hub          *ws.Hub
+	DB           *pgxpool.Pool
 	Redis        *redis.Client // may be nil if Redis is unavailable
+	BlobStore    storage.BlobStorage
 	AdminKey     string
 }
 
@@ -54,6 +59,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/login", h.Login)
 	authGroup.Post("/refresh", h.RefreshToken)
 	authGroup.Post("/logout", h.Logout)
+	authGroup.Post("/forgot-password", h.ForgotPassword)
+	authGroup.Post("/reset-password", h.ResetPassword)
 
 	// Bundles (JWT-protected)
 	bundles := v1.Group("/bundles", auth.AuthMiddleware(h.deps.TokenManager))
@@ -75,7 +82,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	devices.Get("/revocations", h.ListRevocations)
 
 	// Quota (JWT-protected)
-	v1.Get("/quota", h.GetQuota, auth.AuthMiddleware(h.deps.TokenManager))
+	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), h.GetQuota)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager))
@@ -102,12 +109,49 @@ func (h *Handlers) Healthz(c fiber.Ctx) error {
 }
 
 func (h *Handlers) Readyz(c fiber.Ctx) error {
-	// TODO: check DB, Redis, S3 connectivity
-	return c.JSON(fiber.Map{"status": "ok", "checks": fiber.Map{
-		"database": "ok",
-		"redis":    "ok",
-		"storage":  "ok",
-	}})
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
+	defer cancel()
+
+	status := "ok"
+	checks := fiber.Map{}
+
+	if h.deps.DB == nil {
+		status = "degraded"
+		checks["database"] = "not_configured"
+	} else if err := h.deps.DB.Ping(ctx); err != nil {
+		status = "unhealthy"
+		checks["database"] = "error: " + err.Error()
+	} else {
+		checks["database"] = "ok"
+	}
+
+	if h.deps.Redis == nil {
+		checks["redis"] = "disabled"
+	} else if err := h.deps.Redis.Ping(ctx).Err(); err != nil {
+		if status == "ok" {
+			status = "degraded"
+		}
+		checks["redis"] = "error: " + err.Error()
+	} else {
+		checks["redis"] = "ok"
+	}
+
+	if h.deps.BlobStore == nil {
+		status = "unhealthy"
+		checks["storage"] = "not_configured"
+	} else if _, err := h.deps.BlobStore.List(ctx, ""); err != nil {
+		status = "unhealthy"
+		checks["storage"] = "error: " + err.Error()
+	} else {
+		checks["storage"] = "ok"
+	}
+
+	code := fiber.StatusOK
+	if status == "unhealthy" {
+		code = fiber.StatusServiceUnavailable
+	}
+
+	return c.Status(code).JSON(fiber.Map{"status": status, "checks": checks})
 }
 
 func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {
@@ -141,6 +185,38 @@ func (e *fiberError) Error() string { return e.Message }
 
 func newError(code int, errCode, message string) *fiberError {
 	return &fiberError{Code: code, ErrCode: errCode, Message: message}
+}
+
+func requiredFormValue(form map[string][]string, name string) (string, error) {
+	values := form[name]
+	if len(values) == 0 || values[0] == "" {
+		return "", fiber.NewError(fiber.StatusBadRequest, "missing '"+name+"' field")
+	}
+	return values[0], nil
+}
+
+func parseFormUUID(form map[string][]string, name string) (uuid.UUID, error) {
+	raw, err := requiredFormValue(form, name)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, fiber.NewError(fiber.StatusBadRequest, "invalid '"+name+"' field")
+	}
+	return id, nil
+}
+
+func parseFormInt(form map[string][]string, name string, bitSize int) (int64, error) {
+	raw, err := requiredFormValue(form, name)
+	if err != nil {
+		return 0, err
+	}
+	value, err := strconv.ParseInt(raw, 10, bitSize)
+	if err != nil {
+		return 0, fiber.NewError(fiber.StatusBadRequest, "invalid '"+name+"' field")
+	}
+	return value, nil
 }
 
 // ── Auth ────────────────────────────────────────────────────
@@ -215,6 +291,15 @@ type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type forgotPasswordRequest struct {
+	Email string `json:"email"`
+}
+
+type resetPasswordRequest struct {
+	Token       string `json:"token"`
+	NewPassword string `json:"new_password"`
+}
+
 func (h *Handlers) RefreshToken(c fiber.Ctx) error {
 	var req refreshRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
@@ -245,6 +330,50 @@ func (h *Handlers) Logout(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
+func (h *Handlers) ForgotPassword(c fiber.Ctx) error {
+	var req forgotPasswordRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.Email == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "email is required")
+	}
+
+	resetToken, err := h.deps.Services.Auth.StartPasswordReset(c.Context(), req.Email)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	resp := fiber.Map{"status": "ok"}
+	if resetToken != "" {
+		resp["reset_token"] = resetToken
+	}
+	return c.JSON(resp)
+}
+
+func (h *Handlers) ResetPassword(c fiber.Ctx) error {
+	var req resetPasswordRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+
+	if err := h.deps.Services.Auth.ResetPassword(c.Context(), service.ResetPasswordInput{
+		Token:       req.Token,
+		NewPassword: req.NewPassword,
+	}); err != nil {
+		switch err {
+		case service.ErrResetTokenRequired, service.ErrNewPasswordRequired:
+			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		case service.ErrPasswordResetInvalid, service.ErrUserInactive:
+			return newError(fiber.StatusUnauthorized, "INVALID_RESET_TOKEN", err.Error())
+		default:
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+	}
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
 // ── Bundles ─────────────────────────────────────────────────
 
 func (h *Handlers) UploadBundle(c fiber.Ctx) error {
@@ -270,15 +399,37 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 	defer src.Close()
 
 	// Parse metadata fields
-	deviceUUID, _ := uuid.Parse(form.Value["device_uuid"][0])
-	lamportLo, _ := strconv.ParseInt(form.Value["lamport_lo"][0], 10, 64)
-	lamportHi, _ := strconv.ParseInt(form.Value["lamport_hi"][0], 10, 64)
-	eventCount, _ := strconv.ParseInt(form.Value["event_count"][0], 10, 32)
-	cipherID, _ := strconv.ParseInt(form.Value["cipher_id"][0], 10, 16)
-	keyGen, _ := strconv.ParseInt(form.Value["key_generation"][0], 10, 16)
+	bundleID, err := requiredFormValue(form.Value, "bundle_id")
+	if err != nil {
+		return err
+	}
+	deviceUUID, err := parseFormUUID(form.Value, "device_uuid")
+	if err != nil {
+		return err
+	}
+	lamportLo, err := parseFormInt(form.Value, "lamport_lo", 64)
+	if err != nil {
+		return err
+	}
+	lamportHi, err := parseFormInt(form.Value, "lamport_hi", 64)
+	if err != nil {
+		return err
+	}
+	eventCount, err := parseFormInt(form.Value, "event_count", 32)
+	if err != nil {
+		return err
+	}
+	cipherID, err := parseFormInt(form.Value, "cipher_id", 16)
+	if err != nil {
+		return err
+	}
+	keyGen, err := parseFormInt(form.Value, "key_generation", 16)
+	if err != nil {
+		return err
+	}
 
 	meta, err := h.deps.Services.Bundle.UploadBundle(c.Context(), userID, service.UploadInput{
-		BundleID:      form.Value["bundle_id"][0],
+		BundleID:      bundleID,
 		DeviceUUID:    deviceUUID,
 		LamportLo:     lamportLo,
 		LamportHi:     lamportHi,
@@ -297,6 +448,8 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 			return newError(507, "QUOTA_EXCEEDED", err.Error())
 		case service.ErrDeviceRevoked:
 			return newError(fiber.StatusForbidden, "DEVICE_REVOKED", err.Error())
+		case service.ErrDeviceNotRegistered:
+			return newError(fiber.StatusBadRequest, "DEVICE_NOT_REGISTERED", err.Error())
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
@@ -359,7 +512,7 @@ func (h *Handlers) DownloadBundle(c fiber.Ctx) error {
 
 	reader, meta, err := h.deps.Services.Bundle.DownloadBundle(c.Context(), userID, bundleID)
 	if err != nil {
-		if err.Error() == "bundle not found" {
+		if err == service.ErrBundleNotFound {
 			return newError(fiber.StatusNotFound, "NOT_FOUND", "bundle not found")
 		}
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
@@ -378,6 +531,9 @@ func (h *Handlers) DeleteBundle(c fiber.Ctx) error {
 	bundleID := c.Params("id")
 
 	if err := h.deps.Services.Bundle.DeleteBundle(c.Context(), userID, bundleID); err != nil {
+		if err == service.ErrBundleNotFound {
+			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+		}
 		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
 	}
 
@@ -386,7 +542,78 @@ func (h *Handlers) DeleteBundle(c fiber.Ctx) error {
 
 // ── Snapshots ───────────────────────────────────────────────
 
-func (h *Handlers) UploadSnapshot(c fiber.Ctx) error { return c.SendStatus(501) }
+func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid multipart form")
+	}
+	files := form.File["snapshot"]
+	if len(files) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "missing 'snapshot' file field")
+	}
+	file := files[0]
+	if len(form.Value["snapshot_id"]) == 0 || len(form.Value["base_hlc"]) == 0 || len(form.Value["cipher_id"]) == 0 || len(form.Value["key_generation"]) == 0 {
+		return fiber.NewError(fiber.StatusBadRequest, "missing snapshot metadata fields")
+	}
+
+	src, err := file.Open()
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to open uploaded file")
+	}
+	defer src.Close()
+
+	snapshotID, err := requiredFormValue(form.Value, "snapshot_id")
+	if err != nil {
+		return err
+	}
+	baseHLC, err := parseFormInt(form.Value, "base_hlc", 64)
+	if err != nil {
+		return err
+	}
+	cipherID, err := parseFormInt(form.Value, "cipher_id", 16)
+	if err != nil {
+		return err
+	}
+	keyGen, err := parseFormInt(form.Value, "key_generation", 16)
+	if err != nil {
+		return err
+	}
+
+	meta, err := h.deps.Services.Snapshot.UploadSnapshot(c.Context(), userID, service.UploadSnapshotInput{
+		SnapshotID:    snapshotID,
+		BaseHLC:       baseHLC,
+		SizeBytes:     file.Size,
+		CipherID:      int16(cipherID),
+		KeyGeneration: int16(keyGen),
+		Reader:        src,
+		ContentType:   file.Header.Get("Content-Type"),
+	})
+	if err != nil {
+		if err == service.ErrQuotaExceeded {
+			return newError(507, "QUOTA_EXCEEDED", err.Error())
+		}
+		if err == service.ErrUserNotFound {
+			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	msg := ws.PushMessage{
+		Type:      ws.MsgSnapshotUploaded,
+		Timestamp: time.Now().Unix(),
+		Data: fiber.Map{
+			"snapshot_id": meta.SnapshotID,
+			"base_hlc":    meta.BaseHLC,
+		},
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		h.deps.Hub.PushToUser(userID, data)
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(meta)
+}
 
 func (h *Handlers) GetLatestSnapshot(c fiber.Ctx) error {
 	userID := auth.UserID(c)
@@ -400,7 +627,24 @@ func (h *Handlers) GetLatestSnapshot(c fiber.Ctx) error {
 	return c.JSON(snapshot)
 }
 
-func (h *Handlers) DownloadSnapshot(c fiber.Ctx) error { return c.SendStatus(501) }
+func (h *Handlers) DownloadSnapshot(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	snapshotID := c.Params("id")
+
+	reader, meta, err := h.deps.Services.Snapshot.DownloadSnapshot(c.Context(), userID, snapshotID)
+	if err != nil {
+		if err == service.ErrSnapshotNotFound {
+			return newError(fiber.StatusNotFound, "NOT_FOUND", "snapshot not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	defer reader.Close()
+
+	c.Set("Content-Type", "application/octet-stream")
+	c.Set("Content-Disposition", "attachment; filename=\""+meta.SnapshotID+".hsb\"")
+	c.Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
+	return c.SendStream(reader)
+}
 
 // ── Devices ─────────────────────────────────────────────────
 
@@ -416,8 +660,46 @@ func (h *Handlers) ListDevices(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"devices": devices})
 }
 
-func (h *Handlers) RevokeDevice(c fiber.Ctx) error { return c.SendStatus(501) }
-func (h *Handlers) ListRevocations(c fiber.Ctx) error { return c.SendStatus(501) }
+func (h *Handlers) RevokeDevice(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	deviceUUID, err := uuid.Parse(c.Params("uuid"))
+	if err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid device uuid")
+	}
+
+	if err := h.deps.Services.Auth.RevokeDevice(c.Context(), userID, deviceUUID); err != nil {
+		switch err {
+		case service.ErrDeviceNotFound:
+			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+		case service.ErrDeviceAlreadyRevoked:
+			return newError(fiber.StatusConflict, "DEVICE_REVOKED", err.Error())
+		default:
+			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		}
+	}
+
+	msg := ws.PushMessage{
+		Type:      ws.MsgDeviceRevoked,
+		Timestamp: time.Now().Unix(),
+		Data: fiber.Map{
+			"device_uuid": deviceUUID,
+		},
+	}
+	if data, err := json.Marshal(msg); err == nil {
+		h.deps.Hub.PushToUser(userID, data)
+	}
+
+	return c.JSON(fiber.Map{"status": "revoked"})
+}
+
+func (h *Handlers) ListRevocations(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	revs, err := h.deps.Services.Auth.ListRevocations(c.Context(), userID)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"revocations": revs})
+}
 
 // ── Quota ───────────────────────────────────────────────────
 
@@ -456,11 +738,87 @@ func (h *Handlers) GetQuota(c fiber.Ctx) error {
 
 // ── Billing ─────────────────────────────────────────────────
 
-func (h *Handlers) CreateCheckout(c fiber.Ctx) error       { return c.SendStatus(501) }
-func (h *Handlers) CreatePortalSession(c fiber.Ctx) error  { return c.SendStatus(501) }
-func (h *Handlers) GetSubscription(c fiber.Ctx) error      { return c.SendStatus(501) }
-func (h *Handlers) ListInvoices(c fiber.Ctx) error         { return c.SendStatus(501) }
-func (h *Handlers) StripeWebhook(c fiber.Ctx) error        { return c.SendStatus(501) }
+func (h *Handlers) CreateCheckout(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+
+	var req struct {
+		PriceID string `json:"price_id"`
+	}
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+	}
+	if req.PriceID == "" {
+		return fiber.NewError(fiber.StatusBadRequest, "price_id is required")
+	}
+
+	url, err := h.deps.Services.Billing.CreateCheckoutSession(c.Context(), userID, req.PriceID)
+	if err != nil {
+		if err == service.ErrStripeDisabled {
+			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+		}
+		if err == service.ErrBillingNotSupported {
+			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{"checkout_url": url})
+}
+
+func (h *Handlers) CreatePortalSession(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	url, err := h.deps.Services.Billing.CreatePortalSession(c.Context(), userID)
+	if err != nil {
+		if err == service.ErrStripeDisabled {
+			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+		}
+		if err == service.ErrBillingNotSupported {
+			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"portal_url": url})
+}
+
+func (h *Handlers) GetSubscription(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	result, err := h.deps.Services.Billing.GetSubscription(c.Context(), userID)
+	if err != nil {
+		if err == service.ErrStripeDisabled {
+			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(result)
+}
+
+func (h *Handlers) ListInvoices(c fiber.Ctx) error {
+	userID := auth.UserID(c)
+	invoices, err := h.deps.Services.Billing.ListInvoices(c.Context(), userID)
+	if err != nil {
+		if err == service.ErrStripeDisabled {
+			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+		}
+		if err == service.ErrBillingNotSupported {
+			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"invoices": invoices})
+}
+
+func (h *Handlers) StripeWebhook(c fiber.Ctx) error {
+	if err := h.deps.Services.Billing.HandleWebhook(c.Context(), c.Body(), c.Get("Stripe-Signature")); err != nil {
+		if err == service.ErrStripeDisabled {
+			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+		}
+		if err == service.ErrBillingNotSupported {
+			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+		}
+		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(fiber.Map{"status": "ok"})
+}
 
 // ── WebSocket ───────────────────────────────────────────────
 
@@ -470,5 +828,88 @@ func (h *Handlers) WebSocketUpgrade(c fiber.Ctx) error {
 
 // ── Admin ───────────────────────────────────────────────────
 
-func (h *Handlers) AdminListUsers(c fiber.Ctx) error { return c.SendStatus(501) }
-func (h *Handlers) AdminStats(c fiber.Ctx) error     { return c.SendStatus(501) }
+func (h *Handlers) AdminListUsers(c fiber.Ctx) error {
+	limit := int32(50)
+	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
+		limit = int32(l)
+	}
+	offset := int32(0)
+	if o, err := strconv.Atoi(c.Query("offset", "0")); err == nil && o > 0 {
+		offset = int32(o)
+	}
+
+	users, err := h.deps.Services.Repos.Users.List(c.Context(), limit, offset)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	if users == nil {
+		users = []model.User{}
+	}
+	total, err := h.deps.Services.Repos.Users.Count(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{
+		"users":  users,
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+	})
+}
+
+func (h *Handlers) AdminStats(c fiber.Ctx) error {
+	userCount, err := h.deps.Services.Repos.Users.Count(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	usersByStatus, err := h.deps.Services.Repos.Users.CountByStatus(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	deviceCount, err := h.deps.Services.Repos.Devices.CountActive(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	bundleCount, err := h.deps.Services.Repos.Bundles.CountAll(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	bundleBytes, err := h.deps.Services.Repos.Bundles.SumSizeAll(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	snapshotCount, err := h.deps.Services.Repos.Snapshots.CountAll(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	snapshotBytes, err := h.deps.Services.Repos.Snapshots.SumSizeAll(c.Context())
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{
+		"users": fiber.Map{
+			"total":     userCount,
+			"by_status": usersByStatus,
+		},
+		"devices": fiber.Map{
+			"active": deviceCount,
+		},
+		"storage": fiber.Map{
+			"total_bytes":    bundleBytes + snapshotBytes,
+			"bundle_bytes":   bundleBytes,
+			"snapshot_bytes": snapshotBytes,
+		},
+		"bundles": fiber.Map{
+			"total": bundleCount,
+		},
+		"snapshots": fiber.Map{
+			"total": snapshotCount,
+		},
+		"websocket": fiber.Map{
+			"active_users":       h.deps.Hub.ActiveUserCount(),
+			"active_connections": h.deps.Hub.ActiveConnectionCount(),
+		},
+	})
+}

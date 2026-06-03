@@ -92,13 +92,13 @@ func landingPage(opts Options) string {
 	builder.WriteString(htmlEscape(opts.ConsolePath))
 	builder.WriteString("</div></div><div class=\"card\"><div class=\"label\">Admin route</div><div class=\"value\">")
 	builder.WriteString(adminPathEscaped)
-	builder.WriteString("</div></div></div><div id=\"status-banner\"></div><div class=\"layout\"><div class=\"stack\"><div class=\"panel\"><div class=\"label\">Runtime checks</div><ul class=\"endpoint-list\" id=\"runtime-checks\"><li><span>Web metadata</span><span class=\"status\" data-check=\"meta\"><span class=\"dot\"></span>pending</span></li><li><span>Health probe</span><span class=\"status\" data-check=\"health\"><span class=\"dot\"></span>pending</span></li><li><span>Readiness probe</span><span class=\"status\" data-check=\"ready\"><span class=\"dot\"></span>pending</span></li><li><span>Admin surface</span><span class=\"status\" data-check=\"admin\"><span class=\"dot\"></span>pending</span></li></ul><div class=\"actions\"><button class=\"button\" id=\"refresh-checks\" type=\"button\">Refresh probes</button><a class=\"button subtle\" href=\"")
+	builder.WriteString("</div></div></div><div id=\"status-banner\"></div><div class=\"layout\"><div class=\"stack\"><div class=\"panel\"><div class=\"label\">Runtime checks</div><ul class=\"endpoint-list\" id=\"runtime-checks\"><li><span>Web metadata</span><span class=\"status\" data-check=\"meta\"><span class=\"dot\"></span>pending</span></li><li><span>Health probe</span><span class=\"status\" data-check=\"health\"><span class=\"dot\"></span>pending</span></li><li><span>Readiness probe</span><span class=\"status\" data-check=\"ready\"><span class=\"dot\"></span>pending</span></li><li><span>Overview API</span><span class=\"status\" data-check=\"overview\"><span class=\"dot\"></span>pending</span></li><li><span>Admin surface</span><span class=\"status\" data-check=\"admin\"><span class=\"dot\"></span>pending</span></li></ul><div class=\"actions\"><button class=\"button\" id=\"refresh-checks\" type=\"button\">Refresh probes</button><a class=\"button subtle\" href=\"")
 	builder.WriteString(consolePathEscaped)
 	builder.WriteString("\">Reload console route</a></div></div><div class=\"panel\"><div class=\"label\">Platform contract</div><ul><li>Public web mount stays separate from product APIs</li><li>Future SPA assets can be served here without moving backend routes</li><li>Both CE and EE read the same meta contract from <code class=\"inline\">/api/meta/web</code></li></ul></div></div><div class=\"stack\"><div class=\"panel\"><div class=\"label\">Quick metrics</div><div class=\"metric-grid\"><div class=\"metric\"><span class=\"muted\">Edition</span><strong id=\"metric-edition\">")
 	builder.WriteString(htmlEscape(opts.Edition))
 	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">API prefix</span><strong id=\"metric-prefix\">")
 	builder.WriteString(apiPrefixEscaped)
-	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">Health status</span><strong id=\"metric-health\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Admin status</span><strong id=\"metric-admin\">pending</strong></div></div></div><div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\"><li><span>Quota API</span><span>")
+	builder.WriteString("</strong></div><div class=\"metric\"><span class=\"muted\">Health status</span><strong id=\"metric-health\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Admin status</span><strong id=\"metric-admin\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview users</span><strong id=\"metric-users\">pending</strong></div><div class=\"metric\"><span class=\"muted\">Overview storage</span><strong id=\"metric-storage\">pending</strong></div></div></div><div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\"><li><span>Quota API</span><span>")
 	builder.WriteString(htmlEscape(opts.APIPrefix))
 	builder.WriteString("/quota</span></li><li><span>Billing webhook</span><span>")
 	builder.WriteString(htmlEscape(opts.APIPrefix))
@@ -143,6 +143,8 @@ const adminPath=%s;
 const banner=document.getElementById("status-banner");
 const healthMetric=document.getElementById("metric-health");
 const adminMetric=document.getElementById("metric-admin");
+const usersMetric=document.getElementById("metric-users");
+const storageMetric=document.getElementById("metric-storage");
 
 function setCheck(name,state,text){
 	const node=document.querySelector('[data-check="'+name+'"]');
@@ -173,6 +175,7 @@ async function probe(){
 		{name:'meta',url:'/api/meta/web',ok:[200]},
 		{name:'health',url:'/healthz',ok:[200]},
 		{name:'ready',url:'/readyz',ok:[200,503]},
+		{name:'overview',url:'/api/meta/overview',ok:[200]},
 		{name:'admin',url:adminPath+'/stats',ok:[200,401,403]},
 	];
 
@@ -196,6 +199,17 @@ async function probe(){
 				adminMetric.textContent=label;
 			}
 
+			if(check.name==='overview'){
+				try{
+					const body=await response.clone().json();
+					usersMetric.textContent=String(body.summary.total_users);
+					storageMetric.textContent=String(body.summary.total_storage_bytes);
+				}catch(_err){
+					usersMetric.textContent='unavailable';
+					storageMetric.textContent='unavailable';
+				}
+			}
+
 			if(check.name==='ready'&&response.status===503){
 				setBanner('Readiness probe reports degraded or unhealthy dependencies. Review database, redis, or blob storage connectivity.');
 			}
@@ -206,6 +220,10 @@ async function probe(){
 			}
 			if(check.name==='admin'){
 				adminMetric.textContent='unreachable';
+			}
+			if(check.name==='overview'){
+				usersMetric.textContent='offline';
+				storageMetric.textContent='offline';
 			}
 			setBanner('At least one runtime probe failed. Inspect server logs and infrastructure dependencies.');
 		}

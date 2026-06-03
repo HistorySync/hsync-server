@@ -95,6 +95,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// ── WebSocket ────────────────────────────────────────
 	app.Get("/ws/push", h.WebSocketUpgrade)
+	app.Get("/api/meta/overview", h.WebOverview)
 
 	// ── Admin ────────────────────────────────────────────
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
@@ -152,6 +153,107 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 	}
 
 	return c.Status(code).JSON(fiber.Map{"status": status, "checks": checks})
+}
+
+func (h *Handlers) WebOverview(c fiber.Ctx) error {
+	ctx, cancel := context.WithTimeout(c.Context(), 3*time.Second)
+	defer cancel()
+
+	status := "ok"
+	checks := fiber.Map{}
+
+	if h.deps.DB == nil {
+		status = "degraded"
+		checks["database"] = "not_configured"
+	} else if err := h.deps.DB.Ping(ctx); err != nil {
+		status = "unhealthy"
+		checks["database"] = "error: " + err.Error()
+	} else {
+		checks["database"] = "ok"
+	}
+
+	if h.deps.Redis == nil {
+		checks["redis"] = "disabled"
+	} else if err := h.deps.Redis.Ping(ctx).Err(); err != nil {
+		if status == "ok" {
+			status = "degraded"
+		}
+		checks["redis"] = "error: " + err.Error()
+	} else {
+		checks["redis"] = "ok"
+	}
+
+	if h.deps.BlobStore == nil {
+		status = "unhealthy"
+		checks["storage"] = "not_configured"
+	} else if _, err := h.deps.BlobStore.List(ctx, ""); err != nil {
+		status = "unhealthy"
+		checks["storage"] = "error: " + err.Error()
+	} else {
+		checks["storage"] = "ok"
+	}
+
+	bundleCount, err := h.deps.Services.Repos.Bundles.CountAll(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to count bundles")
+	}
+	snapshotCount, err := h.deps.Services.Repos.Snapshots.CountAll(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to count snapshots")
+	}
+	totalBundleBytes, err := h.deps.Services.Repos.Bundles.SumSizeAll(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to sum bundle bytes")
+	}
+	totalSnapshotBytes, err := h.deps.Services.Repos.Snapshots.SumSizeAll(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to sum snapshot bytes")
+	}
+	activeDevices, err := h.deps.Services.Repos.Devices.CountActive(ctx)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to count active devices")
+	}
+	users, err := h.deps.Services.Repos.Users.List(ctx, 200, 0)
+	if err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, "failed to list users")
+	}
+
+	tierDistribution := map[string]int{
+		"free":       0,
+		"pro":        0,
+		"team":       0,
+		"enterprise": 0,
+	}
+	statusDistribution := map[string]int{}
+	for _, user := range users {
+		tierDistribution[string(user.Tier)]++
+		statusDistribution[string(user.Status)]++
+	}
+
+	return c.JSON(fiber.Map{
+		"status": status,
+		"checks": checks,
+		"summary": fiber.Map{
+			"total_users":            len(users),
+			"active_devices":         activeDevices,
+			"total_bundles":          bundleCount,
+			"total_snapshots":        snapshotCount,
+			"total_storage_bytes":    totalBundleBytes + totalSnapshotBytes,
+			"bundle_storage_bytes":   totalBundleBytes,
+			"snapshot_storage_bytes": totalSnapshotBytes,
+		},
+		"distribution": fiber.Map{
+			"tiers":    tierDistribution,
+			"statuses": statusDistribution,
+		},
+		"routes": fiber.Map{
+			"health":    "/healthz",
+			"readiness": "/readyz",
+			"meta":      "/api/meta/web",
+			"quota":     "/api/v1/quota",
+			"admin":     "/admin/stats",
+		},
+	})
 }
 
 func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {

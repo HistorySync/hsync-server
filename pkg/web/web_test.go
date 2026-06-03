@@ -102,4 +102,7 @@ func TestLandingPageIncludesRuntimeShell(t *testing.T) {
 	if !strings.Contains(body, "runtime-checks") {
 		t.Fatal("landing page missing runtime checks list")
 	}
+	if !strings.Contains(body, "/api/meta/overview") {
+		t.Fatal("landing page missing overview api reference")
+	}
 }

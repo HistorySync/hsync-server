@@ -25,3 +25,5 @@ vendor/
 
 # Claude Code
 CLAUDE.md
+.codex
+AGENTS.md

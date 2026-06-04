@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/spf13/viper"
@@ -54,6 +55,10 @@ type Config struct {
 	OIDCClientSecret string `mapstructure:"oidc_client_secret"`
 	OIDCRedirectURL  string `mapstructure:"oidc_redirect_url"`
 	OIDCScopes       string `mapstructure:"oidc_scopes"`
+
+	// Background tasks
+	BackgroundTasksEnabled bool          `mapstructure:"background_tasks_enabled"`
+	QuotaReconcileInterval time.Duration `mapstructure:"quota_reconcile_interval"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -73,6 +78,9 @@ func DefaultConfig() *Config {
 		StripeDisabled:  true,
 		OIDCProviderID:  "default",
 		OIDCScopes:      "openid profile email",
+
+		BackgroundTasksEnabled: true,
+		QuotaReconcileInterval: 24 * time.Hour,
 	}
 }
 
@@ -135,6 +143,8 @@ func load() (*Config, error) {
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
 	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
 	v.SetDefault("oidc_scopes", cfg.OIDCScopes)
+	v.SetDefault("background_tasks_enabled", cfg.BackgroundTasksEnabled)
+	v.SetDefault("quota_reconcile_interval", cfg.QuotaReconcileInterval)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {

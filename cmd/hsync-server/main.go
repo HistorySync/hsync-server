@@ -20,6 +20,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/handler"
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/repository"
+	"github.com/historysync/hsync-server/pkg/scheduler"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
 	"github.com/historysync/hsync-server/pkg/web"
@@ -121,6 +122,31 @@ func main() {
 	hub := ws.NewHub(repos.Devices)
 	go hub.Run()
 
+	// ── Background Scheduler ──────────────────────────────────
+	// Periodic maintenance tasks run on a single instance at a time (leader
+	// elected via a Postgres advisory lock) and stop on shutdown via bgCtx.
+	if cfg.BackgroundTasksEnabled {
+		sched := scheduler.New(pgPool, log.Logger,
+			scheduler.Task{
+				Name:     "quota-reconcile",
+				LockKey:  scheduler.LockQuotaReconcile,
+				Interval: cfg.QuotaReconcileInterval,
+				Run: func(ctx context.Context) error {
+					n, err := svcs.Quota.RecalculateAllUsage(ctx)
+					if err != nil {
+						return err
+					}
+					log.Info().Int64("users", n).Msg("quota usage reconciled")
+					return nil
+				},
+			},
+		)
+		go sched.Run(bgCtx)
+		log.Info().Msg("background scheduler started")
+	} else {
+		log.Info().Msg("background tasks disabled")
+	}
+
 	// ── HTTP Handlers ─────────────────────────────────────────
 	h := handler.New(handler.Deps{
 		Services:     svcs,
@@ -163,6 +189,10 @@ func main() {
 	go func() {
 		sig := <-quit
 		log.Info().Str("signal", sig.String()).Msg("shutting down")
+
+		// Stop background workers (scheduler, in-memory limiter) before draining
+		// HTTP and closing the pool they depend on.
+		bgCancel()
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer shutdownCancel()

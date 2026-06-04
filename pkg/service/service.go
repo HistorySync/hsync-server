@@ -174,7 +174,6 @@ func New(deps Deps) *Services {
 	snapshotSvc := &SnapshotService{
 		repos:       deps.Repos,
 		blobStore:   deps.BlobStore,
-		quota:       quotaSvc,
 		reservation: deps.Reservation,
 	}
 	billingSvc := &BillingService{
@@ -631,10 +630,6 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 	defer guard.release(ctx)
 
-	// storageLimit holds the user's storage cap from the CE pre-check so the
-	// atomic reservation below can re-enforce it without another lookup.
-	var storageLimit int64
-
 	// Check bundle ID uniqueness
 	exists, err := s.repos.Bundles.ExistsByID(ctx, input.BundleID)
 	if err != nil {
@@ -656,20 +651,33 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		return nil, ErrDeviceRevoked
 	}
 
+	// CE quota enforcement: atomically reserve storage before writing the blob,
+	// so an over-quota upload is rejected without ever touching S3. The
+	// conditional UPDATE in TryAddBundleUsage is the single authoritative,
+	// race-safe check. (EE reserved capacity through the hook above and settles
+	// below.) Trade-off: usage is counted before the metadata row exists, so a
+	// crash before Create over-counts the user by one bundle until usage is
+	// recomputed -- bounded, and preferred over writing the blob then racing.
 	if !guard.active() {
-		// Pre-check quota before storing the blob (fast rejection). The
-		// authoritative, race-safe enforcement happens in TryAddBundleUsage
-		// below, reusing the limit returned here.
-		limit, err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes)
+		storageLimit, err := s.quota.StorageLimit(ctx, userID)
 		if err != nil {
 			return nil, err
 		}
-		storageLimit = limit
+		ok, err := s.repos.Quota.TryAddBundleUsage(ctx, userID, input.SizeBytes, storageLimit)
+		if err != nil {
+			return nil, fmt.Errorf("reserve bundle quota: %w", err)
+		}
+		if !ok {
+			return nil, ErrQuotaExceeded
+		}
 	}
 
 	// Store the blob
 	key := storage.BundleKey(userID.String(), input.BundleID)
 	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
+		}
 		return nil, fmt.Errorf("store bundle: %w", err)
 	}
 
@@ -687,28 +695,19 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 
 	if err := s.repos.Bundles.Create(ctx, meta); err != nil {
-		// Rollback: delete the uploaded blob
+		// Rollback: delete the uploaded blob and release the reservation.
 		_ = s.blobStore.Delete(ctx, key)
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
+		}
 		return nil, fmt.Errorf("create bundle meta: %w", err)
 	}
+
 	if guard.active() {
 		if err := guard.settle(ctx, input.SizeBytes); err != nil {
 			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle bundle reservation: %w", err)
-		}
-	} else {
-		ok, err := s.repos.Quota.TryAddBundleUsage(ctx, userID, input.SizeBytes, storageLimit)
-		if err != nil {
-			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
-			_ = s.blobStore.Delete(ctx, key)
-			return nil, fmt.Errorf("update bundle quota usage: %w", err)
-		}
-		if !ok {
-			// Lost a concurrent race that pushed usage over the limit; undo the write.
-			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
-			_ = s.blobStore.Delete(ctx, key)
-			return nil, ErrQuotaExceeded
 		}
 	}
 
@@ -765,7 +764,6 @@ func (s *BundleService) DeleteBundle(ctx context.Context, userID uuid.UUID, bund
 type SnapshotService struct {
 	repos       *repository.Repos
 	blobStore   storage.BlobStorage
-	quota       *QuotaService
 	reservation UsageReservationHook
 }
 
@@ -795,12 +793,6 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 	}
 	defer guard.release(ctx)
 
-	if !guard.active() {
-		if _, err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
-			return nil, err
-		}
-	}
-
 	count, err := s.repos.Snapshots.CountByUser(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("count snapshots: %w", err)
@@ -825,8 +817,25 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		}
 	}
 
+	// CE quota enforcement: atomically reserve storage after pruning (so freed
+	// space counts) and before writing the blob, rejecting an over-quota upload
+	// without touching S3. See UploadBundle for the crash-window trade-off. (EE
+	// reserved via the hook above and settles below.)
+	if !guard.active() {
+		ok, err := s.repos.Quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
+		if err != nil {
+			return nil, fmt.Errorf("reserve snapshot quota: %w", err)
+		}
+		if !ok {
+			return nil, ErrQuotaExceeded
+		}
+	}
+
 	key := storage.SnapshotKey(userID.String(), input.SnapshotID)
 	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+		}
 		return nil, fmt.Errorf("store snapshot: %w", err)
 	}
 
@@ -840,26 +849,17 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 	}
 	if err := s.repos.Snapshots.Create(ctx, meta); err != nil {
 		_ = s.blobStore.Delete(ctx, key)
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+		}
 		return nil, fmt.Errorf("create snapshot meta: %w", err)
 	}
+
 	if guard.active() {
 		if err := guard.settle(ctx, input.SizeBytes); err != nil {
 			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle snapshot reservation: %w", err)
-		}
-	} else {
-		ok, err := s.repos.Quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
-		if err != nil {
-			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
-			_ = s.blobStore.Delete(ctx, key)
-			return nil, fmt.Errorf("update snapshot quota usage: %w", err)
-		}
-		if !ok {
-			// Lost a concurrent race that pushed usage over the limit; undo the write.
-			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
-			_ = s.blobStore.Delete(ctx, key)
-			return nil, ErrQuotaExceeded
 		}
 	}
 
@@ -948,15 +948,10 @@ func (s *QuotaService) GetQuota(ctx context.Context, userID uuid.UUID, tier mode
 	}, nil
 }
 
-// CheckStorageQuota verifies the user has enough storage remaining and returns
-// the user's storage limit so callers can reuse it for the atomic, race-safe
-// reservation in repository.TryAdd*Usage.
-func (s *QuotaService) CheckStorageQuota(ctx context.Context, userID uuid.UUID, additionalBytes int64) (int64, error) {
-	usage, err := s.repos.Quota.GetUsage(ctx, userID)
-	if err != nil {
-		return 0, fmt.Errorf("get usage: %w", err)
-	}
-
+// StorageLimit returns the user's storage cap in bytes, derived from their
+// current tier. Upload paths pass it to repository.TryAdd*Usage, whose atomic
+// conditional UPDATE is the single authoritative, race-safe quota check.
+func (s *QuotaService) StorageLimit(ctx context.Context, userID uuid.UUID) (int64, error) {
 	user, err := s.repos.Users.GetByID(ctx, userID)
 	if err != nil {
 		return 0, fmt.Errorf("get user: %w", err)
@@ -964,21 +959,7 @@ func (s *QuotaService) CheckStorageQuota(ctx context.Context, userID uuid.UUID, 
 	if user == nil {
 		return 0, ErrUserNotFound
 	}
-
-	limits := model.TierLimits(user.Tier)
-
-	if quotaExceeded(usage.TotalBytes, additionalBytes, limits.StorageLimitBytes) {
-		return limits.StorageLimitBytes, ErrQuotaExceeded
-	}
-
-	return limits.StorageLimitBytes, nil
-}
-
-// quotaExceeded reports whether adding additional bytes to used would exceed
-// limit. The repository TryAdd*Usage methods enforce the same invariant
-// atomically in SQL ("used + additional <= limit").
-func quotaExceeded(used, additional, limit int64) bool {
-	return used+additional > limit
+	return model.TierLimits(user.Tier).StorageLimitBytes, nil
 }
 
 // CheckDeviceLimit verifies the user can register more devices.

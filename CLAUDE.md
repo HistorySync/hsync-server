@@ -114,6 +114,7 @@ configs/                   # Example and environment-specific configs
 - Preferred commit types are `feat`, `fix`, `perf`, `refactor`, `docs`, `chore`, `build`, `ci`, `test`, and `style`.
 - Keep commit scopes lowercase and aligned with the touched area, such as `auth`, `handler`, `service`, `repository`, `storage`, `ws`, `config`, `docker`, `migrations`, or `tests`.
 - Write commit subjects in imperative mood, with a lowercase first letter and no trailing period.
+- Do not add `Co-Authored-By` trailers or any other co-authorship attribution to commit messages.
 
 ## Go And Fiber Notes
 

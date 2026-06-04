@@ -1,0 +1,63 @@
+# Normalize line endings: store text as LF in the repository and check it out
+# as LF on every platform. Keeps Go tooling, gofmt, Makefiles, shell scripts,
+# and Docker builds consistent and avoids CRLF churn on Windows checkouts.
+* text=auto eol=lf
+
+# Go sources and module files
+*.go        text eol=lf diff=golang
+go.mod      text eol=lf
+go.sum      text eol=lf linguist-generated=true
+go.work     text eol=lf
+go.work.sum text eol=lf linguist-generated=true
+
+# Shell and Unix scripts must stay LF
+*.sh        text eol=lf
+*.bash      text eol=lf
+
+# Windows scripts must stay CRLF
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+*.ps1       text eol=crlf
+
+# Build and tooling
+Makefile     text eol=lf
+*.mk         text eol=lf
+Dockerfile   text eol=lf
+*.dockerfile text eol=lf
+
+# Config
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.ini       text eol=lf
+*.env       text eol=lf
+
+# Docs and data
+*.md        text eol=lf
+*.txt       text eol=lf
+*.sql       text eol=lf linguist-detectable=true
+*.svg       text eol=lf
+
+# Binary assets: never normalize or diff as text
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.webp      binary
+*.pdf       binary
+*.gz        binary
+*.zip       binary
+*.tar       binary
+*.7z        binary
+*.exe       binary
+*.dll       binary
+*.so        binary
+*.dylib     binary
+
+# Go golden test fixtures: preserve exact bytes
+*.golden    -text
+
+# GitHub Linguist: keep vendored code out of language stats
+vendor/**   linguist-vendored

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/historysync/hsync-server/pkg/apierrors"
+
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,6 +151,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)
+	admin.Get("/error-codes", h.AdminErrorCodes)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -258,27 +261,27 @@ func (h *Handlers) WebOverview(c fiber.Ctx) error {
 
 	bundleCount, err := h.deps.Services.Repos.Bundles.CountAll(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to count bundles")
+		return apierrors.NewInternal("failed to count bundles")
 	}
 	snapshotCount, err := h.deps.Services.Repos.Snapshots.CountAll(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to count snapshots")
+		return apierrors.NewInternal("failed to count snapshots")
 	}
 	totalBundleBytes, err := h.deps.Services.Repos.Bundles.SumSizeAll(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to sum bundle bytes")
+		return apierrors.NewInternal("failed to sum bundle bytes")
 	}
 	totalSnapshotBytes, err := h.deps.Services.Repos.Snapshots.SumSizeAll(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to sum snapshot bytes")
+		return apierrors.NewInternal("failed to sum snapshot bytes")
 	}
 	activeDevices, err := h.deps.Services.Repos.Devices.CountActive(ctx)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to count active devices")
+		return apierrors.NewInternal("failed to count active devices")
 	}
 	users, err := h.deps.Services.Repos.Users.List(ctx, 200, 0)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to list users")
+		return apierrors.NewInternal("failed to list users")
 	}
 
 	tierDistribution := map[string]int{
@@ -321,15 +324,15 @@ func (h *Handlers) WebOverview(c fiber.Ctx) error {
 
 func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
-	errCode := "INTERNAL_ERROR"
+	errCode := string(apierrors.CodeInternalError)
 	message := err.Error()
 
 	if e, ok := err.(*fiber.Error); ok {
 		code = e.Code
 	}
-	if fe, ok := err.(*fiberError); ok {
-		code = fe.Code
-		errCode = fe.ErrCode
+	if fe, ok := err.(*apierrors.Error); ok {
+		code = fe.HTTPStatus
+		errCode = string(fe.Code)
 	}
 
 	return c.Status(code).JSON(fiber.Map{
@@ -341,22 +344,10 @@ func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {
 	})
 }
 
-type fiberError struct {
-	Code    int
-	ErrCode string
-	Message string
-}
-
-func (e *fiberError) Error() string { return e.Message }
-
-func newError(code int, errCode, message string) *fiberError {
-	return &fiberError{Code: code, ErrCode: errCode, Message: message}
-}
-
 func requiredFormValue(form map[string][]string, name string) (string, error) {
 	values := form[name]
 	if len(values) == 0 || values[0] == "" {
-		return "", fiber.NewError(fiber.StatusBadRequest, "missing '"+name+"' field")
+		return "", apierrors.NewBadRequest("missing '" + name + "' field")
 	}
 	return values[0], nil
 }
@@ -368,7 +359,7 @@ func parseFormUUID(form map[string][]string, name string) (uuid.UUID, error) {
 	}
 	id, err := uuid.Parse(raw)
 	if err != nil {
-		return uuid.Nil, fiber.NewError(fiber.StatusBadRequest, "invalid '"+name+"' field")
+		return uuid.Nil, apierrors.NewBadRequest("invalid '" + name + "' field")
 	}
 	return id, nil
 }
@@ -380,7 +371,7 @@ func parseFormInt(form map[string][]string, name string, bitSize int) (int64, er
 	}
 	value, err := strconv.ParseInt(raw, 10, bitSize)
 	if err != nil {
-		return 0, fiber.NewError(fiber.StatusBadRequest, "invalid '"+name+"' field")
+		return 0, apierrors.NewBadRequest("invalid '" + name + "' field")
 	}
 	return value, nil
 }
@@ -396,11 +387,11 @@ type registerRequest struct {
 func (h *Handlers) Register(c fiber.Ctx) error {
 	var req registerRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 
 	if req.Email == "" || req.Password == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "email and password are required")
+		return apierrors.NewBadRequest("email and password are required")
 	}
 
 	result, err := h.deps.Services.Auth.Register(c.Context(), service.RegisterInput{
@@ -410,9 +401,9 @@ func (h *Handlers) Register(c fiber.Ctx) error {
 	})
 	if err != nil {
 		if err == service.ErrEmailTaken {
-			return newError(fiber.StatusConflict, "EMAIL_TAKEN", err.Error())
+			return apierrors.New(apierrors.CodeEmailTaken, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -431,7 +422,7 @@ type loginRequest struct {
 func (h *Handlers) Login(c fiber.Ctx) error {
 	var req loginRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 
 	result, err := h.deps.Services.Auth.Login(c.Context(), service.LoginInput{
@@ -440,9 +431,9 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 	})
 	if err != nil {
 		if err == service.ErrInvalidCredentials {
-			return newError(fiber.StatusUnauthorized, "INVALID_CREDENTIALS", err.Error())
+			return apierrors.New(apierrors.CodeInvalidCredentials, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -469,12 +460,12 @@ type resetPasswordRequest struct {
 func (h *Handlers) RefreshToken(c fiber.Ctx) error {
 	var req refreshRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 
 	accessToken, err := h.deps.Services.Auth.RefreshAccessToken(c.Context(), req.RefreshToken)
 	if err != nil {
-		return newError(fiber.StatusUnauthorized, "INVALID_REFRESH_TOKEN", err.Error())
+		return apierrors.New(apierrors.CodeInvalidRefreshToken, err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -486,11 +477,11 @@ func (h *Handlers) RefreshToken(c fiber.Ctx) error {
 func (h *Handlers) Logout(c fiber.Ctx) error {
 	var req refreshRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 
 	if err := h.deps.Services.Auth.Logout(c.Context(), req.RefreshToken); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{"status": "ok"})
@@ -499,15 +490,15 @@ func (h *Handlers) Logout(c fiber.Ctx) error {
 func (h *Handlers) ForgotPassword(c fiber.Ctx) error {
 	var req forgotPasswordRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 	if req.Email == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "email is required")
+		return apierrors.NewBadRequest("email is required")
 	}
 
 	resetToken, err := h.deps.Services.Auth.StartPasswordReset(c.Context(), req.Email)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	resp := fiber.Map{"status": "ok"}
@@ -520,7 +511,7 @@ func (h *Handlers) ForgotPassword(c fiber.Ctx) error {
 func (h *Handlers) ResetPassword(c fiber.Ctx) error {
 	var req resetPasswordRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 
 	if err := h.deps.Services.Auth.ResetPassword(c.Context(), service.ResetPasswordInput{
@@ -529,11 +520,11 @@ func (h *Handlers) ResetPassword(c fiber.Ctx) error {
 	}); err != nil {
 		switch err {
 		case service.ErrResetTokenRequired, service.ErrNewPasswordRequired:
-			return fiber.NewError(fiber.StatusBadRequest, err.Error())
+			return apierrors.NewBadRequest(err.Error())
 		case service.ErrPasswordResetInvalid, service.ErrUserInactive:
-			return newError(fiber.StatusUnauthorized, "INVALID_RESET_TOKEN", err.Error())
+			return apierrors.New(apierrors.CodeInvalidResetToken, err.Error())
 		default:
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return apierrors.NewInternal(err.Error())
 		}
 	}
 
@@ -548,19 +539,19 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 	// Parse multipart form
 	form, err := c.MultipartForm()
 	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid multipart form")
+		return apierrors.NewBadRequest("invalid multipart form")
 	}
 
 	// Get the file
 	files := form.File["bundle"]
 	if len(files) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "missing 'bundle' file field")
+		return apierrors.NewBadRequest("missing 'bundle' file field")
 	}
 	file := files[0]
 
 	src, err := file.Open()
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to open uploaded file")
+		return apierrors.NewInternal("failed to open uploaded file")
 	}
 	defer src.Close()
 
@@ -611,17 +602,17 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 	if err != nil {
 		switch err {
 		case service.ErrBundleExists:
-			return newError(fiber.StatusConflict, "CONFLICT", err.Error())
+			return apierrors.New(apierrors.CodeConflict, err.Error())
 		case service.ErrQuotaExceeded:
-			return newError(507, "QUOTA_EXCEEDED", err.Error())
+			return apierrors.New(apierrors.CodeQuotaExceeded, err.Error())
 		case service.ErrReservationDenied:
-			return newError(fiber.StatusForbidden, "RESERVATION_DENIED", err.Error())
+			return apierrors.New(apierrors.CodeReservationDenied, err.Error())
 		case service.ErrDeviceRevoked:
-			return newError(fiber.StatusForbidden, "DEVICE_REVOKED", err.Error())
+			return apierrors.New(apierrors.CodeDeviceRevoked, err.Error())
 		case service.ErrDeviceNotRegistered:
-			return newError(fiber.StatusBadRequest, "DEVICE_NOT_REGISTERED", err.Error())
+			return apierrors.New(apierrors.CodeDeviceNotRegistered, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	// Broadcast to user's other devices via WebSocket
@@ -662,7 +653,7 @@ func (h *Handlers) ListBundles(c fiber.Ctx) error {
 
 	bundles, err := h.deps.Services.Bundle.ListBundles(c.Context(), userID, deviceUUID, afterLamport, cursor, limit)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	nextCursor := ""
@@ -683,9 +674,9 @@ func (h *Handlers) DownloadBundle(c fiber.Ctx) error {
 	reader, meta, err := h.deps.Services.Bundle.DownloadBundle(c.Context(), userID, bundleID)
 	if err != nil {
 		if err == service.ErrBundleNotFound {
-			return newError(fiber.StatusNotFound, "NOT_FOUND", "bundle not found")
+			return apierrors.New(apierrors.CodeNotFound, "bundle not found")
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	defer reader.Close()
 
@@ -702,9 +693,9 @@ func (h *Handlers) DeleteBundle(c fiber.Ctx) error {
 
 	if err := h.deps.Services.Bundle.DeleteBundle(c.Context(), userID, bundleID); err != nil {
 		if err == service.ErrBundleNotFound {
-			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+			return apierrors.New(apierrors.CodeNotFound, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{"status": "deleted"})
@@ -717,20 +708,20 @@ func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
 
 	form, err := c.MultipartForm()
 	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid multipart form")
+		return apierrors.NewBadRequest("invalid multipart form")
 	}
 	files := form.File["snapshot"]
 	if len(files) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "missing 'snapshot' file field")
+		return apierrors.NewBadRequest("missing 'snapshot' file field")
 	}
 	file := files[0]
 	if len(form.Value["snapshot_id"]) == 0 || len(form.Value["base_hlc"]) == 0 || len(form.Value["cipher_id"]) == 0 || len(form.Value["key_generation"]) == 0 {
-		return fiber.NewError(fiber.StatusBadRequest, "missing snapshot metadata fields")
+		return apierrors.NewBadRequest("missing snapshot metadata fields")
 	}
 
 	src, err := file.Open()
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, "failed to open uploaded file")
+		return apierrors.NewInternal("failed to open uploaded file")
 	}
 	defer src.Close()
 
@@ -764,15 +755,15 @@ func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
 	})
 	if err != nil {
 		if err == service.ErrReservationDenied {
-			return newError(fiber.StatusForbidden, "RESERVATION_DENIED", err.Error())
+			return apierrors.New(apierrors.CodeReservationDenied, err.Error())
 		}
 		if err == service.ErrQuotaExceeded {
-			return newError(507, "QUOTA_EXCEEDED", err.Error())
+			return apierrors.New(apierrors.CodeQuotaExceeded, err.Error())
 		}
 		if err == service.ErrUserNotFound {
-			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+			return apierrors.New(apierrors.CodeNotFound, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	msg := ws.PushMessage{
@@ -794,10 +785,10 @@ func (h *Handlers) GetLatestSnapshot(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 	snapshot, err := h.deps.Services.Repos.Snapshots.GetLatest(c.Context(), userID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	if snapshot == nil {
-		return newError(fiber.StatusNotFound, "NOT_FOUND", "no snapshot found")
+		return apierrors.New(apierrors.CodeNotFound, "no snapshot found")
 	}
 	return c.JSON(snapshot)
 }
@@ -809,9 +800,9 @@ func (h *Handlers) DownloadSnapshot(c fiber.Ctx) error {
 	reader, meta, err := h.deps.Services.Snapshot.DownloadSnapshot(c.Context(), userID, snapshotID)
 	if err != nil {
 		if err == service.ErrSnapshotNotFound {
-			return newError(fiber.StatusNotFound, "NOT_FOUND", "snapshot not found")
+			return apierrors.New(apierrors.CodeNotFound, "snapshot not found")
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	defer reader.Close()
 
@@ -827,7 +818,7 @@ func (h *Handlers) ListDevices(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 	devices, err := h.deps.Services.Repos.Devices.ListByUser(c.Context(), userID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	if devices == nil {
 		devices = []model.Device{}
@@ -839,17 +830,17 @@ func (h *Handlers) RevokeDevice(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 	deviceUUID, err := uuid.Parse(c.Params("uuid"))
 	if err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid device uuid")
+		return apierrors.NewBadRequest("invalid device uuid")
 	}
 
 	if err := h.deps.Services.Auth.RevokeDevice(c.Context(), userID, deviceUUID); err != nil {
 		switch err {
 		case service.ErrDeviceNotFound:
-			return newError(fiber.StatusNotFound, "NOT_FOUND", err.Error())
+			return apierrors.New(apierrors.CodeNotFound, err.Error())
 		case service.ErrDeviceAlreadyRevoked:
-			return newError(fiber.StatusConflict, "DEVICE_REVOKED", err.Error())
+			return apierrors.New(apierrors.CodeDeviceRevoked, err.Error())
 		default:
-			return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+			return apierrors.NewInternal(err.Error())
 		}
 	}
 
@@ -871,7 +862,7 @@ func (h *Handlers) ListRevocations(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 	revs, err := h.deps.Services.Auth.ListRevocations(c.Context(), userID)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(fiber.Map{"revocations": revs})
 }
@@ -884,7 +875,7 @@ func (h *Handlers) GetQuota(c fiber.Ctx) error {
 
 	info, err := h.deps.Services.Quota.GetQuota(c.Context(), userID, model.UserTier(tierStr))
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	storageUsagePercent := 0.0
@@ -920,21 +911,21 @@ func (h *Handlers) CreateCheckout(c fiber.Ctx) error {
 		PriceID string `json:"price_id"`
 	}
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return fiber.NewError(fiber.StatusBadRequest, "invalid request body")
+		return apierrors.NewBadRequest("invalid request body")
 	}
 	if req.PriceID == "" {
-		return fiber.NewError(fiber.StatusBadRequest, "price_id is required")
+		return apierrors.NewBadRequest("price_id is required")
 	}
 
 	url, err := h.deps.Services.Billing.CreateCheckoutSession(c.Context(), userID, req.PriceID)
 	if err != nil {
 		if err == service.ErrStripeDisabled {
-			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+			return apierrors.New(apierrors.CodeBillingDisabled, err.Error())
 		}
 		if err == service.ErrBillingNotSupported {
-			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+			return apierrors.New(apierrors.CodeNotImplemented, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{"checkout_url": url})
@@ -945,12 +936,12 @@ func (h *Handlers) CreatePortalSession(c fiber.Ctx) error {
 	url, err := h.deps.Services.Billing.CreatePortalSession(c.Context(), userID)
 	if err != nil {
 		if err == service.ErrStripeDisabled {
-			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+			return apierrors.New(apierrors.CodeBillingDisabled, err.Error())
 		}
 		if err == service.ErrBillingNotSupported {
-			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+			return apierrors.New(apierrors.CodeNotImplemented, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(fiber.Map{"portal_url": url})
 }
@@ -960,9 +951,9 @@ func (h *Handlers) GetSubscription(c fiber.Ctx) error {
 	result, err := h.deps.Services.Billing.GetSubscription(c.Context(), userID)
 	if err != nil {
 		if err == service.ErrStripeDisabled {
-			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+			return apierrors.New(apierrors.CodeBillingDisabled, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(result)
 }
@@ -972,12 +963,12 @@ func (h *Handlers) ListInvoices(c fiber.Ctx) error {
 	invoices, err := h.deps.Services.Billing.ListInvoices(c.Context(), userID)
 	if err != nil {
 		if err == service.ErrStripeDisabled {
-			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+			return apierrors.New(apierrors.CodeBillingDisabled, err.Error())
 		}
 		if err == service.ErrBillingNotSupported {
-			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+			return apierrors.New(apierrors.CodeNotImplemented, err.Error())
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(fiber.Map{"invoices": invoices})
 }
@@ -985,12 +976,12 @@ func (h *Handlers) ListInvoices(c fiber.Ctx) error {
 func (h *Handlers) StripeWebhook(c fiber.Ctx) error {
 	if err := h.deps.Services.Billing.HandleWebhook(c.Context(), c.Body(), c.Get("Stripe-Signature")); err != nil {
 		if err == service.ErrStripeDisabled {
-			return newError(fiber.StatusServiceUnavailable, "BILLING_DISABLED", err.Error())
+			return apierrors.New(apierrors.CodeBillingDisabled, err.Error())
 		}
 		if err == service.ErrBillingNotSupported {
-			return fiber.NewError(fiber.StatusNotImplemented, err.Error())
+			return apierrors.New(apierrors.CodeNotImplemented, err.Error())
 		}
-		return fiber.NewError(fiber.StatusBadRequest, err.Error())
+		return apierrors.NewBadRequest(err.Error())
 	}
 	return c.JSON(fiber.Map{"status": "ok"})
 }
@@ -1015,14 +1006,14 @@ func (h *Handlers) AdminListUsers(c fiber.Ctx) error {
 
 	users, err := h.deps.Services.Repos.Users.List(c.Context(), limit, offset)
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	if users == nil {
 		users = []model.User{}
 	}
 	total, err := h.deps.Services.Repos.Users.Count(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -1036,31 +1027,31 @@ func (h *Handlers) AdminListUsers(c fiber.Ctx) error {
 func (h *Handlers) AdminStats(c fiber.Ctx) error {
 	userCount, err := h.deps.Services.Repos.Users.Count(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	usersByStatus, err := h.deps.Services.Repos.Users.CountByStatus(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	deviceCount, err := h.deps.Services.Repos.Devices.CountActive(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	bundleCount, err := h.deps.Services.Repos.Bundles.CountAll(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	bundleBytes, err := h.deps.Services.Repos.Bundles.SumSizeAll(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	snapshotCount, err := h.deps.Services.Repos.Snapshots.CountAll(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	snapshotBytes, err := h.deps.Services.Repos.Snapshots.SumSizeAll(c.Context())
 	if err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -1095,15 +1086,15 @@ func (h *Handlers) AdminStats(c fiber.Ctx) error {
 func (h *Handlers) AdminRecalculateQuota(c fiber.Ctx) error {
 	userID, err := uuid.Parse(c.Params("id"))
 	if err != nil {
-		return newError(fiber.StatusBadRequest, "INVALID_USER_ID", "invalid user id")
+		return apierrors.New(apierrors.CodeInvalidUserID, "invalid user id")
 	}
 
 	result, err := h.deps.Services.Quota.RecalculateUsage(c.Context(), userID)
 	if err != nil {
 		if err == service.ErrUserNotFound {
-			return newError(fiber.StatusNotFound, "USER_NOT_FOUND", "user not found")
+			return apierrors.New(apierrors.CodeUserNotFound, "user not found")
 		}
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -1132,22 +1123,27 @@ type setOptionRequest struct {
 // not configured it returns 501 Not Implemented.
 func (h *Handlers) AdminSetOption(c fiber.Ctx) error {
 	if h.deps.OptionStore == nil {
-		return newError(fiber.StatusNotImplemented, "OPTIONS_DISABLED",
-			"runtime options are not configured; set options_file in config")
+		return apierrors.New(apierrors.CodeOptionsDisabled, "runtime options are not configured; set options_file in config")
 	}
 	key := c.Params("key")
 	if key == "" {
-		return newError(fiber.StatusBadRequest, "MISSING_KEY", "option key is required")
+		return apierrors.New(apierrors.CodeMissingKey, "option key is required")
 	}
 
 	var req setOptionRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
-		return newError(fiber.StatusBadRequest, "INVALID_JSON",
-			"request body must be a JSON object with a \"value\" field")
+		return apierrors.New(apierrors.CodeInvalidJSON, "request body must be a JSON object with a \"value\" field")
 	}
 
 	if err := h.deps.OptionStore.Set(key, req.Value); err != nil {
-		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(fiber.Map{"key": key, "value": req.Value})
+}
+
+// AdminErrorCodes returns the full catalog of registered API error codes as a
+// reference document for client developers. Each entry includes the code string,
+// default HTTP status, and the English fallback message.
+func (h *Handlers) AdminErrorCodes(c fiber.Ctx) error {
+	return c.JSON(fiber.Map{"error_codes": apierrors.All()})
 }

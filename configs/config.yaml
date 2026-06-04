@@ -53,3 +53,8 @@ quota_reconcile_interval: "24h"
 retention_cleanup_interval: "0"
 retention_grace_period: "720h"  # 30 days; only purge bundles soft-deleted longer ago than this
 retention_dry_run: true
+
+# Dynamic runtime options file. When set, the server reads key=value pairs from
+# this YAML file on startup and exposes GET/PUT /admin/options at runtime so an
+# operator can change select settings without restarting. Leave empty to disable.
+# options_file: "configs/options.yaml"

@@ -122,6 +122,17 @@ func main() {
 	hub := ws.NewHub(repos.Devices)
 	go hub.Run()
 
+	// ── Dynamic Options ──────────────────────────────────────
+	var optionStore config.OptionStore
+	if cfg.OptionsFile != "" {
+		var err error
+		optionStore, err = config.NewFileOptionStore(cfg.OptionsFile)
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to open option store")
+		}
+		log.Info().Str("path", cfg.OptionsFile).Msg("dynamic options loaded")
+	}
+
 	// ── Background Scheduler ──────────────────────────────────
 	// Periodic maintenance tasks run on a single instance at a time (leader
 	// elected via a Postgres advisory lock) and stop on shutdown via bgCtx.
@@ -202,6 +213,7 @@ func main() {
 		BlobStore:    blobStore,
 		AdminKey:     cfg.AdminKey,
 		RateLimiter:  rateLimiter,
+		OptionStore:  optionStore,
 	})
 
 	// ── Fiber App ─────────────────────────────────────────────

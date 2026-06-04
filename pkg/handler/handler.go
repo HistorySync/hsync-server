@@ -18,6 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/provider"
@@ -36,6 +37,7 @@ type Deps struct {
 	BlobStore    storage.BlobStorage
 	AdminKey     string
 	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
+	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
 }
 
 // Handlers groups all HTTP handler instances.
@@ -145,6 +147,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/users", h.AdminListUsers)
 	admin.Get("/stats", h.AdminStats)
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
+	admin.Get("/options", h.AdminListOptions)
+	admin.Put("/options/:key", h.AdminSetOption)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -1107,4 +1111,43 @@ func (h *Handlers) AdminRecalculateQuota(c fiber.Ctx) error {
 		"before":  result.Before,
 		"after":   result.After,
 	})
+}
+
+// ── Dynamic Options ──────────────────────────────────────────
+
+// AdminListOptions returns all runtime-configurable key-value pairs. When the
+// OptionStore is not configured the response is an empty object.
+func (h *Handlers) AdminListOptions(c fiber.Ctx) error {
+	if h.deps.OptionStore == nil {
+		return c.JSON(fiber.Map{"options": fiber.Map{}})
+	}
+	return c.JSON(fiber.Map{"options": h.deps.OptionStore.All()})
+}
+
+type setOptionRequest struct {
+	Value string `json:"value"`
+}
+
+// AdminSetOption writes a runtime-configurable option. When the OptionStore is
+// not configured it returns 501 Not Implemented.
+func (h *Handlers) AdminSetOption(c fiber.Ctx) error {
+	if h.deps.OptionStore == nil {
+		return newError(fiber.StatusNotImplemented, "OPTIONS_DISABLED",
+			"runtime options are not configured; set options_file in config")
+	}
+	key := c.Params("key")
+	if key == "" {
+		return newError(fiber.StatusBadRequest, "MISSING_KEY", "option key is required")
+	}
+
+	var req setOptionRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return newError(fiber.StatusBadRequest, "INVALID_JSON",
+			"request body must be a JSON object with a \"value\" field")
+	}
+
+	if err := h.deps.OptionStore.Set(key, req.Value); err != nil {
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"key": key, "value": req.Value})
 }

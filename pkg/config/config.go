@@ -62,6 +62,9 @@ type Config struct {
 	RetentionCleanupInterval time.Duration `mapstructure:"retention_cleanup_interval"`
 	RetentionGracePeriod     time.Duration `mapstructure:"retention_grace_period"`
 	RetentionDryRun          bool          `mapstructure:"retention_dry_run"`
+
+	// Runtime options
+	OptionsFile string `mapstructure:"options_file"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -87,6 +90,7 @@ func DefaultConfig() *Config {
 		RetentionCleanupInterval: 0,
 		RetentionGracePeriod:     30 * 24 * time.Hour,
 		RetentionDryRun:          true,
+		OptionsFile:              "",
 	}
 }
 
@@ -154,6 +158,7 @@ func load() (*Config, error) {
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
+	v.SetDefault("options_file", cfg.OptionsFile)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {

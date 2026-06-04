@@ -5,6 +5,7 @@ package repository
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -840,8 +841,63 @@ type QuotaRepo struct {
 	redis *redis.Client
 }
 
-// GetUsage retrieves the current storage usage for a user.
+// quotaCacheTTL is how long a GetUsage result is cached in Redis. The cache is
+// read-through with write-invalidation, so a shorter TTL limits the window where
+// a stale entry survives a missed invalidation (e.g. during RecalculateAllUsage).
+const quotaCacheTTL = 30 * time.Second
+
+func quotaCacheKey(userID uuid.UUID) string {
+	return "quota:usage:" + userID.String()
+}
+
+// cacheUsage writes u into Redis with a short TTL. When redis is nil this is a
+// no-op. Errors are silent (best-effort cache); the authoritative source is PG.
+func (r *QuotaRepo) cacheUsage(ctx context.Context, u *model.QuotaUsage) {
+	if r.redis == nil {
+		return
+	}
+	data, err := json.Marshal(u)
+	if err != nil {
+		return
+	}
+	r.redis.Set(ctx, quotaCacheKey(u.UserID), data, quotaCacheTTL)
+}
+
+// invalidateUsageCache removes the cached usage for userID from Redis. When redis
+// is nil this is a no-op. Errors are silent; a stale cache entry expires naturally.
+func (r *QuotaRepo) invalidateUsageCache(ctx context.Context, userID uuid.UUID) {
+	if r.redis == nil {
+		return
+	}
+	r.redis.Del(ctx, quotaCacheKey(userID))
+}
+
+// getCachedUsage tries to read a cached QuotaUsage from Redis. It returns nil, nil
+// on a cache miss or when Redis is unavailable, so the caller falls through to PG.
+func (r *QuotaRepo) getCachedUsage(ctx context.Context, userID uuid.UUID) *model.QuotaUsage {
+	if r.redis == nil {
+		return nil
+	}
+	data, err := r.redis.Get(ctx, quotaCacheKey(userID)).Bytes()
+	if err != nil {
+		return nil
+	}
+	u := &model.QuotaUsage{}
+	if err := json.Unmarshal(data, u); err != nil {
+		return nil
+	}
+	return u
+}
+
+// GetUsage retrieves the current storage usage for a user. When Redis is
+// configured it serves as a read-through cache (short TTL, invalidated on every
+// write), reducing PostgreSQL reads for quota checks without weakening the
+// atomic conditional UPDATE that is the authoritative enforcement point.
 func (r *QuotaRepo) GetUsage(ctx context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
+	if cached := r.getCachedUsage(ctx, userID); cached != nil {
+		return cached, nil
+	}
+
 	const q = `
 		SELECT user_id, total_bytes, bundle_count, snap_count, updated_at
 		FROM storage_usage WHERE user_id = $1`
@@ -851,11 +907,14 @@ func (r *QuotaRepo) GetUsage(ctx context.Context, userID uuid.UUID) (*model.Quot
 		&u.UserID, &u.TotalBytes, &u.BundleCount, &u.SnapCount, &u.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
-		return &model.QuotaUsage{UserID: userID}, nil
+		empty := &model.QuotaUsage{UserID: userID}
+		r.cacheUsage(ctx, empty)
+		return empty, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get usage: %w", err)
 	}
+	r.cacheUsage(ctx, u)
 	return u, nil
 }
 
@@ -919,6 +978,7 @@ func (r *QuotaRepo) AddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBy
 	if err != nil {
 		return fmt.Errorf("add bundle usage: %w", err)
 	}
+	r.invalidateUsageCache(ctx, userID)
 	return nil
 }
 
@@ -945,7 +1005,11 @@ func (r *QuotaRepo) TryAddBundleUsage(ctx context.Context, userID uuid.UUID, siz
 	if err != nil {
 		return false, fmt.Errorf("add bundle usage: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	ok := tag.RowsAffected() == 1
+	if ok {
+		r.invalidateUsageCache(ctx, userID)
+	}
+	return ok, nil
 }
 
 // RemoveBundleUsage decrements storage usage counters for a deleted bundle.
@@ -960,6 +1024,7 @@ func (r *QuotaRepo) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, siz
 	if err != nil {
 		return fmt.Errorf("remove bundle usage: %w", err)
 	}
+	r.invalidateUsageCache(ctx, userID)
 	return nil
 }
 
@@ -976,6 +1041,7 @@ func (r *QuotaRepo) AddSnapshotUsage(ctx context.Context, userID uuid.UUID, size
 	if err != nil {
 		return fmt.Errorf("add snapshot usage: %w", err)
 	}
+	r.invalidateUsageCache(ctx, userID)
 	return nil
 }
 
@@ -997,7 +1063,11 @@ func (r *QuotaRepo) TryAddSnapshotUsage(ctx context.Context, userID uuid.UUID, s
 	if err != nil {
 		return false, fmt.Errorf("add snapshot usage: %w", err)
 	}
-	return tag.RowsAffected() == 1, nil
+	ok := tag.RowsAffected() == 1
+	if ok {
+		r.invalidateUsageCache(ctx, userID)
+	}
+	return ok, nil
 }
 
 // RemoveSnapshotUsage decrements storage usage counters for a deleted snapshot.
@@ -1012,6 +1082,7 @@ func (r *QuotaRepo) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, s
 	if err != nil {
 		return fmt.Errorf("remove snapshot usage: %w", err)
 	}
+	r.invalidateUsageCache(ctx, userID)
 	return nil
 }
 
@@ -1045,6 +1116,7 @@ func (r *QuotaRepo) RecalculateUsage(ctx context.Context, userID uuid.UUID) (*mo
 	); err != nil {
 		return nil, fmt.Errorf("recalculate usage: %w", err)
 	}
+	r.invalidateUsageCache(ctx, userID)
 	return u, nil
 }
 

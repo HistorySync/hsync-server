@@ -21,17 +21,17 @@ type fakeReservationHook struct {
 
 	lastReserveUserID uuid.UUID
 	lastReserveBytes  int64
-	lastReserveReason string
+	lastReserveReq    ReservationRequest
 	lastSettleID      string
 	lastSettleBytes   int64
 	lastReleaseID     string
 }
 
-func (f *fakeReservationHook) ReserveStorage(_ context.Context, userID uuid.UUID, bytes int64, reason string) (string, error) {
+func (f *fakeReservationHook) ReserveStorage(_ context.Context, userID uuid.UUID, bytes int64, req ReservationRequest) (string, error) {
 	f.reserveCalls++
 	f.lastReserveUserID = userID
 	f.lastReserveBytes = bytes
-	f.lastReserveReason = reason
+	f.lastReserveReq = req
 	if f.reserveErr != nil {
 		return "", f.reserveErr
 	}
@@ -51,7 +51,7 @@ func (f *fakeReservationHook) ReleaseStorage(_ context.Context, reservationID st
 }
 
 func TestReserveNilHookInactive(t *testing.T) {
-	guard, err := reserve(context.Background(), nil, uuid.New(), 100, "bundle_upload")
+	guard, err := reserve(context.Background(), nil, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
 	}
@@ -69,7 +69,7 @@ func TestReserveNilHookInactive(t *testing.T) {
 func TestReserveErrorPropagates(t *testing.T) {
 	wantErr := errors.New("over quota")
 	hook := &fakeReservationHook{reserveErr: wantErr}
-	guard, err := reserve(context.Background(), hook, uuid.New(), 100, "bundle_upload")
+	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("reserve() error = %v, want %v", err, wantErr)
 	}
@@ -81,9 +81,32 @@ func TestReserveErrorPropagates(t *testing.T) {
 	}
 }
 
+func TestReserveForwardsRequestMetadata(t *testing.T) {
+	hook := &fakeReservationHook{reserveID: "res-meta"}
+	req := ReservationRequest{
+		Reason:     "bundle_upload",
+		BundleID:   "bundle-123",
+		DeviceUUID: "device-abc",
+		RequestID:  "req-xyz",
+	}
+	userID := uuid.New()
+	if _, err := reserve(context.Background(), hook, userID, 256, req); err != nil {
+		t.Fatalf("reserve() error = %v, want nil", err)
+	}
+	if hook.lastReserveUserID != userID {
+		t.Fatalf("reserve user id = %v, want %v", hook.lastReserveUserID, userID)
+	}
+	if hook.lastReserveBytes != 256 {
+		t.Fatalf("reserve bytes = %d, want 256", hook.lastReserveBytes)
+	}
+	if hook.lastReserveReq != req {
+		t.Fatalf("reserve request = %+v, want %+v", hook.lastReserveReq, req)
+	}
+}
+
 func TestReserveEmptyIDInactive(t *testing.T) {
 	hook := &fakeReservationHook{reserveID: ""}
-	guard, err := reserve(context.Background(), hook, uuid.New(), 100, "bundle_upload")
+	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
 	}
@@ -103,7 +126,7 @@ func TestReserveEmptyIDInactive(t *testing.T) {
 
 func TestGuardSettleThenReleaseNoOp(t *testing.T) {
 	hook := &fakeReservationHook{reserveID: "res-1"}
-	guard, err := reserve(context.Background(), hook, uuid.New(), 100, "bundle_upload")
+	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
 	}
@@ -129,7 +152,7 @@ func TestGuardSettleThenReleaseNoOp(t *testing.T) {
 
 func TestGuardReleaseWithoutSettle(t *testing.T) {
 	hook := &fakeReservationHook{reserveID: "res-2"}
-	guard, err := reserve(context.Background(), hook, uuid.New(), 100, "snapshot_upload")
+	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "snapshot_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
 	}
@@ -150,7 +173,7 @@ func TestGuardReleaseWithoutSettle(t *testing.T) {
 func TestGuardSettleErrorAllowsRelease(t *testing.T) {
 	settleErr := errors.New("settle failed")
 	hook := &fakeReservationHook{reserveID: "res-3", settleErr: settleErr}
-	guard, err := reserve(context.Background(), hook, uuid.New(), 100, "bundle_upload")
+	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
 	}

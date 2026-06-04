@@ -543,6 +543,7 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 		KeyGeneration: int16(keyGen),
 		Reader:        src,
 		ContentType:   file.Header.Get("Content-Type"),
+		RequestID:     middleware.GetRequestID(c),
 	})
 	if err != nil {
 		switch err {
@@ -693,6 +694,7 @@ func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
 		KeyGeneration: int16(keyGen),
 		Reader:        src,
 		ContentType:   file.Header.Get("Content-Type"),
+		RequestID:     middleware.GetRequestID(c),
 	})
 	if err != nil {
 		if err == service.ErrQuotaExceeded {

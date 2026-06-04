@@ -77,9 +77,19 @@ type Deps struct {
 	Reservation    UsageReservationHook
 }
 
+// ReservationRequest carries upload context for a storage reservation so the
+// reservation backend can record which artifact and request triggered it.
+type ReservationRequest struct {
+	Reason     string
+	BundleID   string
+	SnapshotID string
+	DeviceUUID string
+	RequestID  string
+}
+
 // UsageReservationHook lets Enterprise reserve capacity before storage writes.
 type UsageReservationHook interface {
-	ReserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error)
+	ReserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, req ReservationRequest) (string, error)
 	SettleStorage(ctx context.Context, reservationID string, bytes int64) error
 	ReleaseStorage(ctx context.Context, reservationID string)
 }
@@ -95,11 +105,11 @@ type reservationGuard struct {
 
 // reserve acquires a storage reservation when a hook is configured. With no hook
 // it returns an inactive guard so the caller uses the legacy quota path.
-func reserve(ctx context.Context, hook UsageReservationHook, userID uuid.UUID, bytes int64, reason string) (*reservationGuard, error) {
+func reserve(ctx context.Context, hook UsageReservationHook, userID uuid.UUID, bytes int64, req ReservationRequest) (*reservationGuard, error) {
 	if hook == nil {
 		return &reservationGuard{}, nil
 	}
-	id, err := hook.ReserveStorage(ctx, userID, bytes, reason)
+	id, err := hook.ReserveStorage(ctx, userID, bytes, req)
 	if err != nil {
 		return nil, err
 	}
@@ -601,11 +611,17 @@ type UploadInput struct {
 	KeyGeneration int16     `json:"key_generation"`
 	Reader        io.Reader `json:"-"` // The file stream
 	ContentType   string    `json:"-"`
+	RequestID     string    `json:"-"`
 }
 
 // UploadBundle validates and persists a bundle.
 func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, input UploadInput) (*model.BundleMeta, error) {
-	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, "bundle_upload")
+	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
+		Reason:     "bundle_upload",
+		BundleID:   input.BundleID,
+		DeviceUUID: input.DeviceUUID.String(),
+		RequestID:  input.RequestID,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -743,11 +759,16 @@ type UploadSnapshotInput struct {
 	KeyGeneration int16     `json:"key_generation"`
 	Reader        io.Reader `json:"-"`
 	ContentType   string    `json:"-"`
+	RequestID     string    `json:"-"`
 }
 
 // UploadSnapshot validates and persists a snapshot.
 func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
-	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, "snapshot_upload")
+	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
+		Reason:     "snapshot_upload",
+		SnapshotID: input.SnapshotID,
+		RequestID:  input.RequestID,
+	})
 	if err != nil {
 		return nil, err
 	}

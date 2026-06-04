@@ -61,8 +61,8 @@ func main() {
 	// ── Connect to Redis ──────────────────────────────────────
 	redisClient, err := repository.NewRedisClient(ctx, cfg.RedisURL)
 	if err != nil {
-		// Redis is optional; degrade gracefully
-		log.Warn().Err(err).Msg("redis unavailable, rate limiting disabled")
+		// Redis is optional; the server degrades gracefully without it.
+		log.Warn().Err(err).Msg("redis unavailable, continuing without it")
 	}
 
 	// ── Blob Storage ──────────────────────────────────────────

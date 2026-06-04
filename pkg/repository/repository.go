@@ -862,6 +862,32 @@ func (r *QuotaRepo) AddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBy
 	return nil
 }
 
+// TryAddBundleUsage atomically reserves storage for a bundle only if doing so
+// keeps the user at or below storageLimitBytes, returning false when the
+// addition would exceed the limit. The conditional UPDATE serializes concurrent
+// uploads on the row, closing the check-then-write race that otherwise lets
+// simultaneous uploads oversell quota. AddBundleUsage is retained for callers
+// (e.g. Enterprise providers) that enforce limits separately.
+func (r *QuotaRepo) TryAddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
+	// Ensure the usage row exists so the conditional UPDATE can distinguish
+	// "over quota" (0 rows updated) from "row not yet created".
+	if _, err := r.pool.Exec(ctx,
+		`INSERT INTO storage_usage (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, userID); err != nil {
+		return false, fmt.Errorf("ensure usage row: %w", err)
+	}
+	const q = `
+		UPDATE storage_usage
+		SET total_bytes = total_bytes + $2,
+		    bundle_count = bundle_count + 1,
+		    updated_at = now()
+		WHERE user_id = $1 AND total_bytes + $2 <= $3`
+	tag, err := r.pool.Exec(ctx, q, userID, sizeBytes, storageLimitBytes)
+	if err != nil {
+		return false, fmt.Errorf("add bundle usage: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // RemoveBundleUsage decrements storage usage counters for a deleted bundle.
 func (r *QuotaRepo) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
 	const q = `
@@ -891,6 +917,27 @@ func (r *QuotaRepo) AddSnapshotUsage(ctx context.Context, userID uuid.UUID, size
 		return fmt.Errorf("add snapshot usage: %w", err)
 	}
 	return nil
+}
+
+// TryAddSnapshotUsage atomically reserves storage for a snapshot only if doing
+// so keeps the user at or below storageLimitBytes, returning false when the
+// addition would exceed the limit. See TryAddBundleUsage for the rationale.
+func (r *QuotaRepo) TryAddSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
+	if _, err := r.pool.Exec(ctx,
+		`INSERT INTO storage_usage (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, userID); err != nil {
+		return false, fmt.Errorf("ensure usage row: %w", err)
+	}
+	const q = `
+		UPDATE storage_usage
+		SET total_bytes = total_bytes + $2,
+		    snap_count = snap_count + 1,
+		    updated_at = now()
+		WHERE user_id = $1 AND total_bytes + $2 <= $3`
+	tag, err := r.pool.Exec(ctx, q, userID, sizeBytes, storageLimitBytes)
+	if err != nil {
+		return false, fmt.Errorf("add snapshot usage: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
 }
 
 // RemoveSnapshotUsage decrements storage usage counters for a deleted snapshot.

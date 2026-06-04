@@ -631,6 +631,10 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 	defer guard.release(ctx)
 
+	// storageLimit holds the user's storage cap from the CE pre-check so the
+	// atomic reservation below can re-enforce it without another lookup.
+	var storageLimit int64
+
 	// Check bundle ID uniqueness
 	exists, err := s.repos.Bundles.ExistsByID(ctx, input.BundleID)
 	if err != nil {
@@ -653,10 +657,14 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 
 	if !guard.active() {
-		// Quota check
-		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+		// Pre-check quota before storing the blob (fast rejection). The
+		// authoritative, race-safe enforcement happens in TryAddBundleUsage
+		// below, reusing the limit returned here.
+		limit, err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes)
+		if err != nil {
 			return nil, err
 		}
+		storageLimit = limit
 	}
 
 	// Store the blob
@@ -690,10 +698,17 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 			return nil, fmt.Errorf("settle bundle reservation: %w", err)
 		}
 	} else {
-		if err := s.repos.Quota.AddBundleUsage(ctx, userID, input.SizeBytes); err != nil {
+		ok, err := s.repos.Quota.TryAddBundleUsage(ctx, userID, input.SizeBytes, storageLimit)
+		if err != nil {
 			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("update bundle quota usage: %w", err)
+		}
+		if !ok {
+			// Lost a concurrent race that pushed usage over the limit; undo the write.
+			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, ErrQuotaExceeded
 		}
 	}
 
@@ -781,7 +796,7 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 	defer guard.release(ctx)
 
 	if !guard.active() {
-		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+		if _, err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
 			return nil, err
 		}
 	}
@@ -834,10 +849,17 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 			return nil, fmt.Errorf("settle snapshot reservation: %w", err)
 		}
 	} else {
-		if err := s.repos.Quota.AddSnapshotUsage(ctx, userID, input.SizeBytes); err != nil {
+		ok, err := s.repos.Quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
+		if err != nil {
 			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("update snapshot quota usage: %w", err)
+		}
+		if !ok {
+			// Lost a concurrent race that pushed usage over the limit; undo the write.
+			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, ErrQuotaExceeded
 		}
 	}
 
@@ -926,29 +948,37 @@ func (s *QuotaService) GetQuota(ctx context.Context, userID uuid.UUID, tier mode
 	}, nil
 }
 
-// CheckStorageQuota verifies the user has enough storage remaining.
-func (s *QuotaService) CheckStorageQuota(ctx context.Context, userID uuid.UUID, additionalBytes int64) error {
+// CheckStorageQuota verifies the user has enough storage remaining and returns
+// the user's storage limit so callers can reuse it for the atomic, race-safe
+// reservation in repository.TryAdd*Usage.
+func (s *QuotaService) CheckStorageQuota(ctx context.Context, userID uuid.UUID, additionalBytes int64) (int64, error) {
 	usage, err := s.repos.Quota.GetUsage(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("get usage: %w", err)
+		return 0, fmt.Errorf("get usage: %w", err)
 	}
 
 	user, err := s.repos.Users.GetByID(ctx, userID)
 	if err != nil {
-		return fmt.Errorf("get user: %w", err)
+		return 0, fmt.Errorf("get user: %w", err)
 	}
 	if user == nil {
-		return ErrUserNotFound
+		return 0, ErrUserNotFound
 	}
 
 	limits := model.TierLimits(user.Tier)
 
-	if usage.TotalBytes+additionalBytes > limits.StorageLimitBytes {
-		return fmt.Errorf("%w: current=%d, limit=%d, requested=%d",
-			ErrQuotaExceeded, usage.TotalBytes, limits.StorageLimitBytes, additionalBytes)
+	if quotaExceeded(usage.TotalBytes, additionalBytes, limits.StorageLimitBytes) {
+		return limits.StorageLimitBytes, ErrQuotaExceeded
 	}
 
-	return nil
+	return limits.StorageLimitBytes, nil
+}
+
+// quotaExceeded reports whether adding additional bytes to used would exceed
+// limit. The repository TryAdd*Usage methods enforce the same invariant
+// atomically in SQL ("used + additional <= limit").
+func quotaExceeded(used, additional, limit int64) bool {
+	return used+additional > limit
 }
 
 // CheckDeviceLimit verifies the user can register more devices.

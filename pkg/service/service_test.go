@@ -105,3 +105,24 @@ func TestHashTokenIsDeterministic(t *testing.T) {
 		t.Fatal("hashToken() produced different hashes for same token")
 	}
 }
+
+func TestQuotaExceeded(t *testing.T) {
+	cases := []struct {
+		name                    string
+		used, additional, limit int64
+		want                    bool
+	}{
+		{"exactly at limit is allowed", 0, 100, 100, false},
+		{"sum equals limit is allowed", 50, 50, 100, false},
+		{"one byte over is rejected", 50, 51, 100, true},
+		{"already full is rejected", 100, 1, 100, true},
+		{"zero add at zero limit allowed", 0, 0, 0, false},
+		{"positive add at zero limit rejected", 0, 1, 0, true},
+	}
+	for _, c := range cases {
+		if got := quotaExceeded(c.used, c.additional, c.limit); got != c.want {
+			t.Fatalf("%s: quotaExceeded(%d,%d,%d) = %v, want %v",
+				c.name, c.used, c.additional, c.limit, got, c.want)
+		}
+	}
+}

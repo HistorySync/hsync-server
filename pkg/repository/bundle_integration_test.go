@@ -4,6 +4,7 @@ package repository
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -232,5 +233,44 @@ func TestBundleHardDelete(t *testing.T) {
 	}
 	if exists {
 		t.Fatal("ExistsByID after hard delete = true, want false")
+	}
+}
+
+// TestBundleCountDeletedBefore verifies the retention-report query counts only
+// bundles soft-deleted before the cutoff, summing their bytes and ignoring live
+// rows.
+func TestBundleCountDeletedBefore(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "countdel@example.com")
+	dev := uuid.New()
+	seedBundle(t, repos, u.ID, dev, "c1", 1, 1, 100)
+	seedBundle(t, repos, u.ID, dev, "c2", 2, 2, 200)
+	seedBundle(t, repos, u.ID, dev, "c3", 3, 3, 400) // stays live
+
+	if _, err := repos.Bundles.SoftDelete(ctx, u.ID, "c1"); err != nil {
+		t.Fatalf("SoftDelete c1: %v", err)
+	}
+	if _, err := repos.Bundles.SoftDelete(ctx, u.ID, "c2"); err != nil {
+		t.Fatalf("SoftDelete c2: %v", err)
+	}
+
+	// Cutoff in the future: both soft-deleted bundles qualify, the live one does not.
+	count, bytes, err := repos.Bundles.CountDeletedBefore(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CountDeletedBefore(future): %v", err)
+	}
+	if count != 2 || bytes != 300 {
+		t.Fatalf("CountDeletedBefore(future) = (%d, %d), want (2, 300)", count, bytes)
+	}
+
+	// Cutoff in the past: nothing was soft-deleted that long ago.
+	count, bytes, err = repos.Bundles.CountDeletedBefore(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("CountDeletedBefore(past): %v", err)
+	}
+	if count != 0 || bytes != 0 {
+		t.Fatalf("CountDeletedBefore(past) = (%d, %d), want (0, 0)", count, bytes)
 	}
 }

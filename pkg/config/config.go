@@ -57,8 +57,10 @@ type Config struct {
 	OIDCScopes       string `mapstructure:"oidc_scopes"`
 
 	// Background tasks
-	BackgroundTasksEnabled bool          `mapstructure:"background_tasks_enabled"`
-	QuotaReconcileInterval time.Duration `mapstructure:"quota_reconcile_interval"`
+	BackgroundTasksEnabled   bool          `mapstructure:"background_tasks_enabled"`
+	QuotaReconcileInterval   time.Duration `mapstructure:"quota_reconcile_interval"`
+	RetentionCleanupInterval time.Duration `mapstructure:"retention_cleanup_interval"`
+	RetentionGracePeriod     time.Duration `mapstructure:"retention_grace_period"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -79,8 +81,10 @@ func DefaultConfig() *Config {
 		OIDCProviderID:  "default",
 		OIDCScopes:      "openid profile email",
 
-		BackgroundTasksEnabled: true,
-		QuotaReconcileInterval: 24 * time.Hour,
+		BackgroundTasksEnabled:   true,
+		QuotaReconcileInterval:   24 * time.Hour,
+		RetentionCleanupInterval: 0,
+		RetentionGracePeriod:     30 * 24 * time.Hour,
 	}
 }
 
@@ -145,6 +149,8 @@ func load() (*Config, error) {
 	v.SetDefault("oidc_scopes", cfg.OIDCScopes)
 	v.SetDefault("background_tasks_enabled", cfg.BackgroundTasksEnabled)
 	v.SetDefault("quota_reconcile_interval", cfg.QuotaReconcileInterval)
+	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
+	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {

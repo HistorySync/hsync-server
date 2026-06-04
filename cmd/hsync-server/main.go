@@ -140,6 +140,23 @@ func main() {
 					return nil
 				},
 			},
+			scheduler.Task{
+				Name:     "retention-cleanup",
+				LockKey:  scheduler.LockRetentionCleanup,
+				Interval: cfg.RetentionCleanupInterval,
+				Run: func(ctx context.Context) error {
+					report, err := svcs.Retention.ReportExpiredBundles(ctx, cfg.RetentionGracePeriod)
+					if err != nil {
+						return err
+					}
+					log.Info().
+						Int64("expired_bundles", report.ExpiredBundles).
+						Int64("expired_bytes", report.ExpiredBytes).
+						Time("older_than", report.Before).
+						Msg("retention cleanup dry-run: bundles eligible for purge")
+					return nil
+				},
+			},
 		)
 		go sched.Run(bgCtx)
 		log.Info().Msg("background scheduler started")

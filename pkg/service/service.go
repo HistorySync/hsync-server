@@ -154,6 +154,7 @@ type Services struct {
 	Quota        *QuotaService
 	Billing      *BillingService
 	Notification *NotificationService
+	Retention    *RetentionService
 }
 
 // New creates all service instances with their dependencies.
@@ -184,6 +185,7 @@ func New(deps Deps) *Services {
 		provider:   provider.Registry().Billing,
 	}
 	notifSvc := &NotificationService{}
+	retentionSvc := &RetentionService{repos: deps.Repos}
 
 	return &Services{
 		Repos:        deps.Repos,
@@ -193,7 +195,36 @@ func New(deps Deps) *Services {
 		Quota:        quotaSvc,
 		Billing:      billingSvc,
 		Notification: notifSvc,
+		Retention:    retentionSvc,
 	}
+}
+
+// ── RetentionService ─────────────────────────────────────────
+
+// RetentionService reports on and purges data that has been soft-deleted past
+// its retention grace period. It currently covers bundles; snapshot and user
+// cleanup can be added as further tasks.
+type RetentionService struct {
+	repos *repository.Repos
+}
+
+// RetentionReport summarizes the soft-deleted data eligible for purging.
+type RetentionReport struct {
+	Before         time.Time `json:"before"`
+	ExpiredBundles int64     `json:"expired_bundles"`
+	ExpiredBytes   int64     `json:"expired_bytes"`
+}
+
+// ReportExpiredBundles reports how many bundles were soft-deleted longer ago than
+// the grace period, and their total size, without deleting anything. It backs the
+// dry-run phase of retention cleanup.
+func (s *RetentionService) ReportExpiredBundles(ctx context.Context, grace time.Duration) (RetentionReport, error) {
+	before := time.Now().Add(-grace)
+	count, bytes, err := s.repos.Bundles.CountDeletedBefore(ctx, before)
+	if err != nil {
+		return RetentionReport{}, fmt.Errorf("count expired bundles: %w", err)
+	}
+	return RetentionReport{Before: before, ExpiredBundles: count, ExpiredBytes: bytes}, nil
 }
 
 // ── AuthService ──────────────────────────────────────────────

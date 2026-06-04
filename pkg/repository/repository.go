@@ -617,6 +617,19 @@ func (r *BundleRepo) HardDelete(ctx context.Context, userID uuid.UUID, bundleID 
 	return err
 }
 
+// CountDeletedBefore returns how many bundles were soft-deleted before the given
+// time and their total size in bytes, for retention-cleanup reporting.
+func (r *BundleRepo) CountDeletedBefore(ctx context.Context, before time.Time) (int64, int64, error) {
+	const q = `
+		SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
+		FROM bundles WHERE deleted_at IS NOT NULL AND deleted_at < $1`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, before).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("count deleted bundles: %w", err)
+	}
+	return count, bytes, nil
+}
+
 func scanBundles(rows pgx.Rows) ([]model.BundleMeta, error) {
 	var bundles []model.BundleMeta
 	for rows.Next() {

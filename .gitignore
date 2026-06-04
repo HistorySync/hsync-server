@@ -10,10 +10,10 @@ tmp/
 *.out
 coverage.out
 
-# Go vendor (if used)
+# Go vendor
 vendor/
 
-# Environment secrets (DO NOT COMMIT)
+# Environment secrets
 .env
 .env.local
 .env.prod
@@ -21,3 +21,4 @@ vendor/
 # IDE
 .idea/
 .vscode/
+.continue/

@@ -45,6 +45,15 @@ type Config struct {
 
 	// Admin
 	AdminKey string `mapstructure:"admin_key"`
+
+	// OIDC (optional Enterprise login provider)
+	OIDCEnabled      bool   `mapstructure:"oidc_enabled"`
+	OIDCProviderID   string `mapstructure:"oidc_provider_id"`
+	OIDCIssuerURL    string `mapstructure:"oidc_issuer_url"`
+	OIDCClientID     string `mapstructure:"oidc_client_id"`
+	OIDCClientSecret string `mapstructure:"oidc_client_secret"`
+	OIDCRedirectURL  string `mapstructure:"oidc_redirect_url"`
+	OIDCScopes       string `mapstructure:"oidc_scopes"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -62,6 +71,8 @@ func DefaultConfig() *Config {
 		S3Bucket:        "hsync-bundles",
 		S3UseSSL:        false,
 		StripeDisabled:  true,
+		OIDCProviderID:  "default",
+		OIDCScopes:      "openid profile email",
 	}
 }
 
@@ -98,6 +109,9 @@ func Load() (*Config, error) {
 	v.SetDefault("s3_secret_key", cfg.S3SecretKey)
 	v.SetDefault("s3_use_ssl", cfg.S3UseSSL)
 	v.SetDefault("stripe_disabled", cfg.StripeDisabled)
+	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
+	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
+	v.SetDefault("oidc_scopes", cfg.OIDCScopes)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {
@@ -142,6 +156,18 @@ func (c *Config) Validate() error {
 		}
 		if c.StripeWebhookSecret == "" {
 			errs = append(errs, "stripe_webhook_secret is required when billing is enabled")
+		}
+	}
+
+	if c.OIDCEnabled {
+		if c.OIDCIssuerURL == "" {
+			errs = append(errs, "oidc_issuer_url is required when OIDC is enabled")
+		}
+		if c.OIDCClientID == "" {
+			errs = append(errs, "oidc_client_id is required when OIDC is enabled")
+		}
+		if c.OIDCRedirectURL == "" {
+			errs = append(errs, "oidc_redirect_url is required when OIDC is enabled")
 		}
 	}
 

@@ -24,6 +24,26 @@ func TestValidateRequiresStripeSecretsWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresOIDCSettingsWhenEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.OIDCEnabled = true
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "oidc_issuer_url") || !strings.Contains(err.Error(), "oidc_client_id") || !strings.Contains(err.Error(), "oidc_redirect_url") {
+		t.Fatalf("Validate() error = %v, want oidc setting errors", err)
+	}
+}
+
+func TestDefaultConfigSetsOIDCDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.OIDCProviderID != "default" {
+		t.Fatalf("OIDCProviderID = %q, want default", cfg.OIDCProviderID)
+	}
+	if cfg.OIDCScopes != "openid profile email" {
+		t.Fatalf("OIDCScopes = %q, want default scopes", cfg.OIDCScopes)
+	}
+}
+
 func TestDecodeEd25519PrivateKey(t *testing.T) {
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {

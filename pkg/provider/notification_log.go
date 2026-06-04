@@ -24,6 +24,15 @@ func (n *LogNotifier) SendWelcome(_ context.Context, p WelcomeParams) error {
 	return nil
 }
 
+func (n *LogNotifier) SendEmailVerification(_ context.Context, p EmailVerificationParams) error {
+	log.Warn().
+		Str("user_id", p.UserID).
+		Str("email", maskEmail(p.Email)).
+		Dur("expires_in", p.ExpiresIn).
+		Msg("email verification notification skipped: no delivery provider configured")
+	return nil
+}
+
 func (n *LogNotifier) SendPasswordReset(_ context.Context, p PasswordResetParams) error {
 	log.Warn().
 		Str("user_id", p.UserID).

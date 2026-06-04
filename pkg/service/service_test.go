@@ -88,6 +88,24 @@ func TestResetPasswordRejectsWeakPassword(t *testing.T) {
 	}
 }
 
+func TestVerifyEmailRequiresToken(t *testing.T) {
+	svc := &AuthService{}
+	if err := svc.VerifyEmail(context.Background(), ""); err != ErrVerifyTokenRequired {
+		t.Fatalf("VerifyEmail() error = %v, want ErrVerifyTokenRequired", err)
+	}
+}
+
+func TestStartEmailVerificationHidesInvalidEmail(t *testing.T) {
+	svc := &AuthService{}
+	token, err := svc.StartEmailVerification(context.Background(), "not-an-email")
+	if err != nil {
+		t.Fatalf("StartEmailVerification() error = %v, want nil", err)
+	}
+	if token != "" {
+		t.Fatalf("StartEmailVerification() token = %q, want empty", token)
+	}
+}
+
 func TestRefreshAndLogoutRequireToken(t *testing.T) {
 	svc := &AuthService{}
 	if _, err := svc.RefreshAccessToken(context.Background(), ""); err != ErrRefreshTokenRequired {

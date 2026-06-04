@@ -22,6 +22,21 @@ func TestPasswordResetURL(t *testing.T) {
 	}
 }
 
+func TestEmailVerificationURL(t *testing.T) {
+	svc := NewNotificationService(nil, provider.NewLogNotifier(), NotificationConfig{
+		PublicURL:       "https://cloud.historysync.app/base/",
+		EmailVerifyPath: "auth/verify-email",
+	})
+
+	got := svc.emailVerificationURL("verify token")
+	if !strings.HasPrefix(got, "https://cloud.historysync.app/base/auth/verify-email?") {
+		t.Fatalf("emailVerificationURL() = %q, want public URL plus verification path", got)
+	}
+	if !strings.Contains(got, "token=verify+token") {
+		t.Fatalf("emailVerificationURL() = %q, want encoded token query", got)
+	}
+}
+
 func TestUsagePercent(t *testing.T) {
 	if got := usagePercent(80, 100); got != 80 {
 		t.Fatalf("usagePercent() = %d, want 80", got)

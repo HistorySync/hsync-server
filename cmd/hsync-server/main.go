@@ -145,6 +145,8 @@ func main() {
 			PublicURL:          cfg.PublicURL,
 			WarningThreshold:   cfg.QuotaWarningThreshold,
 			ExhaustedThreshold: cfg.QuotaExhaustedThreshold,
+			EmailVerifyPath:    cfg.EmailVerificationPath,
+			PasswordResetPath:  cfg.PasswordResetPath,
 		},
 	})
 

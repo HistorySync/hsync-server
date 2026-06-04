@@ -43,11 +43,12 @@ const (
 	CodeNotFound       Code = "NOT_FOUND"
 
 	// Auth
-	CodeConflict            Code = "CONFLICT"
-	CodeEmailTaken          Code = "EMAIL_TAKEN"
-	CodeInvalidCredentials  Code = "INVALID_CREDENTIALS"
-	CodeInvalidRefreshToken Code = "INVALID_REFRESH_TOKEN"
-	CodeInvalidResetToken   Code = "INVALID_RESET_TOKEN"
+	CodeConflict                 Code = "CONFLICT"
+	CodeEmailTaken               Code = "EMAIL_TAKEN"
+	CodeInvalidCredentials       Code = "INVALID_CREDENTIALS"
+	CodeInvalidRefreshToken      Code = "INVALID_REFRESH_TOKEN"
+	CodeInvalidResetToken        Code = "INVALID_RESET_TOKEN"
+	CodeInvalidVerificationToken Code = "INVALID_VERIFICATION_TOKEN"
 
 	// Quota / reservation
 	CodeQuotaExceeded     Code = "QUOTA_EXCEEDED"
@@ -87,25 +88,26 @@ type Entry struct {
 // translations keyed by BCP-47 language tag.
 
 var catalog = map[Code]Entry{
-	CodeBadRequest:          {CodeBadRequest, http.StatusBadRequest, "bad request"},
-	CodeInternalError:       {CodeInternalError, http.StatusInternalServerError, "internal server error"},
-	CodeNotImplemented:      {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
-	CodeNotFound:            {CodeNotFound, http.StatusNotFound, "not found"},
-	CodeConflict:            {CodeConflict, http.StatusConflict, "conflict"},
-	CodeEmailTaken:          {CodeEmailTaken, http.StatusConflict, "email already registered"},
-	CodeInvalidCredentials:  {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
-	CodeInvalidRefreshToken: {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
-	CodeInvalidResetToken:   {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
-	CodeQuotaExceeded:       {CodeQuotaExceeded, 507, "storage quota exceeded"},
-	CodeReservationDenied:   {CodeReservationDenied, http.StatusForbidden, "reservation denied"},
-	CodeDeviceNotRegistered: {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
-	CodeDeviceRevoked:       {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
-	CodeBillingDisabled:     {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
-	CodeInvalidUserID:       {CodeInvalidUserID, http.StatusBadRequest, "invalid user id"},
-	CodeUserNotFound:        {CodeUserNotFound, http.StatusNotFound, "user not found"},
-	CodeInvalidJSON:         {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},
-	CodeMissingKey:          {CodeMissingKey, http.StatusBadRequest, "option key is required"},
-	CodeOptionsDisabled:     {CodeOptionsDisabled, http.StatusNotImplemented, "dynamic options are disabled"},
+	CodeBadRequest:               {CodeBadRequest, http.StatusBadRequest, "bad request"},
+	CodeInternalError:            {CodeInternalError, http.StatusInternalServerError, "internal server error"},
+	CodeNotImplemented:           {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
+	CodeNotFound:                 {CodeNotFound, http.StatusNotFound, "not found"},
+	CodeConflict:                 {CodeConflict, http.StatusConflict, "conflict"},
+	CodeEmailTaken:               {CodeEmailTaken, http.StatusConflict, "email already registered"},
+	CodeInvalidCredentials:       {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
+	CodeInvalidRefreshToken:      {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
+	CodeInvalidResetToken:        {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
+	CodeInvalidVerificationToken: {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodeQuotaExceeded:            {CodeQuotaExceeded, 507, "storage quota exceeded"},
+	CodeReservationDenied:        {CodeReservationDenied, http.StatusForbidden, "reservation denied"},
+	CodeDeviceNotRegistered:      {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
+	CodeDeviceRevoked:            {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
+	CodeBillingDisabled:          {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
+	CodeInvalidUserID:            {CodeInvalidUserID, http.StatusBadRequest, "invalid user id"},
+	CodeUserNotFound:             {CodeUserNotFound, http.StatusNotFound, "user not found"},
+	CodeInvalidJSON:              {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},
+	CodeMissingKey:               {CodeMissingKey, http.StatusBadRequest, "option key is required"},
+	CodeOptionsDisabled:          {CodeOptionsDisabled, http.StatusNotImplemented, "dynamic options are disabled"},
 }
 
 // Lookup returns the catalog entry for c. Unknown codes fall back to the

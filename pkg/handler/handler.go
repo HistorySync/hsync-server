@@ -106,6 +106,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/login", h.Login)
 	authGroup.Post("/refresh", h.RefreshToken)
 	authGroup.Post("/logout", h.Logout)
+	authGroup.Post("/resend-verification", h.ResendEmailVerification)
+	authGroup.Post("/verify-email", h.VerifyEmail)
 	authGroup.Post("/forgot-password", h.ForgotPassword)
 	authGroup.Post("/reset-password", h.ResetPassword)
 
@@ -400,18 +402,25 @@ func (h *Handlers) Register(c fiber.Ctx) error {
 		DisplayName: req.DisplayName,
 	})
 	if err != nil {
-		if err == service.ErrEmailTaken {
+		switch err {
+		case service.ErrEmailTaken:
 			return apierrors.New(apierrors.CodeEmailTaken, err.Error())
+		case service.ErrInvalidEmail, service.ErrWeakPassword:
+			return apierrors.NewBadRequest(err.Error())
 		}
 		return apierrors.NewInternal(err.Error())
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+	resp := fiber.Map{
 		"user":          result.User,
 		"access_token":  result.AccessToken,
 		"refresh_token": result.RefreshToken,
 		"expires_in":    result.ExpiresIn,
-	})
+	}
+	if result.EmailVerificationToken != "" {
+		resp["email_verification_token"] = result.EmailVerificationToken
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
 type loginRequest struct {
@@ -452,6 +461,14 @@ type forgotPasswordRequest struct {
 	Email string `json:"email"`
 }
 
+type resendVerificationRequest struct {
+	Email string `json:"email"`
+}
+
+type verifyEmailRequest struct {
+	Token string `json:"token"`
+}
+
 type resetPasswordRequest struct {
 	Token       string `json:"token"`
 	NewPassword string `json:"new_password"`
@@ -482,6 +499,47 @@ func (h *Handlers) Logout(c fiber.Ctx) error {
 
 	if err := h.deps.Services.Auth.Logout(c.Context(), req.RefreshToken); err != nil {
 		return apierrors.NewInternal(err.Error())
+	}
+
+	return c.JSON(fiber.Map{"status": "ok"})
+}
+
+func (h *Handlers) ResendEmailVerification(c fiber.Ctx) error {
+	var req resendVerificationRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	if req.Email == "" {
+		return apierrors.NewBadRequest("email is required")
+	}
+
+	verificationToken, err := h.deps.Services.Auth.StartEmailVerification(c.Context(), req.Email)
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+
+	resp := fiber.Map{"status": "ok"}
+	if verificationToken != "" {
+		resp["email_verification_token"] = verificationToken
+	}
+	return c.JSON(resp)
+}
+
+func (h *Handlers) VerifyEmail(c fiber.Ctx) error {
+	var req verifyEmailRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+
+	if err := h.deps.Services.Auth.VerifyEmail(c.Context(), req.Token); err != nil {
+		switch err {
+		case service.ErrVerifyTokenRequired:
+			return apierrors.NewBadRequest(err.Error())
+		case service.ErrEmailVerifyInvalid, service.ErrUserInactive:
+			return apierrors.New(apierrors.CodeInvalidVerificationToken, err.Error())
+		default:
+			return apierrors.NewInternal(err.Error())
+		}
 	}
 
 	return c.JSON(fiber.Map{"status": "ok"})
@@ -519,7 +577,7 @@ func (h *Handlers) ResetPassword(c fiber.Ctx) error {
 		NewPassword: req.NewPassword,
 	}); err != nil {
 		switch err {
-		case service.ErrResetTokenRequired, service.ErrNewPasswordRequired:
+		case service.ErrResetTokenRequired, service.ErrNewPasswordRequired, service.ErrWeakPassword:
 			return apierrors.NewBadRequest(err.Error())
 		case service.ErrPasswordResetInvalid, service.ErrUserInactive:
 			return apierrors.New(apierrors.CodeInvalidResetToken, err.Error())

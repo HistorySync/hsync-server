@@ -55,6 +55,8 @@ var (
 	ErrResetTokenRequired   = errors.New("reset token is required")
 	ErrNewPasswordRequired  = errors.New("new password is required")
 	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
+	ErrVerifyTokenRequired  = errors.New("verification token is required")
+	ErrEmailVerifyInvalid   = errors.New("invalid or expired email verification token")
 	ErrUserInactive         = errors.New("user not found or inactive")
 	ErrBundleNotFound       = errors.New("bundle not found")
 	ErrSnapshotNotFound     = errors.New("snapshot not found")
@@ -423,10 +425,11 @@ type RegisterInput struct {
 
 // RegisterResult contains the tokens returned after successful registration.
 type RegisterResult struct {
-	User         model.User `json:"user"`
-	AccessToken  string     `json:"access_token"`
-	RefreshToken string     `json:"refresh_token"`
-	ExpiresIn    int64      `json:"expires_in"`
+	User                   model.User `json:"user"`
+	AccessToken            string     `json:"access_token"`
+	RefreshToken           string     `json:"refresh_token"`
+	ExpiresIn              int64      `json:"expires_in"`
+	EmailVerificationToken string     `json:"email_verification_token,omitempty"`
 }
 
 // Register creates a new user account and returns tokens.
@@ -494,15 +497,25 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 		return nil, fmt.Errorf("save refresh token: %w", err)
 	}
 
+	var verificationToken string
 	if s.notifications != nil {
+		verificationToken, err = s.createEmailVerification(ctx, user)
+		if err != nil {
+			return nil, err
+		}
 		s.notifications.SendWelcomeEmailAsync(user.Email, user.DisplayName)
+		s.notifications.SendEmailVerificationAsync(user.ID, user.Email, user.DisplayName, verificationToken)
+		if s.notifications.DeliveryEnabled() {
+			verificationToken = ""
+		}
 	}
 
 	return &RegisterResult{
-		User:         *user,
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    900, // 15 minutes
+		User:                   *user,
+		AccessToken:            accessToken,
+		RefreshToken:           refreshToken,
+		ExpiresIn:              900, // 15 minutes
+		EmailVerificationToken: verificationToken,
 	}, nil
 }
 
@@ -566,6 +579,73 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterRes
 type ResetPasswordInput struct {
 	Token       string `json:"token"`
 	NewPassword string `json:"new_password"`
+}
+
+// StartEmailVerification creates a verification token for an existing active
+// unverified user and sends the verification email when delivery is configured.
+func (s *AuthService) StartEmailVerification(ctx context.Context, email string) (string, error) {
+	normalizedEmail, err := normalizeEmail(email)
+	if err != nil {
+		return "", nil
+	}
+
+	user, err := s.repos.Users.GetByEmail(ctx, normalizedEmail)
+	if err != nil {
+		return "", fmt.Errorf("get user: %w", err)
+	}
+	if user == nil || user.Status != model.StatusActive || user.EmailVerified {
+		return "", nil
+	}
+
+	token, err := s.createEmailVerification(ctx, user)
+	if err != nil {
+		return "", err
+	}
+	if s.notifications != nil {
+		s.notifications.SendEmailVerificationAsync(user.ID, user.Email, user.DisplayName, token)
+		if s.notifications.DeliveryEnabled() {
+			return "", nil
+		}
+	}
+
+	return token, nil
+}
+
+// VerifyEmail validates a verification token and marks the user's email as
+// verified. Tokens are single-use because all verification tokens for the user
+// are deleted after a successful verification.
+func (s *AuthService) VerifyEmail(ctx context.Context, token string) error {
+	if strings.TrimSpace(token) == "" {
+		return ErrVerifyTokenRequired
+	}
+
+	tokenHash := hashToken(token)
+	userID, err := s.repos.EmailVerifications.GetUserIDByToken(ctx, tokenHash)
+	if err != nil {
+		return fmt.Errorf("get email verification token user: %w", err)
+	}
+	if userID == nil {
+		return ErrEmailVerifyInvalid
+	}
+
+	user, err := s.repos.Users.GetByID(ctx, *userID)
+	if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	if user == nil || user.Status != model.StatusActive {
+		return ErrUserInactive
+	}
+
+	if !user.EmailVerified {
+		if err := s.repos.Users.VerifyEmail(ctx, user.ID); err != nil {
+			return fmt.Errorf("verify email: %w", err)
+		}
+	}
+	if err := s.repos.EmailVerifications.DeleteByUser(ctx, user.ID); err != nil {
+		return fmt.Errorf("delete email verification tokens: %w", err)
+	}
+
+	return nil
 }
 
 // StartPasswordReset creates a password reset token for an existing active user.
@@ -654,6 +734,23 @@ func (s *AuthService) ResetPassword(ctx context.Context, input ResetPasswordInpu
 	}
 
 	return nil
+}
+
+func (s *AuthService) createEmailVerification(ctx context.Context, user *model.User) (string, error) {
+	if user == nil {
+		return "", ErrUserNotFound
+	}
+	if err := s.repos.EmailVerifications.DeleteByUser(ctx, user.ID); err != nil {
+		return "", fmt.Errorf("delete existing email verification tokens: %w", err)
+	}
+	token, tokenHash, err := s.issueRefreshToken(user.ID)
+	if err != nil {
+		return "", fmt.Errorf("issue email verification token: %w", err)
+	}
+	if err := s.repos.EmailVerifications.Save(ctx, user.ID, tokenHash, time.Now().Add(emailVerificationTokenTTL)); err != nil {
+		return "", fmt.Errorf("save email verification token: %w", err)
+	}
+	return token, nil
 }
 
 // RefreshAccessToken validates a refresh token and issues a new access token.

@@ -81,6 +81,19 @@ func (n *SMTPNotifier) SendWelcome(ctx context.Context, p WelcomeParams) error {
 	return n.send(ctx, p.Email, fallback(p.AppName, "HistorySync Cloud")+" welcome", body)
 }
 
+func (n *SMTPNotifier) SendEmailVerification(ctx context.Context, p EmailVerificationParams) error {
+	body, err := renderEmailTemplate(emailVerificationTemplate, map[string]any{
+		"AppName":         fallback(p.AppName, "HistorySync Cloud"),
+		"DisplayName":     fallback(p.DisplayName, p.Email),
+		"VerificationURL": p.VerificationURL,
+		"ExpiresIn":       friendlyDuration(p.ExpiresIn),
+	})
+	if err != nil {
+		return err
+	}
+	return n.send(ctx, p.Email, fallback(p.AppName, "HistorySync Cloud")+" email verification", body)
+}
+
 func (n *SMTPNotifier) SendPasswordReset(ctx context.Context, p PasswordResetParams) error {
 	body, err := renderEmailTemplate(passwordResetTemplate, map[string]any{
 		"AppName":     fallback(p.AppName, "HistorySync Cloud"),
@@ -311,6 +324,14 @@ const welcomeTemplate = `<!doctype html>
 <p>Hello {{.DisplayName}},</p>
 <p>Welcome to {{.AppName}}. Your account is ready.</p>
 <p>If this was not you, contact support immediately.</p>
+</body></html>`
+
+const emailVerificationTemplate = `<!doctype html>
+<html><body>
+<p>Hello {{.DisplayName}},</p>
+<p>Use the link below to verify your {{.AppName}} email address. This link expires in {{.ExpiresIn}}.</p>
+<p><a href="{{.VerificationURL}}">Verify email</a></p>
+<p>If you did not create this account, you can ignore this email.</p>
 </body></html>`
 
 const passwordResetTemplate = `<!doctype html>

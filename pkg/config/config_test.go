@@ -89,6 +89,12 @@ func TestDefaultConfigSetsNotificationDefaults(t *testing.T) {
 	if cfg.QuotaExhaustedThreshold != 100 {
 		t.Fatalf("QuotaExhaustedThreshold = %d, want 100", cfg.QuotaExhaustedThreshold)
 	}
+	if cfg.EmailVerificationPath != "/verify-email" {
+		t.Fatalf("EmailVerificationPath = %q, want /verify-email", cfg.EmailVerificationPath)
+	}
+	if cfg.PasswordResetPath != "/reset-password" {
+		t.Fatalf("PasswordResetPath = %q, want /reset-password", cfg.PasswordResetPath)
+	}
 	if cfg.SMTPEnabled {
 		t.Fatal("SMTPEnabled = true, want false")
 	}

@@ -73,6 +73,8 @@ type Config struct {
 	NotificationsEnabled    bool   `mapstructure:"notifications_enabled"`
 	QuotaWarningThreshold   int    `mapstructure:"quota_warning_threshold"`
 	QuotaExhaustedThreshold int    `mapstructure:"quota_exhausted_threshold"`
+	EmailVerificationPath   string `mapstructure:"email_verification_path"`
+	PasswordResetPath       string `mapstructure:"password_reset_path"`
 	SMTPEnabled             bool   `mapstructure:"smtp_enabled"`
 	SMTPServer              string `mapstructure:"smtp_server"`
 	SMTPPort                int    `mapstructure:"smtp_port"`
@@ -111,6 +113,8 @@ func DefaultConfig() *Config {
 		NotificationsEnabled:     false,
 		QuotaWarningThreshold:    80,
 		QuotaExhaustedThreshold:  100,
+		EmailVerificationPath:    "/verify-email",
+		PasswordResetPath:        "/reset-password",
 		SMTPEnabled:              false,
 		SMTPPort:                 587,
 		SMTPFromName:             "HistorySync Cloud",
@@ -187,6 +191,8 @@ func load() (*Config, error) {
 	v.SetDefault("notifications_enabled", cfg.NotificationsEnabled)
 	v.SetDefault("quota_warning_threshold", cfg.QuotaWarningThreshold)
 	v.SetDefault("quota_exhausted_threshold", cfg.QuotaExhaustedThreshold)
+	v.SetDefault("email_verification_path", cfg.EmailVerificationPath)
+	v.SetDefault("password_reset_path", cfg.PasswordResetPath)
 	v.SetDefault("smtp_enabled", cfg.SMTPEnabled)
 	v.SetDefault("smtp_server", cfg.SMTPServer)
 	v.SetDefault("smtp_port", cfg.SMTPPort)

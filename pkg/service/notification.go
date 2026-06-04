@@ -17,6 +17,7 @@ import (
 )
 
 const passwordResetTokenTTL = time.Hour
+const emailVerificationTokenTTL = 24 * time.Hour
 
 type NotificationConfig struct {
 	Enabled            bool
@@ -24,6 +25,7 @@ type NotificationConfig struct {
 	PublicURL          string
 	WarningThreshold   int
 	ExhaustedThreshold int
+	EmailVerifyPath    string
 	PasswordResetPath  string
 	BackgroundTimeout  time.Duration
 }
@@ -52,6 +54,9 @@ func NewNotificationService(repos *repository.Repos, notifier provider.Notifier,
 	}
 	if cfg.ExhaustedThreshold == 0 {
 		cfg.ExhaustedThreshold = 100
+	}
+	if cfg.EmailVerifyPath == "" {
+		cfg.EmailVerifyPath = "/verify-email"
 	}
 	if cfg.PasswordResetPath == "" {
 		cfg.PasswordResetPath = "/reset-password"
@@ -86,6 +91,29 @@ func (s *NotificationService) SendWelcomeEmail(ctx context.Context, email, displ
 func (s *NotificationService) SendWelcomeEmailAsync(email, displayName string) {
 	s.runAsync("welcome notification", func(ctx context.Context) error {
 		return s.SendWelcomeEmail(ctx, email, displayName)
+	})
+}
+
+func (s *NotificationService) SendEmailVerification(ctx context.Context, userID uuid.UUID, email, displayName, token string) error {
+	if s == nil || strings.TrimSpace(email) == "" || token == "" {
+		return nil
+	}
+	verificationURL := s.emailVerificationURL(token)
+	return s.dispatch(ctx, func(ctx context.Context) error {
+		return s.notifier.SendEmailVerification(ctx, provider.EmailVerificationParams{
+			UserID:          userID.String(),
+			Email:           email,
+			DisplayName:     displayName,
+			AppName:         s.config.AppName,
+			VerificationURL: verificationURL,
+			ExpiresIn:       emailVerificationTokenTTL,
+		})
+	})
+}
+
+func (s *NotificationService) SendEmailVerificationAsync(userID uuid.UUID, email, displayName, token string) {
+	s.runAsync("email verification notification", func(ctx context.Context) error {
+		return s.SendEmailVerification(ctx, userID, email, displayName, token)
 	})
 }
 
@@ -240,15 +268,22 @@ func (s *NotificationService) notificationUser(ctx context.Context, userID uuid.
 }
 
 func (s *NotificationService) passwordResetURL(token string) string {
+	return s.linkWithToken(s.config.PasswordResetPath, token)
+}
+
+func (s *NotificationService) emailVerificationURL(token string) string {
+	return s.linkWithToken(s.config.EmailVerifyPath, token)
+}
+
+func (s *NotificationService) linkWithToken(linkPath, token string) string {
 	base, err := url.Parse(s.config.PublicURL)
 	if err != nil {
 		return token
 	}
-	resetPath := s.config.PasswordResetPath
-	if !strings.HasPrefix(resetPath, "/") {
-		resetPath = "/" + resetPath
+	if !strings.HasPrefix(linkPath, "/") {
+		linkPath = "/" + linkPath
 	}
-	base.Path = path.Join(base.Path, resetPath)
+	base.Path = path.Join(base.Path, linkPath)
 	query := base.Query()
 	query.Set("token", token)
 	base.RawQuery = query.Encode()

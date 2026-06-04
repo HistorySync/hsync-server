@@ -19,6 +19,7 @@ var ErrNotificationNotConfigured = errors.New("notification provider is not conf
 type Notifier interface {
 	DeliveryEnabled() bool
 	SendWelcome(ctx context.Context, params WelcomeParams) error
+	SendEmailVerification(ctx context.Context, params EmailVerificationParams) error
 	SendPasswordReset(ctx context.Context, params PasswordResetParams) error
 	SendQuotaWarning(ctx context.Context, params QuotaWarningParams) error
 	SendQuotaExhausted(ctx context.Context, params QuotaExhaustedParams) error
@@ -30,6 +31,15 @@ type WelcomeParams struct {
 	Email       string
 	DisplayName string
 	AppName     string
+}
+
+type EmailVerificationParams struct {
+	UserID          string
+	Email           string
+	DisplayName     string
+	AppName         string
+	VerificationURL string
+	ExpiresIn       time.Duration
 }
 
 type PasswordResetParams struct {

@@ -67,6 +67,9 @@ retention_dry_run: true
 notifications_enabled: false
 quota_warning_threshold: 80
 quota_exhausted_threshold: 100
+# Paths appended to public_url when building email action links.
+email_verification_path: "/verify-email"
+password_reset_path: "/reset-password"
 
 # SMTP configuration. All values can also come from HSYNC_SMTP_* environment
 # variables. smtp_tls_mode may be "starttls" (587), "tls" (465), or "none".

@@ -103,7 +103,7 @@ func TestEveryCodeInCatalog(t *testing.T) {
 	codes := []Code{
 		CodeBadRequest, CodeInternalError, CodeNotImplemented, CodeNotFound,
 		CodeConflict, CodeEmailTaken, CodeInvalidCredentials,
-		CodeInvalidRefreshToken, CodeInvalidResetToken,
+		CodeInvalidRefreshToken, CodeInvalidResetToken, CodeInvalidVerificationToken,
 		CodeQuotaExceeded, CodeReservationDenied,
 		CodeDeviceNotRegistered, CodeDeviceRevoked,
 		CodeBillingDisabled,

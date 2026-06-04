@@ -52,3 +52,18 @@ func TestSMTPMessageCleansHeaders(t *testing.T) {
 		t.Fatalf("message missing html content type: %s", msg)
 	}
 }
+
+func TestEmailVerificationTemplateIncludesActionURL(t *testing.T) {
+	body, err := renderEmailTemplate(emailVerificationTemplate, map[string]any{
+		"AppName":         "HistorySync",
+		"DisplayName":     "Alice",
+		"VerificationURL": "https://cloud.example.com/verify-email?token=abc",
+		"ExpiresIn":       "24 hours",
+	})
+	if err != nil {
+		t.Fatalf("renderEmailTemplate() error = %v", err)
+	}
+	if !strings.Contains(body, "Verify email") || !strings.Contains(body, "https://cloud.example.com/verify-email?token=abc") {
+		t.Fatalf("verification template missing action link: %s", body)
+	}
+}

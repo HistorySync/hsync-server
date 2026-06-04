@@ -74,6 +74,14 @@ type Deps struct {
 	StripeKey      string
 	StripeWebhook  string
 	StripeDisabled bool
+	Reservation    UsageReservationHook
+}
+
+// UsageReservationHook lets Enterprise reserve capacity before storage writes.
+type UsageReservationHook interface {
+	ReserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error)
+	SettleStorage(ctx context.Context, reservationID string, bytes int64) error
+	ReleaseStorage(ctx context.Context, reservationID string)
 }
 
 // Services aggregates all business service instances.
@@ -97,14 +105,16 @@ func New(deps Deps) *Services {
 		repos: deps.Repos,
 	}
 	bundleSvc := &BundleService{
-		repos:     deps.Repos,
-		blobStore: deps.BlobStore,
-		quota:     quotaSvc,
+		repos:       deps.Repos,
+		blobStore:   deps.BlobStore,
+		quota:       quotaSvc,
+		reservation: deps.Reservation,
 	}
 	snapshotSvc := &SnapshotService{
-		repos:     deps.Repos,
-		blobStore: deps.BlobStore,
-		quota:     quotaSvc,
+		repos:       deps.Repos,
+		blobStore:   deps.BlobStore,
+		quota:       quotaSvc,
+		reservation: deps.Reservation,
 	}
 	billingSvc := &BillingService{
 		repos:      deps.Repos,
@@ -524,9 +534,10 @@ func splitStr(s string, sep byte) []string {
 
 // BundleService handles bundle upload validation, deduplication, and listing.
 type BundleService struct {
-	repos     *repository.Repos
-	blobStore storage.BlobStorage
-	quota     *QuotaService
+	repos       *repository.Repos
+	blobStore   storage.BlobStorage
+	quota       *QuotaService
+	reservation UsageReservationHook
 }
 
 // UploadInput contains the metadata for a bundle upload.
@@ -545,6 +556,17 @@ type UploadInput struct {
 
 // UploadBundle validates and persists a bundle.
 func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, input UploadInput) (*model.BundleMeta, error) {
+	reservationID, err := s.reserveStorage(ctx, userID, input.SizeBytes, "bundle_upload")
+	if err != nil {
+		return nil, err
+	}
+	releaseReservation := true
+	defer func() {
+		if releaseReservation && reservationID != "" {
+			s.reservation.ReleaseStorage(ctx, reservationID)
+		}
+	}()
+
 	// Check bundle ID uniqueness
 	exists, err := s.repos.Bundles.ExistsByID(ctx, input.BundleID)
 	if err != nil {
@@ -566,9 +588,11 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		return nil, ErrDeviceRevoked
 	}
 
-	// Quota check
-	if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
-		return nil, err
+	if reservationID == "" {
+		// Quota check
+		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+			return nil, err
+		}
 	}
 
 	// Store the blob
@@ -595,13 +619,29 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		_ = s.blobStore.Delete(ctx, key)
 		return nil, fmt.Errorf("create bundle meta: %w", err)
 	}
-	if err := s.repos.Quota.AddBundleUsage(ctx, userID, input.SizeBytes); err != nil {
-		_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
-		_ = s.blobStore.Delete(ctx, key)
-		return nil, fmt.Errorf("update bundle quota usage: %w", err)
+	if reservationID != "" {
+		if err := s.reservation.SettleStorage(ctx, reservationID, input.SizeBytes); err != nil {
+			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, fmt.Errorf("settle bundle reservation: %w", err)
+		}
+		releaseReservation = false
+	} else {
+		if err := s.repos.Quota.AddBundleUsage(ctx, userID, input.SizeBytes); err != nil {
+			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, fmt.Errorf("update bundle quota usage: %w", err)
+		}
 	}
 
 	return meta, nil
+}
+
+func (s *BundleService) reserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error) {
+	if s.reservation == nil {
+		return "", nil
+	}
+	return s.reservation.ReserveStorage(ctx, userID, bytes, reason)
 }
 
 // DownloadBundle retrieves a bundle's blob for download.
@@ -652,9 +692,10 @@ func (s *BundleService) DeleteBundle(ctx context.Context, userID uuid.UUID, bund
 
 // SnapshotService handles snapshot upload, lookup, and download.
 type SnapshotService struct {
-	repos     *repository.Repos
-	blobStore storage.BlobStorage
-	quota     *QuotaService
+	repos       *repository.Repos
+	blobStore   storage.BlobStorage
+	quota       *QuotaService
+	reservation UsageReservationHook
 }
 
 // UploadSnapshotInput contains the metadata for a snapshot upload.
@@ -670,8 +711,21 @@ type UploadSnapshotInput struct {
 
 // UploadSnapshot validates and persists a snapshot.
 func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
-	if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+	reservationID, err := s.reserveStorage(ctx, userID, input.SizeBytes, "snapshot_upload")
+	if err != nil {
 		return nil, err
+	}
+	releaseReservation := true
+	defer func() {
+		if releaseReservation && reservationID != "" {
+			s.reservation.ReleaseStorage(ctx, reservationID)
+		}
+	}()
+
+	if reservationID == "" {
+		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
+			return nil, err
+		}
 	}
 
 	count, err := s.repos.Snapshots.CountByUser(ctx, userID)
@@ -715,13 +769,29 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		_ = s.blobStore.Delete(ctx, key)
 		return nil, fmt.Errorf("create snapshot meta: %w", err)
 	}
-	if err := s.repos.Quota.AddSnapshotUsage(ctx, userID, input.SizeBytes); err != nil {
-		_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
-		_ = s.blobStore.Delete(ctx, key)
-		return nil, fmt.Errorf("update snapshot quota usage: %w", err)
+	if reservationID != "" {
+		if err := s.reservation.SettleStorage(ctx, reservationID, input.SizeBytes); err != nil {
+			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, fmt.Errorf("settle snapshot reservation: %w", err)
+		}
+		releaseReservation = false
+	} else {
+		if err := s.repos.Quota.AddSnapshotUsage(ctx, userID, input.SizeBytes); err != nil {
+			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
+			_ = s.blobStore.Delete(ctx, key)
+			return nil, fmt.Errorf("update snapshot quota usage: %w", err)
+		}
 	}
 
 	return meta, nil
+}
+
+func (s *SnapshotService) reserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error) {
+	if s.reservation == nil {
+		return "", nil
+	}
+	return s.reservation.ReserveStorage(ctx, userID, bytes, reason)
 }
 
 // DownloadSnapshot retrieves a snapshot blob for download.

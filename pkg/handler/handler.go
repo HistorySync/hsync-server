@@ -20,6 +20,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
 	"github.com/historysync/hsync-server/pkg/ws"
@@ -147,6 +148,21 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 		checks["storage"] = "error: " + err.Error()
 	} else {
 		checks["storage"] = "ok"
+	}
+
+	// Merge any provider-contributed checks (Enterprise dependencies). A failing
+	// critical check makes readiness unhealthy; a failing non-critical one only
+	// degrades it.
+	for _, check := range provider.Registry().Readiness.ReadinessChecks(ctx) {
+		checks[check.Name] = check.Status
+		if check.Healthy {
+			continue
+		}
+		if check.Critical {
+			status = "unhealthy"
+		} else if status == "ok" {
+			status = "degraded"
+		}
 	}
 
 	code := fiber.StatusOK

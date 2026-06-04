@@ -5,6 +5,7 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"sync"
 )
@@ -70,6 +71,26 @@ type QuotaProvider interface {
 	RecordUsage(userID string, bytes int64) error
 }
 
+// ReadinessProvider contributes extra readiness checks (e.g. Enterprise
+// dependencies) that are merged into the /readyz response. CE registers a
+// no-op default; Enterprise injects real checks via RegisterReadiness.
+type ReadinessProvider interface {
+	// ReadinessChecks returns named dependency checks to surface in /readyz.
+	ReadinessChecks(ctx context.Context) []ReadinessCheck
+}
+
+// ReadinessCheck is one named dependency check surfaced by /readyz.
+type ReadinessCheck struct {
+	// Name is a short key, e.g. "ee_schema" or "stripe".
+	Name string
+	// Status is a human-readable state, e.g. "ok", "disabled", "error: ...".
+	Status string
+	// Healthy reports whether the dependency is in an acceptable state.
+	Healthy bool
+	// Critical, when true and the check is not Healthy, makes /readyz unhealthy.
+	Critical bool
+}
+
 // ── Shared Types ─────────────────────────────────────────────
 
 // CreateUserRequest carries registration data.
@@ -117,16 +138,18 @@ type QuotaUsageInfo struct {
 // ProviderRegistry holds the active provider implementations.
 // Enterprise packages call Register*() in their init() to replace defaults.
 type ProviderRegistry struct {
-	Auth    AuthProvider
-	Billing BillingProvider
-	Quota   QuotaProvider
+	Auth      AuthProvider
+	Billing   BillingProvider
+	Quota     QuotaProvider
+	Readiness ReadinessProvider
 }
 
 var (
 	registry = &ProviderRegistry{
-		Auth:    defaultAuthProvider,
-		Billing: defaultBillingProvider,
-		Quota:   defaultQuotaProvider,
+		Auth:      defaultAuthProvider,
+		Billing:   defaultBillingProvider,
+		Quota:     defaultQuotaProvider,
+		Readiness: defaultReadinessProvider,
 	}
 	regMu sync.RWMutex
 )
@@ -157,4 +180,11 @@ func RegisterQuota(p QuotaProvider) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.Quota = p
+}
+
+// RegisterReadiness replaces the current ReadinessProvider.
+func RegisterReadiness(p ReadinessProvider) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.Readiness = p
 }

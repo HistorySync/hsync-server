@@ -18,6 +18,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/handler"
+	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -117,6 +118,7 @@ func main() {
 		BodyLimit:    55 * 1024 * 1024, // 55 MB (稍大于 50 MB Bundle 上限)
 		ErrorHandler: h.ErrorHandler,
 	})
+	app.Use(middleware.RequestID())
 
 	// Register all routes
 	h.RegisterRoutes(app)

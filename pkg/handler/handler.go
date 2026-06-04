@@ -17,6 +17,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -270,6 +271,7 @@ func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {
 	}
 
 	return c.Status(code).JSON(fiber.Map{
+		"request_id": middleware.GetRequestID(c),
 		"error": fiber.Map{
 			"code":    errCode,
 			"message": message,

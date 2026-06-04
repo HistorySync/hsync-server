@@ -253,6 +253,48 @@ func TestRecalculateUsageEmpty(t *testing.T) {
 	assertUsage(t, repos, u.ID, 0, 0, 0)
 }
 
+// TestRecalculateAllUsage verifies the bulk reconcile fixes every user's
+// counters in one pass, excluding soft-deleted rows.
+func TestRecalculateAllUsage(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u1 := seedUser(t, repos, "all1@example.com")
+	u2 := seedUser(t, repos, "all2@example.com")
+	dev := uuid.New()
+
+	// u1: 2 bundles (100+200) + 1 snapshot (300) -> 600 / 2 / 1.
+	seedBundle(t, repos, u1.ID, dev, "a1", 1, 1, 100)
+	seedBundle(t, repos, u1.ID, dev, "a2", 2, 2, 200)
+	if err := repos.Snapshots.Create(ctx, &model.SnapshotMeta{
+		SnapshotID: "as1", UserID: u1.ID, BaseHLC: 1, SizeBytes: 300, CipherID: 1,
+	}); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+
+	// u2: 1 live bundle (50) plus a soft-deleted bundle (999) that must be excluded.
+	seedBundle(t, repos, u2.ID, dev, "b1", 1, 1, 50)
+	seedBundle(t, repos, u2.ID, dev, "b-del", 2, 2, 999)
+	if _, err := repos.Bundles.SoftDelete(ctx, u2.ID, "b-del"); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+
+	// Drift u1's counters to confirm the reconcile overwrites them.
+	if err := repos.Quota.AddBundleUsage(ctx, u1.ID, 12345); err != nil {
+		t.Fatalf("seed drift: %v", err)
+	}
+
+	n, err := repos.Quota.RecalculateAllUsage(ctx)
+	if err != nil {
+		t.Fatalf("RecalculateAllUsage: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("RecalculateAllUsage reconciled %d rows, want 2", n)
+	}
+	assertUsage(t, repos, u1.ID, 600, 2, 1)
+	assertUsage(t, repos, u2.ID, 50, 1, 0)
+}
+
 func assertUsage(t *testing.T, repos *Repos, userID uuid.UUID, wantBytes int64, wantBundles, wantSnaps int32) {
 	t.Helper()
 	usage, err := repos.Quota.GetUsage(testContext(t), userID)

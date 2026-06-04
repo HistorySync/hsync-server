@@ -992,6 +992,13 @@ func (s *QuotaService) RecalculateUsage(ctx context.Context, userID uuid.UUID) (
 	return &UsageRecalculation{Before: *before, After: *after}, nil
 }
 
+// RecalculateAllUsage reconciles storage_usage for every active user in one bulk
+// pass, returning the number of users reconciled. It backs the periodic
+// maintenance task; per-user corrections use RecalculateUsage.
+func (s *QuotaService) RecalculateAllUsage(ctx context.Context) (int64, error) {
+	return s.repos.Quota.RecalculateAllUsage(ctx)
+}
+
 // CheckDeviceLimit verifies the user can register more devices.
 func (s *QuotaService) CheckDeviceLimit(ctx context.Context, userID uuid.UUID, tier model.UserTier) error {
 	count, err := s.repos.Devices.CountActiveByUser(ctx, userID)

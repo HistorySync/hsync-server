@@ -988,6 +988,42 @@ func (r *QuotaRepo) RecalculateUsage(ctx context.Context, userID uuid.UUID) (*mo
 	return u, nil
 }
 
+// RecalculateAllUsage reconciles storage_usage for every active user in a single
+// bulk statement, recomputing counters from the authoritative bundle and
+// snapshot rows. It is the periodic, whole-fleet counterpart to RecalculateUsage
+// and returns the number of user rows reconciled.
+func (r *QuotaRepo) RecalculateAllUsage(ctx context.Context) (int64, error) {
+	const q = `
+		INSERT INTO storage_usage (user_id, total_bytes, bundle_count, snap_count, updated_at)
+		SELECT
+			u.id,
+			COALESCE(b.bytes, 0) + COALESCE(s.bytes, 0),
+			COALESCE(b.cnt, 0),
+			COALESCE(s.cnt, 0),
+			now()
+		FROM users u
+		LEFT JOIN (
+			SELECT user_id, SUM(size_bytes) AS bytes, COUNT(*) AS cnt
+			FROM bundles WHERE deleted_at IS NULL GROUP BY user_id
+		) b ON b.user_id = u.id
+		LEFT JOIN (
+			SELECT user_id, SUM(size_bytes) AS bytes, COUNT(*) AS cnt
+			FROM snapshots WHERE deleted_at IS NULL GROUP BY user_id
+		) s ON s.user_id = u.id
+		WHERE u.deleted_at IS NULL
+		ON CONFLICT (user_id) DO UPDATE SET
+			total_bytes  = EXCLUDED.total_bytes,
+			bundle_count = EXCLUDED.bundle_count,
+			snap_count   = EXCLUDED.snap_count,
+			updated_at   = now()`
+
+	tag, err := r.pool.Exec(ctx, q)
+	if err != nil {
+		return 0, fmt.Errorf("recalculate all usage: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // ── Refresh Token Repo ──────────────────────────────────────
 
 // RefreshTokenRepo manages refresh token storage.

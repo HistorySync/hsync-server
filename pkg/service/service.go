@@ -64,6 +64,7 @@ var (
 	ErrDeviceNotRegistered  = errors.New("device not registered")
 	ErrBillingNotSupported  = errors.New("billing not supported")
 	ErrRefreshTokenRequired = errors.New("refresh token is required")
+	ErrReservationDenied    = errors.New("storage reservation denied")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -81,6 +82,7 @@ type Deps struct {
 // reservation backend can record which artifact and request triggered it.
 type ReservationRequest struct {
 	Reason     string
+	TeamID     string
 	BundleID   string
 	SnapshotID string
 	DeviceUUID string
@@ -612,12 +614,14 @@ type UploadInput struct {
 	Reader        io.Reader `json:"-"` // The file stream
 	ContentType   string    `json:"-"`
 	RequestID     string    `json:"-"`
+	TeamID        string    `json:"-"`
 }
 
 // UploadBundle validates and persists a bundle.
 func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, input UploadInput) (*model.BundleMeta, error) {
 	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
 		Reason:     "bundle_upload",
+		TeamID:     input.TeamID,
 		BundleID:   input.BundleID,
 		DeviceUUID: input.DeviceUUID.String(),
 		RequestID:  input.RequestID,
@@ -760,12 +764,14 @@ type UploadSnapshotInput struct {
 	Reader        io.Reader `json:"-"`
 	ContentType   string    `json:"-"`
 	RequestID     string    `json:"-"`
+	TeamID        string    `json:"-"`
 }
 
 // UploadSnapshot validates and persists a snapshot.
 func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
 	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
 		Reason:     "snapshot_upload",
+		TeamID:     input.TeamID,
 		SnapshotID: input.SnapshotID,
 		RequestID:  input.RequestID,
 	})

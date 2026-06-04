@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v3"
@@ -544,6 +545,7 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 		Reader:        src,
 		ContentType:   file.Header.Get("Content-Type"),
 		RequestID:     middleware.GetRequestID(c),
+		TeamID:        strings.TrimSpace(c.Get("X-Team-ID")),
 	})
 	if err != nil {
 		switch err {
@@ -551,6 +553,8 @@ func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 			return newError(fiber.StatusConflict, "CONFLICT", err.Error())
 		case service.ErrQuotaExceeded:
 			return newError(507, "QUOTA_EXCEEDED", err.Error())
+		case service.ErrReservationDenied:
+			return newError(fiber.StatusForbidden, "RESERVATION_DENIED", err.Error())
 		case service.ErrDeviceRevoked:
 			return newError(fiber.StatusForbidden, "DEVICE_REVOKED", err.Error())
 		case service.ErrDeviceNotRegistered:
@@ -695,8 +699,12 @@ func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
 		Reader:        src,
 		ContentType:   file.Header.Get("Content-Type"),
 		RequestID:     middleware.GetRequestID(c),
+		TeamID:        strings.TrimSpace(c.Get("X-Team-ID")),
 	})
 	if err != nil {
+		if err == service.ErrReservationDenied {
+			return newError(fiber.StatusForbidden, "RESERVATION_DENIED", err.Error())
+		}
 		if err == service.ErrQuotaExceeded {
 			return newError(507, "QUOTA_EXCEEDED", err.Error())
 		}

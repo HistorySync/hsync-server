@@ -85,6 +85,7 @@ func TestReserveForwardsRequestMetadata(t *testing.T) {
 	hook := &fakeReservationHook{reserveID: "res-meta"}
 	req := ReservationRequest{
 		Reason:     "bundle_upload",
+		TeamID:     "team-1",
 		BundleID:   "bundle-123",
 		DeviceUUID: "device-abc",
 		RequestID:  "req-xyz",

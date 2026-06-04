@@ -65,6 +65,22 @@ type Config struct {
 
 	// Runtime options
 	OptionsFile string `mapstructure:"options_file"`
+
+	// Public URL used to build links in user-facing emails.
+	PublicURL string `mapstructure:"public_url"`
+
+	// Notifications
+	NotificationsEnabled    bool   `mapstructure:"notifications_enabled"`
+	QuotaWarningThreshold   int    `mapstructure:"quota_warning_threshold"`
+	QuotaExhaustedThreshold int    `mapstructure:"quota_exhausted_threshold"`
+	SMTPEnabled             bool   `mapstructure:"smtp_enabled"`
+	SMTPServer              string `mapstructure:"smtp_server"`
+	SMTPPort                int    `mapstructure:"smtp_port"`
+	SMTPUsername            string `mapstructure:"smtp_username"`
+	SMTPPassword            string `mapstructure:"smtp_password"`
+	SMTPFrom                string `mapstructure:"smtp_from"`
+	SMTPFromName            string `mapstructure:"smtp_from_name"`
+	SMTPTLSMode             string `mapstructure:"smtp_tls_mode"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -91,6 +107,14 @@ func DefaultConfig() *Config {
 		RetentionGracePeriod:     30 * 24 * time.Hour,
 		RetentionDryRun:          true,
 		OptionsFile:              "",
+		PublicURL:                "http://localhost:8080",
+		NotificationsEnabled:     false,
+		QuotaWarningThreshold:    80,
+		QuotaExhaustedThreshold:  100,
+		SMTPEnabled:              false,
+		SMTPPort:                 587,
+		SMTPFromName:             "HistorySync Cloud",
+		SMTPTLSMode:              "starttls",
 	}
 }
 
@@ -159,6 +183,18 @@ func load() (*Config, error) {
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
 	v.SetDefault("options_file", cfg.OptionsFile)
+	v.SetDefault("public_url", cfg.PublicURL)
+	v.SetDefault("notifications_enabled", cfg.NotificationsEnabled)
+	v.SetDefault("quota_warning_threshold", cfg.QuotaWarningThreshold)
+	v.SetDefault("quota_exhausted_threshold", cfg.QuotaExhaustedThreshold)
+	v.SetDefault("smtp_enabled", cfg.SMTPEnabled)
+	v.SetDefault("smtp_server", cfg.SMTPServer)
+	v.SetDefault("smtp_port", cfg.SMTPPort)
+	v.SetDefault("smtp_username", cfg.SMTPUsername)
+	v.SetDefault("smtp_password", cfg.SMTPPassword)
+	v.SetDefault("smtp_from", cfg.SMTPFrom)
+	v.SetDefault("smtp_from_name", cfg.SMTPFromName)
+	v.SetDefault("smtp_tls_mode", cfg.SMTPTLSMode)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {
@@ -218,6 +254,32 @@ func (c *Config) Validate() error {
 		}
 		if c.OIDCRedirectURL == "" {
 			errs = append(errs, "oidc_redirect_url is required when OIDC is enabled")
+		}
+	}
+
+	if c.QuotaWarningThreshold < 0 || c.QuotaWarningThreshold > 100 {
+		errs = append(errs, "quota_warning_threshold must be between 0 and 100")
+	}
+	if c.QuotaExhaustedThreshold <= 0 || c.QuotaExhaustedThreshold > 100 {
+		errs = append(errs, "quota_exhausted_threshold must be between 1 and 100")
+	}
+	if c.QuotaWarningThreshold >= c.QuotaExhaustedThreshold {
+		errs = append(errs, "quota_warning_threshold must be lower than quota_exhausted_threshold")
+	}
+	switch c.SMTPTLSMode {
+	case "", "none", "starttls", "tls":
+	default:
+		errs = append(errs, "smtp_tls_mode must be one of none, starttls, tls")
+	}
+	if c.SMTPEnabled {
+		if c.SMTPServer == "" {
+			errs = append(errs, "smtp_server is required when smtp is enabled")
+		}
+		if c.SMTPPort <= 0 || c.SMTPPort > 65535 {
+			errs = append(errs, "smtp_port must be between 1 and 65535")
+		}
+		if c.SMTPFrom == "" {
+			errs = append(errs, "smtp_from is required when smtp is enabled")
 		}
 	}
 

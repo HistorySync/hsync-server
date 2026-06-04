@@ -76,6 +76,8 @@ type Deps struct {
 	StripeWebhook  string
 	StripeDisabled bool
 	Reservation    UsageReservationHook
+	Notifier       provider.Notifier
+	Notification   NotificationConfig
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -159,12 +161,18 @@ type Services struct {
 
 // New creates all service instances with their dependencies.
 func New(deps Deps) *Services {
+	if deps.Notifier == nil {
+		deps.Notifier = provider.Registry().Notifier
+	}
+	notifSvc := NewNotificationService(deps.Repos, deps.Notifier, deps.Notification)
 	authSvc := &AuthService{
-		repos:        deps.Repos,
-		tokenManager: deps.TokenManager,
+		repos:         deps.Repos,
+		tokenManager:  deps.TokenManager,
+		notifications: notifSvc,
 	}
 	quotaSvc := &QuotaService{
-		repos: deps.Repos,
+		repos:         deps.Repos,
+		notifications: notifSvc,
 	}
 	bundleSvc := &BundleService{
 		repos:       deps.Repos,
@@ -175,6 +183,7 @@ func New(deps Deps) *Services {
 	snapshotSvc := &SnapshotService{
 		repos:       deps.Repos,
 		blobStore:   deps.BlobStore,
+		quota:       quotaSvc,
 		reservation: deps.Reservation,
 	}
 	billingSvc := &BillingService{
@@ -184,7 +193,6 @@ func New(deps Deps) *Services {
 		disabled:   deps.StripeDisabled,
 		provider:   provider.Registry().Billing,
 	}
-	notifSvc := &NotificationService{}
 	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
 
 	return &Services{
@@ -401,8 +409,9 @@ func purgeExpiredSnapshots(ctx context.Context, snapshots purgeableSnapshots, bl
 
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
-	repos        *repository.Repos
-	tokenManager *auth.TokenManager
+	repos         *repository.Repos
+	tokenManager  *auth.TokenManager
+	notifications *NotificationService
 }
 
 // RegisterInput contains the fields required for user registration.
@@ -483,6 +492,10 @@ func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*Regis
 	if err := s.repos.RefreshTokens.SaveRefreshToken(ctx, user.ID, tokenHash, "",
 		time.Now().Add(30*24*time.Hour)); err != nil {
 		return nil, fmt.Errorf("save refresh token: %w", err)
+	}
+
+	if s.notifications != nil {
+		s.notifications.SendWelcomeEmailAsync(user.Email, user.DisplayName)
 	}
 
 	return &RegisterResult{
@@ -581,6 +594,13 @@ func (s *AuthService) StartPasswordReset(ctx context.Context, email string) (str
 
 	if err := s.repos.PasswordResets.Save(ctx, user.ID, tokenHash, time.Now().Add(time.Hour)); err != nil {
 		return "", fmt.Errorf("save password reset token: %w", err)
+	}
+
+	if s.notifications != nil {
+		s.notifications.SendPasswordResetAsync(user.ID, user.Email, user.DisplayName, resetToken)
+		if s.notifications.DeliveryEnabled() {
+			return "", nil
+		}
 	}
 
 	return resetToken, nil
@@ -859,12 +879,13 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	// below.) Trade-off: usage is counted before the metadata row exists, so a
 	// crash before Create over-counts the user by one bundle until usage is
 	// recomputed -- bounded, and preferred over writing the blob then racing.
+	storageLimit := int64(0)
 	if !guard.active() {
-		storageLimit, err := s.quota.StorageLimit(ctx, userID)
+		storageLimit, err = s.quota.StorageLimit(ctx, userID)
 		if err != nil {
 			return nil, err
 		}
-		ok, err := s.repos.Quota.TryAddBundleUsage(ctx, userID, input.SizeBytes, storageLimit)
+		ok, err := s.quota.TryAddBundleUsage(ctx, userID, input.SizeBytes, storageLimit)
 		if err != nil {
 			return nil, fmt.Errorf("reserve bundle quota: %w", err)
 		}
@@ -910,6 +931,8 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle bundle reservation: %w", err)
 		}
+	} else {
+		s.quota.NotifyBundleUsageAdded(ctx, userID, input.SizeBytes, storageLimit)
 	}
 
 	return meta, nil
@@ -955,7 +978,7 @@ func (s *BundleService) DeleteBundle(ctx context.Context, userID uuid.UUID, bund
 		}
 		return err
 	}
-	if err := s.repos.Quota.RemoveBundleUsage(ctx, userID, meta.SizeBytes); err != nil {
+	if err := s.quota.RemoveBundleUsage(ctx, userID, meta.SizeBytes); err != nil {
 		return fmt.Errorf("update bundle quota usage: %w", err)
 	}
 	return nil
@@ -965,6 +988,7 @@ func (s *BundleService) DeleteBundle(ctx context.Context, userID uuid.UUID, bund
 type SnapshotService struct {
 	repos       *repository.Repos
 	blobStore   storage.BlobStorage
+	quota       *QuotaService
 	reservation UsageReservationHook
 }
 
@@ -1023,7 +1047,7 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 	// without touching S3. See UploadBundle for the crash-window trade-off. (EE
 	// reserved via the hook above and settles below.)
 	if !guard.active() {
-		ok, err := s.repos.Quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
+		ok, err := s.quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reserve snapshot quota: %w", err)
 		}
@@ -1062,6 +1086,8 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle snapshot reservation: %w", err)
 		}
+	} else {
+		s.quota.NotifySnapshotUsageAdded(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
 	}
 
 	return meta, nil
@@ -1124,7 +1150,8 @@ func (s *AuthService) ListRevocations(ctx context.Context, userID uuid.UUID) ([]
 
 // QuotaService checks and enforces resource limits.
 type QuotaService struct {
-	repos *repository.Repos
+	repos         *repository.Repos
+	notifications *NotificationService
 }
 
 // QuotaInfo contains a user's current usage and limits.
@@ -1161,6 +1188,82 @@ func (s *QuotaService) StorageLimit(ctx context.Context, userID uuid.UUID) (int6
 		return 0, ErrUserNotFound
 	}
 	return model.TierLimits(user.Tier).StorageLimitBytes, nil
+}
+
+func (s *QuotaService) TryAddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
+	return s.repos.Quota.TryAddBundleUsage(ctx, userID, sizeBytes, storageLimitBytes)
+}
+
+func (s *QuotaService) TryAddSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
+	return s.repos.Quota.TryAddSnapshotUsage(ctx, userID, sizeBytes, storageLimitBytes)
+}
+
+func (s *QuotaService) NotifyBundleUsageAdded(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) {
+	if s.notifications == nil || storageLimitBytes <= 0 {
+		return
+	}
+	after, err := s.repos.Quota.GetUsage(ctx, userID)
+	if err != nil || after == nil {
+		return
+	}
+	before := *after
+	before.TotalBytes -= sizeBytes
+	before.BundleCount--
+	if before.TotalBytes < 0 {
+		before.TotalBytes = 0
+	}
+	if before.BundleCount < 0 {
+		before.BundleCount = 0
+	}
+	s.notifications.MaybeNotifyQuotaIncrease(userID, before, *after, storageLimitBytes)
+}
+
+func (s *QuotaService) NotifySnapshotUsageAdded(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) {
+	if s.notifications == nil || storageLimitBytes <= 0 {
+		return
+	}
+	after, err := s.repos.Quota.GetUsage(ctx, userID)
+	if err != nil || after == nil {
+		return
+	}
+	before := *after
+	before.TotalBytes -= sizeBytes
+	before.SnapCount--
+	if before.TotalBytes < 0 {
+		before.TotalBytes = 0
+	}
+	if before.SnapCount < 0 {
+		before.SnapCount = 0
+	}
+	s.notifications.MaybeNotifyQuotaIncrease(userID, before, *after, storageLimitBytes)
+}
+
+func (s *QuotaService) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	limit, limitErr := s.StorageLimit(ctx, userID)
+	before, beforeErr := s.repos.Quota.GetUsage(ctx, userID)
+	if err := s.repos.Quota.RemoveBundleUsage(ctx, userID, sizeBytes); err != nil {
+		return err
+	}
+	if limitErr == nil && beforeErr == nil && before != nil && s.notifications != nil {
+		if after, err := s.repos.Quota.GetUsage(ctx, userID); err == nil && after != nil {
+			s.notifications.MaybeNotifyQuotaRestored(userID, *before, *after, limit)
+		}
+	}
+	return nil
+}
+
+func (s *QuotaService) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
+	limit, limitErr := s.StorageLimit(ctx, userID)
+	before, beforeErr := s.repos.Quota.GetUsage(ctx, userID)
+	if err := s.repos.Quota.RemoveSnapshotUsage(ctx, userID, sizeBytes); err != nil {
+		return err
+	}
+	if limitErr == nil && beforeErr == nil && before != nil && s.notifications != nil {
+		if after, err := s.repos.Quota.GetUsage(ctx, userID); err == nil && after != nil {
+			s.notifications.MaybeNotifyQuotaRestored(userID, *before, *after, limit)
+		}
+	}
+	return nil
 }
 
 // UsageRecalculation reports a user's storage usage before and after a recompute
@@ -1298,18 +1401,3 @@ func (s *BillingService) ListInvoices(ctx context.Context, userID uuid.UUID) ([]
 }
 
 // ── NotificationService ──────────────────────────────────────
-
-// NotificationService sends email and push notifications.
-type NotificationService struct{}
-
-// SendWelcomeEmail sends a welcome email to a newly registered user.
-func (s *NotificationService) SendWelcomeEmail(email, displayName string) error {
-	// TODO: Implement email sending (SMTP / SendGrid / SES)
-	return nil
-}
-
-// SendQuotaWarning sends a quota warning notification.
-func (s *NotificationService) SendQuotaWarning(email string, usagePercent float64) error {
-	// TODO: Implement
-	return nil
-}

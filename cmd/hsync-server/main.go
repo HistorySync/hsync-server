@@ -19,6 +19,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/handler"
 	"github.com/historysync/hsync-server/pkg/middleware"
+	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/scheduler"
 	"github.com/historysync/hsync-server/pkg/service"
@@ -108,6 +109,27 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to initialize token manager")
 	}
 
+	notifier := provider.Registry().Notifier
+	if cfg.SMTPEnabled {
+		smtpNotifier, err := provider.NewSMTPNotifier(provider.SMTPConfig{
+			Server:   cfg.SMTPServer,
+			Port:     cfg.SMTPPort,
+			Username: cfg.SMTPUsername,
+			Password: cfg.SMTPPassword,
+			From:     cfg.SMTPFrom,
+			FromName: cfg.SMTPFromName,
+			TLSMode:  cfg.SMTPTLSMode,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("failed to initialize smtp notifier")
+		}
+		notifier = smtpNotifier
+		provider.RegisterNotifier(notifier)
+		log.Info().Str("server", cfg.SMTPServer).Int("port", cfg.SMTPPort).Msg("smtp notifications configured")
+	} else if cfg.NotificationsEnabled {
+		log.Warn().Msg("notifications enabled without smtp; using log-only notifier")
+	}
+
 	// ── Services ──────────────────────────────────────────────
 	svcs := service.New(service.Deps{
 		Repos:          repos,
@@ -116,6 +138,14 @@ func main() {
 		StripeKey:      cfg.StripeSecretKey,
 		StripeWebhook:  cfg.StripeWebhookSecret,
 		StripeDisabled: cfg.StripeDisabled,
+		Notifier:       notifier,
+		Notification: service.NotificationConfig{
+			Enabled:            cfg.NotificationsEnabled,
+			AppName:            cfg.WebAppName,
+			PublicURL:          cfg.PublicURL,
+			WarningThreshold:   cfg.QuotaWarningThreshold,
+			ExhaustedThreshold: cfg.QuotaExhaustedThreshold,
+		},
 	})
 
 	// ── WebSocket Hub ─────────────────────────────────────────

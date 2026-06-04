@@ -142,6 +142,7 @@ type ProviderRegistry struct {
 	Billing   BillingProvider
 	Quota     QuotaProvider
 	Readiness ReadinessProvider
+	Notifier  Notifier
 }
 
 var (
@@ -150,6 +151,7 @@ var (
 		Billing:   defaultBillingProvider,
 		Quota:     defaultQuotaProvider,
 		Readiness: defaultReadinessProvider,
+		Notifier:  NewLogNotifier(),
 	}
 	regMu sync.RWMutex
 )
@@ -187,4 +189,11 @@ func RegisterReadiness(p ReadinessProvider) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.Readiness = p
+}
+
+// RegisterNotifier replaces the current notification provider.
+func RegisterNotifier(p Notifier) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.Notifier = p
 }

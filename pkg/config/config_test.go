@@ -77,3 +77,46 @@ func TestDefaultConfigEnablesWebSurface(t *testing.T) {
 		t.Fatal("WebAppName is empty")
 	}
 }
+
+func TestDefaultConfigSetsNotificationDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.NotificationsEnabled {
+		t.Fatal("NotificationsEnabled = true, want false")
+	}
+	if cfg.QuotaWarningThreshold != 80 {
+		t.Fatalf("QuotaWarningThreshold = %d, want 80", cfg.QuotaWarningThreshold)
+	}
+	if cfg.QuotaExhaustedThreshold != 100 {
+		t.Fatalf("QuotaExhaustedThreshold = %d, want 100", cfg.QuotaExhaustedThreshold)
+	}
+	if cfg.SMTPEnabled {
+		t.Fatal("SMTPEnabled = true, want false")
+	}
+	if cfg.SMTPPort != 587 {
+		t.Fatalf("SMTPPort = %d, want 587", cfg.SMTPPort)
+	}
+	if cfg.SMTPTLSMode != "starttls" {
+		t.Fatalf("SMTPTLSMode = %q, want starttls", cfg.SMTPTLSMode)
+	}
+}
+
+func TestValidateRejectsInvalidNotificationThresholds(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.QuotaWarningThreshold = 100
+	cfg.QuotaExhaustedThreshold = 100
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "quota_warning_threshold") {
+		t.Fatalf("Validate() error = %v, want quota threshold error", err)
+	}
+}
+
+func TestValidateRequiresSMTPSettingsWhenEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SMTPEnabled = true
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "smtp_server") || !strings.Contains(err.Error(), "smtp_from") {
+		t.Fatalf("Validate() error = %v, want smtp setting errors", err)
+	}
+}

@@ -9,6 +9,8 @@ web_enabled: true
 web_app_name: "HistorySync Cloud Server"
 web_console_path: "/console"
 web_support_email: "support@historysync.app"
+# Public base URL used in emails, such as password reset links.
+public_url: "http://localhost:8080"
 
 # Log level: debug, info, warn, error
 log_level: "info"
@@ -58,3 +60,21 @@ retention_dry_run: true
 # this YAML file on startup and exposes GET/PUT /admin/options at runtime so an
 # operator can change select settings without restarting. Leave empty to disable.
 # options_file: "configs/options.yaml"
+
+# User-facing notifications. Disabled by default in CE; when disabled, the
+# server keeps core flows working and logs notification events instead of
+# delivering mail. Enable SMTP to send password reset and quota emails.
+notifications_enabled: false
+quota_warning_threshold: 80
+quota_exhausted_threshold: 100
+
+# SMTP configuration. All values can also come from HSYNC_SMTP_* environment
+# variables. smtp_tls_mode may be "starttls" (587), "tls" (465), or "none".
+smtp_enabled: false
+# smtp_server: "smtp.example.com"
+smtp_port: 587
+# smtp_username: ""
+# smtp_password: ""
+# smtp_from: "noreply@historysync.app"
+smtp_from_name: "HistorySync Cloud"
+smtp_tls_mode: "starttls"

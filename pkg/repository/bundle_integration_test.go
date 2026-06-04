@@ -274,3 +274,49 @@ func TestBundleCountDeletedBefore(t *testing.T) {
 		t.Fatalf("CountDeletedBefore(past) = (%d, %d), want (0, 0)", count, bytes)
 	}
 }
+
+// TestBundleListDeletedBefore verifies the retention purge query returns only the
+// bundles soft-deleted before the cutoff, excluding live rows, so the purge loop
+// pages over exactly the rows it is allowed to remove.
+func TestBundleListDeletedBefore(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "listdel@example.com")
+	dev := uuid.New()
+	seedBundle(t, repos, u.ID, dev, "d1", 1, 1, 100)
+	seedBundle(t, repos, u.ID, dev, "d2", 2, 2, 200)
+	seedBundle(t, repos, u.ID, dev, "live", 3, 3, 400) // stays live
+
+	if _, err := repos.Bundles.SoftDelete(ctx, u.ID, "d1"); err != nil {
+		t.Fatalf("SoftDelete d1: %v", err)
+	}
+	if _, err := repos.Bundles.SoftDelete(ctx, u.ID, "d2"); err != nil {
+		t.Fatalf("SoftDelete d2: %v", err)
+	}
+
+	// Future cutoff: both soft-deleted bundles are returned, the live one is not.
+	deleted, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListDeletedBefore(future): %v", err)
+	}
+	got := map[string]int64{}
+	for _, b := range deleted {
+		got[b.BundleID] = b.SizeBytes
+	}
+	if len(got) != 2 || got["d1"] != 100 || got["d2"] != 200 {
+		t.Fatalf("ListDeletedBefore(future) = %+v, want d1=100,d2=200 only", got)
+	}
+	if _, ok := got["live"]; ok {
+		t.Fatal("ListDeletedBefore returned a live bundle")
+	}
+
+	// Past cutoff: nothing qualifies.
+	none, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("ListDeletedBefore(past): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("ListDeletedBefore(past) = %+v, want empty", none)
+	}
+}

@@ -185,7 +185,7 @@ func New(deps Deps) *Services {
 		provider:   provider.Registry().Billing,
 	}
 	notifSvc := &NotificationService{}
-	retentionSvc := &RetentionService{repos: deps.Repos}
+	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
 
 	return &Services{
 		Repos:        deps.Repos,
@@ -205,14 +205,18 @@ func New(deps Deps) *Services {
 // its retention grace period. It currently covers bundles; snapshot and user
 // cleanup can be added as further tasks.
 type RetentionService struct {
-	repos *repository.Repos
+	repos     *repository.Repos
+	blobStore storage.BlobStorage
 }
 
-// RetentionReport summarizes the soft-deleted data eligible for purging.
+// RetentionReport summarizes the soft-deleted data eligible for purging, or, for
+// the purge path, what was actually removed. Failed is the number of bundles that
+// could not be purged this run (left for a later run); it is zero for a dry run.
 type RetentionReport struct {
 	Before         time.Time `json:"before"`
 	ExpiredBundles int64     `json:"expired_bundles"`
 	ExpiredBytes   int64     `json:"expired_bytes"`
+	Failed         int64     `json:"failed"`
 }
 
 // ReportExpiredBundles reports how many bundles were soft-deleted longer ago than
@@ -225,6 +229,88 @@ func (s *RetentionService) ReportExpiredBundles(ctx context.Context, grace time.
 		return RetentionReport{}, fmt.Errorf("count expired bundles: %w", err)
 	}
 	return RetentionReport{Before: before, ExpiredBundles: count, ExpiredBytes: bytes}, nil
+}
+
+// purgeableBundles is the subset of bundle persistence the retention purge needs:
+// page through soft-deleted bundles and physically remove one. The concrete
+// *repository.BundleRepo satisfies it; tests supply an in-memory fake.
+type purgeableBundles interface {
+	ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error)
+	HardDelete(ctx context.Context, userID uuid.UUID, bundleID string) error
+}
+
+// blobDeleter removes a stored blob by key; storage.BlobStorage satisfies it.
+type blobDeleter interface {
+	Delete(ctx context.Context, key string) error
+}
+
+// PurgeExpiredBundles permanently deletes bundles that were soft-deleted longer
+// ago than the grace period, returning what was removed. It is the destructive
+// counterpart to ReportExpiredBundles and should run only when the caller has
+// opted out of dry-run mode.
+func (s *RetentionService) PurgeExpiredBundles(ctx context.Context, grace time.Duration) (RetentionReport, error) {
+	before := time.Now().Add(-grace)
+	return purgeExpiredBundles(ctx, s.repos.Bundles, s.blobStore, before)
+}
+
+// purgeExpiredBundles is the pure purge loop shared by PurgeExpiredBundles and its
+// tests. For each soft-deleted bundle older than before it deletes the blob first
+// and then the metadata row, so an interruption leaves a retryable soft-deleted
+// row rather than an orphaned blob. It intentionally does NOT touch storage_usage:
+// DeleteBundle already decremented it at soft-delete time, so the counters track
+// only live data and a second decrement here would double-count.
+//
+// It pages via ListDeletedBefore (which the repository caps and orders by deletion
+// time) and stops when a page yields no further progress, so a bundle whose blob
+// or row delete keeps failing is counted once in Failed and left for a later run
+// instead of looping forever.
+func purgeExpiredBundles(ctx context.Context, bundles purgeableBundles, blobs blobDeleter, before time.Time) (RetentionReport, error) {
+	report := RetentionReport{Before: before}
+	// Bundles that failed this run, keyed by user/bundle, so a stuck row is retried
+	// at most once per run and bounds the loop.
+	failed := make(map[string]bool)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		batch, err := bundles.ListDeletedBefore(ctx, before)
+		if err != nil {
+			return report, fmt.Errorf("list expired bundles: %w", err)
+		}
+		if len(batch) == 0 {
+			return report, nil
+		}
+
+		progressed := 0
+		for _, b := range batch {
+			id := b.UserID.String() + "/" + b.BundleID
+			if failed[id] {
+				continue
+			}
+			// Blob before row: a crash after this point leaves a soft-deleted row
+			// that the next run retries, never an orphaned blob.
+			key := storage.BundleKey(b.UserID.String(), b.BundleID)
+			if err := blobs.Delete(ctx, key); err != nil {
+				failed[id] = true
+				report.Failed++
+				continue
+			}
+			if err := bundles.HardDelete(ctx, b.UserID, b.BundleID); err != nil {
+				failed[id] = true
+				report.Failed++
+				continue
+			}
+			report.ExpiredBundles++
+			report.ExpiredBytes += b.SizeBytes
+			progressed++
+		}
+
+		if progressed == 0 {
+			// The whole page was already-failed rows; stop rather than spin.
+			return report, nil
+		}
+	}
 }
 
 // ── AuthService ──────────────────────────────────────────────

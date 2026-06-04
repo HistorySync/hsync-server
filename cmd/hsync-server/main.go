@@ -145,15 +145,30 @@ func main() {
 				LockKey:  scheduler.LockRetentionCleanup,
 				Interval: cfg.RetentionCleanupInterval,
 				Run: func(ctx context.Context) error {
-					report, err := svcs.Retention.ReportExpiredBundles(ctx, cfg.RetentionGracePeriod)
+					// Two-stage opt-in: enabling the task (interval > 0) only logs a
+					// dry-run report; actual deletion also requires retention_dry_run=false.
+					if cfg.RetentionDryRun {
+						report, err := svcs.Retention.ReportExpiredBundles(ctx, cfg.RetentionGracePeriod)
+						if err != nil {
+							return err
+						}
+						log.Info().
+							Int64("expired_bundles", report.ExpiredBundles).
+							Int64("expired_bytes", report.ExpiredBytes).
+							Time("older_than", report.Before).
+							Msg("retention cleanup dry-run: bundles eligible for purge")
+						return nil
+					}
+					report, err := svcs.Retention.PurgeExpiredBundles(ctx, cfg.RetentionGracePeriod)
 					if err != nil {
 						return err
 					}
 					log.Info().
-						Int64("expired_bundles", report.ExpiredBundles).
-						Int64("expired_bytes", report.ExpiredBytes).
+						Int64("purged_bundles", report.ExpiredBundles).
+						Int64("purged_bytes", report.ExpiredBytes).
+						Int64("failed", report.Failed).
 						Time("older_than", report.Before).
-						Msg("retention cleanup dry-run: bundles eligible for purge")
+						Msg("retention cleanup: purged expired bundles")
 					return nil
 				},
 			},

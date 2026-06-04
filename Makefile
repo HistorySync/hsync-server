@@ -14,7 +14,7 @@ LDFLAGS := -s -w \
 
 # ── Targets ──────────────────────────────────────────────────
 
-.PHONY: all build run test lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-integration lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -31,6 +31,10 @@ run: build
 ## test: Run all tests with race detection
 test:
 	go test -race -count=1 -timeout 60s ./...
+
+## test-integration: Run DB-backed integration tests (requires a running Docker daemon)
+test-integration:
+	go test -tags=integration -count=1 -timeout 300s ./pkg/repository/...
 
 ## lint: Run linters (requires golangci-lint)
 lint:

@@ -166,6 +166,9 @@ func (c *Config) Validate() error {
 		if c.OIDCClientID == "" {
 			errs = append(errs, "oidc_client_id is required when OIDC is enabled")
 		}
+		if c.OIDCClientSecret == "" {
+			errs = append(errs, "oidc_client_secret is required when OIDC is enabled")
+		}
 		if c.OIDCRedirectURL == "" {
 			errs = append(errs, "oidc_redirect_url is required when OIDC is enabled")
 		}

@@ -29,7 +29,7 @@ func TestValidateRequiresOIDCSettingsWhenEnabled(t *testing.T) {
 	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
 	cfg.OIDCEnabled = true
 
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "oidc_issuer_url") || !strings.Contains(err.Error(), "oidc_client_id") || !strings.Contains(err.Error(), "oidc_redirect_url") {
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "oidc_issuer_url") || !strings.Contains(err.Error(), "oidc_client_id") || !strings.Contains(err.Error(), "oidc_client_secret") || !strings.Contains(err.Error(), "oidc_redirect_url") {
 		t.Fatalf("Validate() error = %v, want oidc setting errors", err)
 	}
 }

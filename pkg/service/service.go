@@ -84,6 +84,55 @@ type UsageReservationHook interface {
 	ReleaseStorage(ctx context.Context, reservationID string)
 }
 
+// reservationGuard tracks one Enterprise storage reservation across an upload's
+// lifecycle. When no reservation hook is configured the guard stays inactive and
+// every operation is a no-op, so callers fall back to the legacy quota path.
+type reservationGuard struct {
+	hook    UsageReservationHook
+	id      string
+	settled bool
+}
+
+// reserve acquires a storage reservation when a hook is configured. With no hook
+// it returns an inactive guard so the caller uses the legacy quota path.
+func reserve(ctx context.Context, hook UsageReservationHook, userID uuid.UUID, bytes int64, reason string) (*reservationGuard, error) {
+	if hook == nil {
+		return &reservationGuard{}, nil
+	}
+	id, err := hook.ReserveStorage(ctx, userID, bytes, reason)
+	if err != nil {
+		return nil, err
+	}
+	return &reservationGuard{hook: hook, id: id}, nil
+}
+
+// active reports whether a reservation was acquired and still drives quota.
+func (g *reservationGuard) active() bool {
+	return g != nil && g.hook != nil && g.id != ""
+}
+
+// settle finalizes the reservation against the bytes actually written. After it
+// succeeds, release becomes a no-op so a deferred release does not double-count.
+func (g *reservationGuard) settle(ctx context.Context, bytes int64) error {
+	if !g.active() {
+		return nil
+	}
+	if err := g.hook.SettleStorage(ctx, g.id, bytes); err != nil {
+		return err
+	}
+	g.settled = true
+	return nil
+}
+
+// release returns reserved capacity when an upload fails before settling. It is
+// safe to defer: it does nothing once settled or when the guard is inactive.
+func (g *reservationGuard) release(ctx context.Context) {
+	if !g.active() || g.settled {
+		return
+	}
+	g.hook.ReleaseStorage(ctx, g.id)
+}
+
 // Services aggregates all business service instances.
 type Services struct {
 	Repos        *repository.Repos
@@ -556,16 +605,11 @@ type UploadInput struct {
 
 // UploadBundle validates and persists a bundle.
 func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, input UploadInput) (*model.BundleMeta, error) {
-	reservationID, err := s.reserveStorage(ctx, userID, input.SizeBytes, "bundle_upload")
+	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, "bundle_upload")
 	if err != nil {
 		return nil, err
 	}
-	releaseReservation := true
-	defer func() {
-		if releaseReservation && reservationID != "" {
-			s.reservation.ReleaseStorage(ctx, reservationID)
-		}
-	}()
+	defer guard.release(ctx)
 
 	// Check bundle ID uniqueness
 	exists, err := s.repos.Bundles.ExistsByID(ctx, input.BundleID)
@@ -588,7 +632,7 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		return nil, ErrDeviceRevoked
 	}
 
-	if reservationID == "" {
+	if !guard.active() {
 		// Quota check
 		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
 			return nil, err
@@ -619,13 +663,12 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		_ = s.blobStore.Delete(ctx, key)
 		return nil, fmt.Errorf("create bundle meta: %w", err)
 	}
-	if reservationID != "" {
-		if err := s.reservation.SettleStorage(ctx, reservationID, input.SizeBytes); err != nil {
+	if guard.active() {
+		if err := guard.settle(ctx, input.SizeBytes); err != nil {
 			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle bundle reservation: %w", err)
 		}
-		releaseReservation = false
 	} else {
 		if err := s.repos.Quota.AddBundleUsage(ctx, userID, input.SizeBytes); err != nil {
 			_, _ = s.repos.Bundles.SoftDelete(ctx, userID, input.BundleID)
@@ -635,13 +678,6 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 
 	return meta, nil
-}
-
-func (s *BundleService) reserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error) {
-	if s.reservation == nil {
-		return "", nil
-	}
-	return s.reservation.ReserveStorage(ctx, userID, bytes, reason)
 }
 
 // DownloadBundle retrieves a bundle's blob for download.
@@ -711,18 +747,13 @@ type UploadSnapshotInput struct {
 
 // UploadSnapshot validates and persists a snapshot.
 func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
-	reservationID, err := s.reserveStorage(ctx, userID, input.SizeBytes, "snapshot_upload")
+	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, "snapshot_upload")
 	if err != nil {
 		return nil, err
 	}
-	releaseReservation := true
-	defer func() {
-		if releaseReservation && reservationID != "" {
-			s.reservation.ReleaseStorage(ctx, reservationID)
-		}
-	}()
+	defer guard.release(ctx)
 
-	if reservationID == "" {
+	if !guard.active() {
 		if err := s.quota.CheckStorageQuota(ctx, userID, input.SizeBytes); err != nil {
 			return nil, err
 		}
@@ -769,13 +800,12 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		_ = s.blobStore.Delete(ctx, key)
 		return nil, fmt.Errorf("create snapshot meta: %w", err)
 	}
-	if reservationID != "" {
-		if err := s.reservation.SettleStorage(ctx, reservationID, input.SizeBytes); err != nil {
+	if guard.active() {
+		if err := guard.settle(ctx, input.SizeBytes); err != nil {
 			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
 			_ = s.blobStore.Delete(ctx, key)
 			return nil, fmt.Errorf("settle snapshot reservation: %w", err)
 		}
-		releaseReservation = false
 	} else {
 		if err := s.repos.Quota.AddSnapshotUsage(ctx, userID, input.SizeBytes); err != nil {
 			_, _ = s.repos.Snapshots.SoftDelete(ctx, userID, input.SnapshotID)
@@ -785,13 +815,6 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 	}
 
 	return meta, nil
-}
-
-func (s *SnapshotService) reserveStorage(ctx context.Context, userID uuid.UUID, bytes int64, reason string) (string, error) {
-	if s.reservation == nil {
-		return "", nil
-	}
-	return s.reservation.ReserveStorage(ctx, userID, bytes, reason)
 }
 
 // DownloadSnapshot retrieves a snapshot blob for download.

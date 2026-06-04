@@ -148,27 +148,40 @@ func main() {
 					// Two-stage opt-in: enabling the task (interval > 0) only logs a
 					// dry-run report; actual deletion also requires retention_dry_run=false.
 					if cfg.RetentionDryRun {
-						report, err := svcs.Retention.ReportExpiredBundles(ctx, cfg.RetentionGracePeriod)
+						bundleReport, err := svcs.Retention.ReportExpiredBundles(ctx, cfg.RetentionGracePeriod)
+						if err != nil {
+							return err
+						}
+						snapReport, err := svcs.Retention.ReportExpiredSnapshots(ctx, cfg.RetentionGracePeriod)
 						if err != nil {
 							return err
 						}
 						log.Info().
-							Int64("expired_bundles", report.ExpiredBundles).
-							Int64("expired_bytes", report.ExpiredBytes).
-							Time("older_than", report.Before).
-							Msg("retention cleanup dry-run: bundles eligible for purge")
+							Int64("expired_bundles", bundleReport.ExpiredBundles).
+							Int64("expired_bytes", bundleReport.ExpiredBytes).
+							Int64("expired_snapshots", snapReport.ExpiredSnapshots).
+							Int64("expired_snapshot_bytes", snapReport.ExpiredBytes).
+							Time("older_than", bundleReport.Before).
+							Msg("retention cleanup dry-run: data eligible for purge")
 						return nil
 					}
-					report, err := svcs.Retention.PurgeExpiredBundles(ctx, cfg.RetentionGracePeriod)
+					bundleReport, err := svcs.Retention.PurgeExpiredBundles(ctx, cfg.RetentionGracePeriod)
+					if err != nil {
+						return err
+					}
+					snapReport, err := svcs.Retention.PurgeExpiredSnapshots(ctx, cfg.RetentionGracePeriod)
 					if err != nil {
 						return err
 					}
 					log.Info().
-						Int64("purged_bundles", report.ExpiredBundles).
-						Int64("purged_bytes", report.ExpiredBytes).
-						Int64("failed", report.Failed).
-						Time("older_than", report.Before).
-						Msg("retention cleanup: purged expired bundles")
+						Int64("purged_bundles", bundleReport.ExpiredBundles).
+						Int64("purged_bytes", bundleReport.ExpiredBytes).
+						Int64("failed_bundles", bundleReport.Failed).
+						Int64("purged_snapshots", snapReport.ExpiredSnapshots).
+						Int64("purged_snapshot_bytes", snapReport.ExpiredBytes).
+						Int64("failed_snapshots", snapReport.Failed).
+						Time("older_than", bundleReport.Before).
+						Msg("retention cleanup: purged expired data")
 					return nil
 				},
 			},

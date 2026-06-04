@@ -258,3 +258,164 @@ func TestPurgeExpiredBundlesCancelledContext(t *testing.T) {
 		t.Fatalf("listCalls = %d, want 0 (cancelled before any query)", f.listCalls)
 	}
 }
+
+// ── Snapshot Retention Tests ─────────────────────────────────
+
+// fakeSnapshotStore is the snapshot counterpart of fakeRetentionStore.
+type fakeSnapshotStore struct {
+	rows      []model.SnapshotMeta
+	present   map[string]bool // metaID -> metadata row still exists
+	blobFail  map[string]bool
+	rowFail   map[string]bool
+	events    []string
+	listCalls int
+}
+
+func newFakeSnapshotStore() *fakeSnapshotStore {
+	return &fakeSnapshotStore{
+		present:  map[string]bool{},
+		blobFail: map[string]bool{},
+		rowFail:  map[string]bool{},
+	}
+}
+
+func snapID(userID uuid.UUID, snapshotID string) string {
+	return userID.String() + "/" + snapshotID
+}
+
+func (f *fakeSnapshotStore) add(s model.SnapshotMeta) {
+	f.rows = append(f.rows, s)
+	f.present[snapID(s.UserID, s.SnapshotID)] = true
+}
+
+func (f *fakeSnapshotStore) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error) {
+	f.listCalls++
+	var out []model.SnapshotMeta
+	for _, s := range f.rows {
+		if !f.present[snapID(s.UserID, s.SnapshotID)] {
+			continue
+		}
+		if s.DeletedAt == nil || !s.DeletedAt.Before(before) {
+			continue
+		}
+		out = append(out, s)
+		if len(out) == 100 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeSnapshotStore) HardDelete(ctx context.Context, userID uuid.UUID, snapshotID string) error {
+	id := snapID(userID, snapshotID)
+	if f.rowFail[id] {
+		return errors.New("hard delete failed")
+	}
+	f.events = append(f.events, "row:"+id)
+	f.present[id] = false
+	return nil
+}
+
+func (f *fakeSnapshotStore) Delete(ctx context.Context, key string) error {
+	if f.blobFail[key] {
+		f.events = append(f.events, "blobfail:"+key)
+		return errors.New("blob delete failed")
+	}
+	f.events = append(f.events, "blob:"+key)
+	return nil
+}
+
+func deletedSnapshot(userID uuid.UUID, snapshotID string, size int64, deletedAt time.Time) model.SnapshotMeta {
+	return model.SnapshotMeta{
+		SnapshotID: snapshotID,
+		UserID:     userID,
+		SizeBytes:  size,
+		DeletedAt:  &deletedAt,
+	}
+}
+
+func TestPurgeExpiredSnapshotsHappyPath(t *testing.T) {
+	f := newFakeSnapshotStore()
+	user := uuid.New()
+	past := time.Now().Add(-48 * time.Hour)
+	sizes := map[string]int64{"s1": 100, "s2": 200, "s3": 400}
+	for _, id := range []string{"s1", "s2", "s3"} {
+		f.add(deletedSnapshot(user, id, sizes[id], past))
+	}
+
+	report, err := purgeExpiredSnapshots(context.Background(), f, f, time.Now())
+	if err != nil {
+		t.Fatalf("purgeExpiredSnapshots() error = %v", err)
+	}
+	if report.ExpiredSnapshots != 3 || report.ExpiredBytes != 700 || report.Failed != 0 {
+		t.Fatalf("report = %+v, want snapshots=3 bytes=700 failed=0", report)
+	}
+
+	for _, id := range []string{"s1", "s2", "s3"} {
+		if f.present[snapID(user, id)] {
+			t.Fatalf("snapshot %q row still present after purge", id)
+		}
+		key := storage.SnapshotKey(user.String(), id)
+		blobIdx := indexOf(f.events, "blob:"+key)
+		rowIdx := indexOf(f.events, "row:"+snapID(user, id))
+		if blobIdx < 0 || rowIdx < 0 {
+			t.Fatalf("snapshot %q missing events (blob=%d row=%d): %v", id, blobIdx, rowIdx, f.events)
+		}
+		if blobIdx > rowIdx {
+			t.Fatalf("snapshot %q deleted row before blob: %v", id, f.events)
+		}
+	}
+}
+
+func TestPurgeExpiredSnapshotsBlobFailureLeavesRow(t *testing.T) {
+	f := newFakeSnapshotStore()
+	user := uuid.New()
+	past := time.Now().Add(-48 * time.Hour)
+	f.add(deletedSnapshot(user, "s1", 100, past))
+	f.add(deletedSnapshot(user, "s2", 200, past))
+	f.add(deletedSnapshot(user, "s3", 400, past))
+	f.blobFail[storage.SnapshotKey(user.String(), "s2")] = true
+
+	report, err := purgeExpiredSnapshots(context.Background(), f, f, time.Now())
+	if err != nil {
+		t.Fatalf("purgeExpiredSnapshots() error = %v", err)
+	}
+	if report.ExpiredSnapshots != 2 || report.ExpiredBytes != 500 || report.Failed != 1 {
+		t.Fatalf("report = %+v, want snapshots=2 bytes=500 failed=1", report)
+	}
+	if !f.present[snapID(user, "s2")] {
+		t.Fatal("s2 row was removed despite blob delete failure")
+	}
+	if f.listCalls != 2 {
+		t.Fatalf("listCalls = %d, want 2 (no infinite retry)", f.listCalls)
+	}
+}
+
+func TestPurgeExpiredSnapshotsEmpty(t *testing.T) {
+	f := newFakeSnapshotStore()
+
+	report, err := purgeExpiredSnapshots(context.Background(), f, f, time.Now())
+	if err != nil {
+		t.Fatalf("purgeExpiredSnapshots() error = %v", err)
+	}
+	if report.ExpiredSnapshots != 0 || report.ExpiredBytes != 0 || report.Failed != 0 {
+		t.Fatalf("report = %+v, want all zero", report)
+	}
+}
+
+func TestPurgeExpiredSnapshotsCancelledContext(t *testing.T) {
+	f := newFakeSnapshotStore()
+	user := uuid.New()
+	f.add(deletedSnapshot(user, "s1", 100, time.Now().Add(-time.Hour)))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report, err := purgeExpiredSnapshots(ctx, f, f, time.Now())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if report.ExpiredSnapshots != 0 {
+		t.Fatalf("report.ExpiredSnapshots = %d, want 0", report.ExpiredSnapshots)
+	}
+}

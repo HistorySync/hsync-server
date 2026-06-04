@@ -785,6 +785,53 @@ func (r *SnapshotRepo) PruneOldest(ctx context.Context, userID uuid.UUID, keep i
 	return snapshots, rows.Err()
 }
 
+// HardDelete physically removes a snapshot record.
+func (r *SnapshotRepo) HardDelete(ctx context.Context, userID uuid.UUID, snapshotID string) error {
+	const q = `DELETE FROM snapshots WHERE user_id = $1 AND snapshot_id = $2`
+	_, err := r.pool.Exec(ctx, q, userID, snapshotID)
+	return err
+}
+
+// CountDeletedBefore returns how many snapshots were soft-deleted before the given
+// time and their total size in bytes, for retention-cleanup reporting.
+func (r *SnapshotRepo) CountDeletedBefore(ctx context.Context, before time.Time) (int64, int64, error) {
+	const q = `
+		SELECT COUNT(*), COALESCE(SUM(size_bytes), 0)
+		FROM snapshots WHERE deleted_at IS NOT NULL AND deleted_at < $1`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, before).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("count deleted snapshots: %w", err)
+	}
+	return count, bytes, nil
+}
+
+// ListDeletedBefore returns snapshots soft-deleted before the given time (for
+// cleanup). It pages in batches of 100, ordered by deletion time, to bound the
+// transaction scope during hard-delete purges.
+func (r *SnapshotRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error) {
+	const q = `
+		SELECT snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
+		FROM snapshots WHERE deleted_at IS NOT NULL AND deleted_at < $1
+		ORDER BY deleted_at LIMIT 100`
+
+	rows, err := r.pool.Query(ctx, q, before)
+	if err != nil {
+		return nil, fmt.Errorf("list deleted snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []model.SnapshotMeta
+	for rows.Next() {
+		var s model.SnapshotMeta
+		if err := rows.Scan(&s.SnapshotID, &s.UserID, &s.BaseHLC, &s.SizeBytes,
+			&s.CipherID, &s.KeyGeneration, &s.CreatedAt, &s.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan deleted snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	return snapshots, rows.Err()
+}
+
 // ── QuotaRepo ────────────────────────────────────────────────
 
 // QuotaRepo handles storage usage tracking and quota enforcement.

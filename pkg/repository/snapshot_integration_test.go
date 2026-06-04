@@ -139,30 +139,91 @@ func TestSnapshotPruneOldest(t *testing.T) {
 	}
 }
 
-func TestSnapshotPruneOldestKeepsAllWhenUnderLimit(t *testing.T) {
+// TestSnapshotListDeletedBefore verifies the retention purge query returns only
+// snapshots soft-deleted before the cutoff, excluding live rows.
+func TestSnapshotListDeletedBefore(t *testing.T) {
 	repos := setupTest(t)
 	ctx := testContext(t)
 
-	u := seedUser(t, repos, "prunenoop@example.com")
-	for _, id := range []string{"k1", "k2"} {
-		s := &model.SnapshotMeta{SnapshotID: id, UserID: u.ID, BaseHLC: 1, SizeBytes: 10, CipherID: 1}
+	u := seedUser(t, repos, "snaplistdel@example.com")
+
+	ids := []string{"ld1", "ld2", "ld3", "live"}
+	for _, id := range ids {
+		s := &model.SnapshotMeta{SnapshotID: id, UserID: u.ID, BaseHLC: 1, SizeBytes: 100, CipherID: 1}
 		if err := repos.Snapshots.Create(ctx, s); err != nil {
 			t.Fatalf("create %s: %v", id, err)
 		}
 	}
+	if _, err := repos.Snapshots.SoftDelete(ctx, u.ID, "ld1"); err != nil {
+		t.Fatalf("SoftDelete ld1: %v", err)
+	}
+	if _, err := repos.Snapshots.SoftDelete(ctx, u.ID, "ld2"); err != nil {
+		t.Fatalf("SoftDelete ld2: %v", err)
+	}
+	if _, err := repos.Snapshots.SoftDelete(ctx, u.ID, "ld3"); err != nil {
+		t.Fatalf("SoftDelete ld3: %v", err)
+	}
 
-	pruned, err := repos.Snapshots.PruneOldest(ctx, u.ID, 5)
+	// Future cutoff: all three soft-deleted snapshots qualify.
+	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
 	if err != nil {
-		t.Fatalf("PruneOldest: %v", err)
+		t.Fatalf("ListDeletedBefore(future): %v", err)
 	}
-	if len(pruned) != 0 {
-		t.Fatalf("pruned len = %d, want 0", len(pruned))
+	got := map[string]int64{}
+	for _, s := range deleted {
+		got[s.SnapshotID] = s.SizeBytes
 	}
-	count, err := repos.Snapshots.CountByUser(ctx, u.ID)
+	if len(got) != 3 || got["ld1"] != 100 || got["ld2"] != 100 || got["ld3"] != 100 {
+		t.Fatalf("ListDeletedBefore(future) = %+v, want ld1,ld2,ld3=100", got)
+	}
+	if _, ok := got["live"]; ok {
+		t.Fatal("ListDeletedBefore returned a live snapshot")
+	}
+
+	// Past cutoff: nothing qualifies.
+	none, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(-time.Hour))
 	if err != nil {
-		t.Fatalf("CountByUser: %v", err)
+		t.Fatalf("ListDeletedBefore(past): %v", err)
 	}
-	if count != 2 {
-		t.Fatalf("CountByUser = %d, want 2", count)
+	if len(none) != 0 {
+		t.Fatalf("ListDeletedBefore(past) = %+v, want empty", none)
+	}
+
+	// CountDeletedBefore should agree with ListDeletedBefore.
+	count, bytes, err := repos.Snapshots.CountDeletedBefore(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("CountDeletedBefore(future): %v", err)
+	}
+	if count != 3 || bytes != 300 {
+		t.Fatalf("CountDeletedBefore(future) = (%d, %d), want (3, 300)", count, bytes)
+	}
+}
+
+// TestSnapshotHardDelete verifies physical removal.
+func TestSnapshotHardDelete(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "snaphard@example.com")
+	s := &model.SnapshotMeta{SnapshotID: "hd1", UserID: u.ID, BaseHLC: 1, SizeBytes: 50, CipherID: 1}
+	if err := repos.Snapshots.Create(ctx, s); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := repos.Snapshots.SoftDelete(ctx, u.ID, "hd1"); err != nil {
+		t.Fatalf("SoftDelete: %v", err)
+	}
+	if err := repos.Snapshots.HardDelete(ctx, u.ID, "hd1"); err != nil {
+		t.Fatalf("HardDelete: %v", err)
+	}
+
+	// After hard delete, the row must not appear in ListDeletedBefore.
+	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("ListDeletedBefore after hard delete: %v", err)
+	}
+	for _, d := range deleted {
+		if d.SnapshotID == "hd1" {
+			t.Fatal("hard-deleted snapshot still returned by ListDeletedBefore")
+		}
 	}
 }

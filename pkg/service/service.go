@@ -202,8 +202,8 @@ func New(deps Deps) *Services {
 // ── RetentionService ─────────────────────────────────────────
 
 // RetentionService reports on and purges data that has been soft-deleted past
-// its retention grace period. It currently covers bundles; snapshot and user
-// cleanup can be added as further tasks.
+// its retention grace period. It covers bundles and snapshots; user cleanup can
+// be added as a further task.
 type RetentionService struct {
 	repos     *repository.Repos
 	blobStore storage.BlobStorage
@@ -308,6 +308,90 @@ func purgeExpiredBundles(ctx context.Context, bundles purgeableBundles, blobs bl
 
 		if progressed == 0 {
 			// The whole page was already-failed rows; stop rather than spin.
+			return report, nil
+		}
+	}
+}
+
+// ── Snapshot Retention ───────────────────────────────────────
+
+// SnapshotReport summarizes soft-deleted snapshots eligible for purging or
+// actually removed.
+type SnapshotReport struct {
+	Before           time.Time `json:"before"`
+	ExpiredSnapshots int64     `json:"expired_snapshots"`
+	ExpiredBytes     int64     `json:"expired_bytes"`
+	Failed           int64     `json:"failed"`
+}
+
+// ReportExpiredSnapshots reports how many snapshots were soft-deleted longer ago
+// than the grace period, and their total size, without deleting anything.
+func (s *RetentionService) ReportExpiredSnapshots(ctx context.Context, grace time.Duration) (SnapshotReport, error) {
+	before := time.Now().Add(-grace)
+	count, bytes, err := s.repos.Snapshots.CountDeletedBefore(ctx, before)
+	if err != nil {
+		return SnapshotReport{}, fmt.Errorf("count expired snapshots: %w", err)
+	}
+	return SnapshotReport{Before: before, ExpiredSnapshots: count, ExpiredBytes: bytes}, nil
+}
+
+// purgeableSnapshots is the subset of snapshot persistence the retention purge
+// needs. The concrete *repository.SnapshotRepo satisfies it.
+type purgeableSnapshots interface {
+	ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error)
+	HardDelete(ctx context.Context, userID uuid.UUID, snapshotID string) error
+}
+
+// PurgeExpiredSnapshots permanently deletes snapshots that were soft-deleted
+// longer ago than the grace period. Same safety properties as PurgeExpiredBundles:
+// blob before row, no storage_usage touch (UploadSnapshot already calls
+// RemoveSnapshotUsage on prune), no-progress break to bound retries.
+func (s *RetentionService) PurgeExpiredSnapshots(ctx context.Context, grace time.Duration) (SnapshotReport, error) {
+	before := time.Now().Add(-grace)
+	return purgeExpiredSnapshots(ctx, s.repos.Snapshots, s.blobStore, before)
+}
+
+// purgeExpiredSnapshots is the pure purge loop; see purgeExpiredBundles for
+// the shared rationale.
+func purgeExpiredSnapshots(ctx context.Context, snapshots purgeableSnapshots, blobs blobDeleter, before time.Time) (SnapshotReport, error) {
+	report := SnapshotReport{Before: before}
+	failed := make(map[string]bool)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		batch, err := snapshots.ListDeletedBefore(ctx, before)
+		if err != nil {
+			return report, fmt.Errorf("list expired snapshots: %w", err)
+		}
+		if len(batch) == 0 {
+			return report, nil
+		}
+
+		progressed := 0
+		for _, s := range batch {
+			id := s.UserID.String() + "/" + s.SnapshotID
+			if failed[id] {
+				continue
+			}
+			key := storage.SnapshotKey(s.UserID.String(), s.SnapshotID)
+			if err := blobs.Delete(ctx, key); err != nil {
+				failed[id] = true
+				report.Failed++
+				continue
+			}
+			if err := snapshots.HardDelete(ctx, s.UserID, s.SnapshotID); err != nil {
+				failed[id] = true
+				report.Failed++
+				continue
+			}
+			report.ExpiredSnapshots++
+			report.ExpiredBytes += s.SizeBytes
+			progressed++
+		}
+
+		if progressed == 0 {
 			return report, nil
 		}
 	}

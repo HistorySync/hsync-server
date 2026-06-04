@@ -7,3 +7,9 @@ web_console_path: "/console"
 s3_use_ssl: true
 stripe_disabled: false
 # database_url, s3_*, jwt_private_key, stripe_* should come from HSYNC_* env vars
+
+# Background maintenance runs by default (leader-elected). Retention purge is
+# opt-in and destructive; enable it only after reviewing the dry-run logs:
+# retention_cleanup_interval: "24h"
+# retention_grace_period: "720h"   # 30 days
+# retention_dry_run: false         # set false only once the dry-run report looks right

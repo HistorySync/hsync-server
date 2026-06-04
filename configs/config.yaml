@@ -37,3 +37,19 @@ stripe_disabled: true
 
 # Admin API key (set to enable /admin/* endpoints)
 # admin_key: ""
+
+# Background maintenance tasks
+# Periodic jobs run on a single instance at a time (leader-elected via a Postgres
+# advisory lock). Set background_tasks_enabled: false to disable all of them.
+background_tasks_enabled: true
+# Reconcile every user's storage-usage counters from the source rows to heal any
+# drift. "0" disables just this task.
+quota_reconcile_interval: "24h"
+# Retention cleanup permanently deletes bundles that were soft-deleted long ago.
+# It is destructive, so it is OFF by default behind a double opt-in:
+#   1. set retention_cleanup_interval > 0 to run the task, AND
+#   2. set retention_dry_run: false to actually delete.
+# While retention_dry_run is true the task only logs how much WOULD be purged.
+retention_cleanup_interval: "0"
+retention_grace_period: "720h"  # 30 days; only purge bundles soft-deleted longer ago than this
+retention_dry_run: true

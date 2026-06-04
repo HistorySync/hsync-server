@@ -76,13 +76,36 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Load reads configuration from file and environment.
+// Load reads configuration from file and environment, then validates it fully.
+func Load() (*Config, error) {
+	cfg, err := load()
+	if err != nil {
+		return nil, err
+	}
+	return cfg, cfg.Validate()
+}
+
+// LoadForMigrations loads configuration for the `migrate` subcommand. It
+// validates only the database connection so migrations can run without
+// requiring unrelated settings such as the JWT signing key or billing secrets.
+func LoadForMigrations() (*Config, error) {
+	cfg, err := load()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.DatabaseURL == "" {
+		return nil, fmt.Errorf("config validation: database_url is required")
+	}
+	return cfg, nil
+}
+
+// load reads configuration from file and environment without validating it.
 //
 // Precedence (lowest to highest):
 //  1. Default values
 //  2. config.yaml / configs/config.yaml
 //  3. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
-func Load() (*Config, error) {
+func load() (*Config, error) {
 	cfg := DefaultConfig()
 
 	v := viper.New()
@@ -131,7 +154,7 @@ func Load() (*Config, error) {
 	}
 	cfg.LogLevel = level
 
-	return cfg, cfg.Validate()
+	return cfg, nil
 }
 
 // Validate checks that required fields are set and values are sensible.

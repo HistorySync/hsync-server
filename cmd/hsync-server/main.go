@@ -33,6 +33,12 @@ func main() {
 		Str("service", "hsync-server").
 		Logger()
 
+	// ── Subcommands ───────────────────────────────────────────
+	// "migrate" runs database migrations and exits; anything else starts the server.
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Exit(runMigrate(os.Args[2:]))
+	}
+
 	// ── Config ────────────────────────────────────────────────
 	cfg, err := config.Load()
 	if err != nil {

@@ -35,6 +35,7 @@ type Deps struct {
 	Redis        *redis.Client // may be nil if Redis is unavailable
 	BlobStore    storage.BlobStorage
 	AdminKey     string
+	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
 }
 
 // Handlers groups all HTTP handler instances.
@@ -47,6 +48,32 @@ func New(deps Deps) *Handlers {
 	return &Handlers{deps: deps}
 }
 
+// Rate limit settings.
+const (
+	rateLimitWindow = time.Minute
+	// publicAuthRPM caps unauthenticated auth requests per client IP per minute.
+	publicAuthRPM = 30
+)
+
+// perUserRateDecision limits authenticated routes by user ID using the tier's
+// MaxRPM from the JWT claim (no DB lookup). It must run after AuthMiddleware.
+func perUserRateDecision(c fiber.Ctx) middleware.RateDecision {
+	userID, _ := c.Locals("user_id").(string)
+	if userID == "" {
+		return middleware.RateDecision{Skip: true}
+	}
+	tier, _ := c.Locals("tier").(string)
+	limit := int(model.TierLimits(model.UserTier(tier)).MaxRPM)
+	return middleware.RateDecision{Key: "u:" + userID, Limit: limit}
+}
+
+// perIPRateDecision limits routes by client IP at a fixed per-minute rate.
+func perIPRateDecision(limit int) func(fiber.Ctx) middleware.RateDecision {
+	return func(c fiber.Ctx) middleware.RateDecision {
+		return middleware.RateDecision{Key: "ip:" + c.IP(), Limit: limit}
+	}
+}
+
 // RegisterRoutes mounts all API routes onto the Fiber app.
 func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// ── Health (no auth) ─────────────────────────────────
@@ -56,8 +83,21 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// ── API v1 ───────────────────────────────────────────
 	v1 := app.Group("/api/v1")
 
-	// Auth
-	authGroup := v1.Group("/auth")
+	// Rate limiting: per-user (tier MaxRPM) on authenticated groups, per-IP on
+	// public auth endpoints. A nil RateLimiter makes these middlewares no-op.
+	perUserRL := middleware.RateLimit(middleware.RateLimitConfig{
+		Limiter:  h.deps.RateLimiter,
+		Window:   rateLimitWindow,
+		Classify: perUserRateDecision,
+	})
+	publicAuthRL := middleware.RateLimit(middleware.RateLimitConfig{
+		Limiter:  h.deps.RateLimiter,
+		Window:   rateLimitWindow,
+		Classify: perIPRateDecision(publicAuthRPM),
+	})
+
+	// Auth (public; throttled per-IP to blunt credential-stuffing/abuse)
+	authGroup := v1.Group("/auth", publicAuthRL)
 	authGroup.Post("/register", h.Register)
 	authGroup.Post("/login", h.Login)
 	authGroup.Post("/refresh", h.RefreshToken)
@@ -66,29 +106,29 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/reset-password", h.ResetPassword)
 
 	// Bundles (JWT-protected)
-	bundles := v1.Group("/bundles", auth.AuthMiddleware(h.deps.TokenManager))
+	bundles := v1.Group("/bundles", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	bundles.Post("/", h.UploadBundle)
 	bundles.Get("/", h.ListBundles)
 	bundles.Get("/:id", h.DownloadBundle)
 	bundles.Delete("/:id", h.DeleteBundle)
 
 	// Snapshots (JWT-protected)
-	snapshots := v1.Group("/snapshots", auth.AuthMiddleware(h.deps.TokenManager))
+	snapshots := v1.Group("/snapshots", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	snapshots.Post("/", h.UploadSnapshot)
 	snapshots.Get("/latest", h.GetLatestSnapshot)
 	snapshots.Get("/:id", h.DownloadSnapshot)
 
 	// Devices (JWT-protected)
-	devices := v1.Group("/devices", auth.AuthMiddleware(h.deps.TokenManager))
+	devices := v1.Group("/devices", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	devices.Get("/", h.ListDevices)
 	devices.Post("/:uuid/revoke", h.RevokeDevice)
 	devices.Get("/revocations", h.ListRevocations)
 
 	// Quota (JWT-protected)
-	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), h.GetQuota)
+	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
 
 	// Billing (JWT-protected, except webhook)
-	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager))
+	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	billing.Post("/checkout", h.CreateCheckout)
 	billing.Post("/portal", h.CreatePortalSession)
 	billing.Get("/subscription", h.GetSubscription)

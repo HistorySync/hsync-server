@@ -65,6 +65,23 @@ func main() {
 		log.Warn().Err(err).Msg("redis unavailable, continuing without it")
 	}
 
+	// ── Rate Limiter ──────────────────────────────────────────
+	// Background context for long-lived tasks (e.g. in-memory limiter cleanup),
+	// cancelled when main returns after shutdown.
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	defer bgCancel()
+
+	var rateLimiter middleware.Limiter
+	if redisClient != nil {
+		rateLimiter = middleware.NewRedisLimiter(redisClient)
+		log.Info().Msg("rate limiting backed by redis")
+	} else {
+		memLimiter := middleware.NewMemoryLimiter()
+		go memLimiter.Run(bgCtx)
+		rateLimiter = memLimiter
+		log.Info().Msg("rate limiting using in-memory limiter")
+	}
+
 	// ── Blob Storage ──────────────────────────────────────────
 	blobStore, err := storage.NewS3Storage(ctx, storage.S3Config{
 		Endpoint:  cfg.S3Endpoint,
@@ -113,6 +130,7 @@ func main() {
 		Redis:        redisClient,
 		BlobStore:    blobStore,
 		AdminKey:     cfg.AdminKey,
+		RateLimiter:  rateLimiter,
 	})
 
 	// ── Fiber App ─────────────────────────────────────────────

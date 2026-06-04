@@ -144,6 +144,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
 	admin.Get("/users", h.AdminListUsers)
 	admin.Get("/stats", h.AdminStats)
+	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -1081,5 +1082,29 @@ func (h *Handlers) AdminStats(c fiber.Ctx) error {
 			"active_users":       h.deps.Hub.ActiveUserCount(),
 			"active_connections": h.deps.Hub.ActiveConnectionCount(),
 		},
+	})
+}
+
+// AdminRecalculateQuota recomputes a user's storage usage counters from their
+// authoritative bundle and snapshot rows, correcting any drift. It returns the
+// usage before and after so an operator can see the size of the correction.
+func (h *Handlers) AdminRecalculateQuota(c fiber.Ctx) error {
+	userID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return newError(fiber.StatusBadRequest, "INVALID_USER_ID", "invalid user id")
+	}
+
+	result, err := h.deps.Services.Quota.RecalculateUsage(c.Context(), userID)
+	if err != nil {
+		if err == service.ErrUserNotFound {
+			return newError(fiber.StatusNotFound, "USER_NOT_FOUND", "user not found")
+		}
+		return fiber.NewError(fiber.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(fiber.Map{
+		"user_id": userID,
+		"before":  result.Before,
+		"after":   result.After,
 	})
 }

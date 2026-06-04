@@ -187,6 +187,72 @@ func TestTryAddSnapshotUsageBoundary(t *testing.T) {
 	assertUsage(t, repos, u.ID, 500, 0, 1)
 }
 
+// TestRecalculateUsage verifies the reconcile recomputes counters from the live
+// (non-soft-deleted) bundle and snapshot rows, overwriting any drift.
+func TestRecalculateUsage(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "recalc@example.com")
+	dev := uuid.New()
+
+	// Two live bundles (100 + 200) plus one that gets soft-deleted (50).
+	seedBundle(t, repos, u.ID, dev, "rb1", 1, 1, 100)
+	seedBundle(t, repos, u.ID, dev, "rb2", 2, 2, 200)
+	seedBundle(t, repos, u.ID, dev, "rb-del", 3, 3, 50)
+	if _, err := repos.Bundles.SoftDelete(ctx, u.ID, "rb-del"); err != nil {
+		t.Fatalf("SoftDelete bundle: %v", err)
+	}
+
+	// One live snapshot (300) plus one soft-deleted (40).
+	for _, s := range []*model.SnapshotMeta{
+		{SnapshotID: "rs1", UserID: u.ID, BaseHLC: 1, SizeBytes: 300, CipherID: 1},
+		{SnapshotID: "rs-del", UserID: u.ID, BaseHLC: 2, SizeBytes: 40, CipherID: 1},
+	} {
+		if err := repos.Snapshots.Create(ctx, s); err != nil {
+			t.Fatalf("create snapshot %s: %v", s.SnapshotID, err)
+		}
+	}
+	if _, err := repos.Snapshots.SoftDelete(ctx, u.ID, "rs-del"); err != nil {
+		t.Fatalf("SoftDelete snapshot: %v", err)
+	}
+
+	// Corrupt the counters to simulate drift (e.g. a crash mid-upload).
+	if err := repos.Quota.AddBundleUsage(ctx, u.ID, 9999); err != nil {
+		t.Fatalf("seed drift: %v", err)
+	}
+
+	usage, err := repos.Quota.RecalculateUsage(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("RecalculateUsage: %v", err)
+	}
+	// Live totals only: bytes 100+200+300 = 600, 2 bundles, 1 snapshot.
+	if usage.TotalBytes != 600 || usage.BundleCount != 2 || usage.SnapCount != 1 {
+		t.Fatalf("RecalculateUsage = {bytes:%d bundles:%d snaps:%d}, want {600 2 1}",
+			usage.TotalBytes, usage.BundleCount, usage.SnapCount)
+	}
+	// The persisted row must equal the returned value.
+	assertUsage(t, repos, u.ID, 600, 2, 1)
+}
+
+// TestRecalculateUsageEmpty verifies a user with no live rows reconciles to zero
+// and a storage_usage row is materialized.
+func TestRecalculateUsageEmpty(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "recalc-empty@example.com")
+
+	usage, err := repos.Quota.RecalculateUsage(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("RecalculateUsage: %v", err)
+	}
+	if usage.TotalBytes != 0 || usage.BundleCount != 0 || usage.SnapCount != 0 {
+		t.Fatalf("RecalculateUsage(empty) = %+v, want zeroed", usage)
+	}
+	assertUsage(t, repos, u.ID, 0, 0, 0)
+}
+
 func assertUsage(t *testing.T, repos *Repos, userID uuid.UUID, wantBytes int64, wantBundles, wantSnaps int32) {
 	t.Helper()
 	usage, err := repos.Quota.GetUsage(testContext(t), userID)

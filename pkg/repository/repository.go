@@ -955,6 +955,39 @@ func (r *QuotaRepo) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, s
 	return nil
 }
 
+// RecalculateUsage recomputes a user's storage_usage row from the authoritative
+// bundle and snapshot rows (excluding soft-deleted ones), correcting drift such
+// as the transient over-count a crash mid-upload can leave behind. It is
+// idempotent and safe to re-run. A concurrent upload during the recompute may be
+// missed and is corrected by the next run, so this is a best-effort reconcile
+// rather than a transactional invariant. It returns the post-recompute usage.
+func (r *QuotaRepo) RecalculateUsage(ctx context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
+	const q = `
+		INSERT INTO storage_usage (user_id, total_bytes, bundle_count, snap_count, updated_at)
+		VALUES (
+			$1,
+			COALESCE((SELECT SUM(size_bytes) FROM bundles   WHERE user_id = $1 AND deleted_at IS NULL), 0)
+			+ COALESCE((SELECT SUM(size_bytes) FROM snapshots WHERE user_id = $1 AND deleted_at IS NULL), 0),
+			(SELECT COUNT(*) FROM bundles   WHERE user_id = $1 AND deleted_at IS NULL),
+			(SELECT COUNT(*) FROM snapshots WHERE user_id = $1 AND deleted_at IS NULL),
+			now()
+		)
+		ON CONFLICT (user_id) DO UPDATE SET
+			total_bytes  = EXCLUDED.total_bytes,
+			bundle_count = EXCLUDED.bundle_count,
+			snap_count   = EXCLUDED.snap_count,
+			updated_at   = now()
+		RETURNING user_id, total_bytes, bundle_count, snap_count, updated_at`
+
+	u := &model.QuotaUsage{}
+	if err := r.pool.QueryRow(ctx, q, userID).Scan(
+		&u.UserID, &u.TotalBytes, &u.BundleCount, &u.SnapCount, &u.UpdatedAt,
+	); err != nil {
+		return nil, fmt.Errorf("recalculate usage: %w", err)
+	}
+	return u, nil
+}
+
 // ── Refresh Token Repo ──────────────────────────────────────
 
 // RefreshTokenRepo manages refresh token storage.

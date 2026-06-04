@@ -962,6 +962,36 @@ func (s *QuotaService) StorageLimit(ctx context.Context, userID uuid.UUID) (int6
 	return model.TierLimits(user.Tier).StorageLimitBytes, nil
 }
 
+// UsageRecalculation reports a user's storage usage before and after a recompute
+// so callers can see the magnitude of any correction.
+type UsageRecalculation struct {
+	Before model.QuotaUsage `json:"before"`
+	After  model.QuotaUsage `json:"after"`
+}
+
+// RecalculateUsage corrects a user's storage_usage counters by recomputing them
+// from the authoritative bundle and snapshot rows, returning the before/after so
+// callers can see the magnitude of any correction.
+func (s *QuotaService) RecalculateUsage(ctx context.Context, userID uuid.UUID) (*UsageRecalculation, error) {
+	user, err := s.repos.Users.GetByID(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	if user == nil {
+		return nil, ErrUserNotFound
+	}
+
+	before, err := s.repos.Quota.GetUsage(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get usage: %w", err)
+	}
+	after, err := s.repos.Quota.RecalculateUsage(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &UsageRecalculation{Before: *before, After: *after}, nil
+}
+
 // CheckDeviceLimit verifies the user can register more devices.
 func (s *QuotaService) CheckDeviceLimit(ctx context.Context, userID uuid.UUID, tier model.UserTier) error {
 	count, err := s.repos.Devices.CountActiveByUser(ctx, userID)

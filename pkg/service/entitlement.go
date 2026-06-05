@@ -45,6 +45,7 @@ type subscriptionStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*model.UserSubscription, error)
 	ListActiveByUser(ctx context.Context, userID uuid.UUID) ([]model.UserSubscription, error)
 	UpdatePeriod(ctx context.Context, id uuid.UUID, start, end time.Time) error
+	ListDueForPeriodGrant(ctx context.Context, now time.Time, limit int32) ([]model.UserSubscription, error)
 	RefreshExpired(ctx context.Context, now time.Time) (int64, error)
 }
 
@@ -624,6 +625,37 @@ func (s *EntitlementService) grantPeriod(ctx context.Context, sub *model.UserSub
 // untouched. It returns the number of subscriptions expired.
 func (s *EntitlementService) RefreshExpiredSubscriptions(ctx context.Context) (int64, error) {
 	return s.subscriptions.RefreshExpired(ctx, s.now())
+}
+
+// GrantDuePeriodCredits grants cloud period credits for every active
+// subscription whose monthly window has rolled over, in bounded batches. Each
+// grant rolls that subscription's window past now so it is no longer due, which
+// lets this drain all due subscriptions across batches. It returns the number of
+// period grants made and backs the periodic billing-maintenance task.
+func (s *EntitlementService) GrantDuePeriodCredits(ctx context.Context) (int, error) {
+	const batchSize = 500
+	const maxBatches = 1000 // backstop against a non-converging loop
+	now := s.now()
+	granted := 0
+	for batch := 0; batch < maxBatches; batch++ {
+		subs, err := s.subscriptions.ListDueForPeriodGrant(ctx, now, batchSize)
+		if err != nil {
+			return granted, fmt.Errorf("list due subscriptions: %w", err)
+		}
+		if len(subs) == 0 {
+			return granted, nil
+		}
+		for i := range subs {
+			res, err := s.grantPeriod(ctx, &subs[i])
+			if err != nil {
+				return granted, err
+			}
+			if res.Granted {
+				granted++
+			}
+		}
+	}
+	return granted, nil
 }
 
 // ExpireAICredits records the expiry of any due credit lots in the ledger.

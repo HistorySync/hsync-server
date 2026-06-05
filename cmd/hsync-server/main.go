@@ -242,6 +242,34 @@ func main() {
 					return nil
 				},
 			},
+			scheduler.Task{
+				Name:     "billing-maintenance",
+				LockKey:  scheduler.LockBillingMaintenance,
+				Interval: cfg.BillingMaintenanceInterval,
+				Run: func(ctx context.Context) error {
+					if svcs.Entitlement == nil {
+						return nil
+					}
+					expiredSubs, err := svcs.Entitlement.RefreshExpiredSubscriptions(ctx)
+					if err != nil {
+						return err
+					}
+					periodGrants, err := svcs.Entitlement.GrantDuePeriodCredits(ctx)
+					if err != nil {
+						return err
+					}
+					expiredCredits, err := svcs.Entitlement.ExpireAICredits(ctx)
+					if err != nil {
+						return err
+					}
+					log.Info().
+						Int64("expired_subscriptions", expiredSubs).
+						Int("period_grants", periodGrants).
+						Int64("expired_credit_lots", expiredCredits).
+						Msg("billing maintenance completed")
+					return nil
+				},
+			},
 		)
 		go sched.Run(bgCtx)
 		log.Info().Msg("background scheduler started")

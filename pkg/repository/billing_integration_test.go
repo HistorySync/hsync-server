@@ -361,6 +361,45 @@ func TestPaymentOrderUpsertIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestListDueForPeriodGrant(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+	u := seedUser(t, repos, "due@example.com")
+	now := time.Now()
+
+	// Due: monthly window elapsed, subscription still active.
+	dueSub := &model.UserSubscription{
+		UserID: u.ID, PlanCode: model.PlanCodeCloud, Status: model.SubscriptionStatusActive,
+		CurrentPeriodStart: now.Add(-48 * time.Hour), CurrentPeriodEnd: now.Add(-time.Hour),
+		ActiveUntil: now.Add(720 * time.Hour), Provider: model.PaymentProviderManual,
+	}
+	// Not due: current window still open.
+	freshSub := &model.UserSubscription{
+		UserID: u.ID, PlanCode: model.PlanCodeCloud, Status: model.SubscriptionStatusActive,
+		CurrentPeriodStart: now, CurrentPeriodEnd: now.Add(720 * time.Hour),
+		ActiveUntil: now.Add(720 * time.Hour), Provider: model.PaymentProviderManual,
+	}
+	// Not due: past its hard end (belongs to the expiry sweep, not period grants).
+	overSub := &model.UserSubscription{
+		UserID: u.ID, PlanCode: model.PlanCodeCloud, Status: model.SubscriptionStatusActive,
+		CurrentPeriodStart: now.Add(-48 * time.Hour), CurrentPeriodEnd: now.Add(-2 * time.Hour),
+		ActiveUntil: now.Add(-time.Hour), Provider: model.PaymentProviderManual,
+	}
+	for _, s := range []*model.UserSubscription{dueSub, freshSub, overSub} {
+		if err := repos.Subscriptions.Create(ctx, s); err != nil {
+			t.Fatalf("create subscription: %v", err)
+		}
+	}
+
+	due, err := repos.Subscriptions.ListDueForPeriodGrant(ctx, time.Now(), 100)
+	if err != nil {
+		t.Fatalf("ListDueForPeriodGrant() error = %v", err)
+	}
+	if len(due) != 1 || due[0].ID != dueSub.ID {
+		t.Fatalf("due = %+v, want only the rolled-over subscription", due)
+	}
+}
+
 func TestCreditConsumeConcurrentDoesNotOversell(t *testing.T) {
 	repos := setupTest(t)
 	ctx := testContext(t)

@@ -243,6 +243,30 @@ func (r *SubscriptionRepo) UpdatePeriod(ctx context.Context, id uuid.UUID, start
 	return err
 }
 
+// ListDueForPeriodGrant returns active subscriptions whose current monthly
+// window has elapsed (current_period_end <= now) while their hard end has not
+// (active_until > now): those needing a period roll + grant. It is bounded by
+// limit; granting rolls each subscription's window past now so a re-query no
+// longer returns it, letting the scheduler drain due subscriptions in batches.
+func (r *SubscriptionRepo) ListDueForPeriodGrant(ctx context.Context, now time.Time, limit int32) ([]model.UserSubscription, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 500
+	}
+	const q = `
+		SELECT id, user_id, plan_code, status, current_period_start, current_period_end,
+		       active_until, provider, external_order_id, created_at, updated_at
+		FROM user_subscriptions
+		WHERE status = 'active' AND active_until > $1 AND current_period_end <= $1
+		ORDER BY id
+		LIMIT $2`
+	rows, err := r.pool.Query(ctx, q, now, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list due subscriptions: %w", err)
+	}
+	defer rows.Close()
+	return scanSubscriptions(rows)
+}
+
 // RefreshExpired marks all active subscriptions whose active_until has passed as
 // expired, then recomputes cloud_sync_enabled for the affected users (true iff
 // they still have another active subscription). It deliberately does not touch

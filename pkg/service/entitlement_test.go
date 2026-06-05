@@ -181,6 +181,20 @@ func (f *fakeBilling) UpdatePeriod(_ context.Context, id uuid.UUID, start, end t
 	return nil
 }
 
+func (f *fakeBilling) ListDueForPeriodGrant(_ context.Context, now time.Time, limit int32) ([]model.UserSubscription, error) {
+	var out []model.UserSubscription
+	for _, s := range f.subs {
+		if s.Status == model.SubscriptionStatusActive && s.ActiveUntil.After(now) && !s.CurrentPeriodEnd.After(now) {
+			out = append(out, *s)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
+	if limit > 0 && int32(len(out)) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 func (f *fakeBilling) RefreshExpired(_ context.Context, now time.Time) (int64, error) {
 	var count int64
 	affected := map[uuid.UUID]bool{}
@@ -803,6 +817,42 @@ func TestGetAvailablePlansFiltersByRegion(t *testing.T) {
 				t.Fatalf("china price currency = %q, want CNY", price.Currency)
 			}
 		}
+	}
+}
+
+func TestGrantDuePeriodCreditsGrantsRolledOverSubscriptions(t *testing.T) {
+	svc, fb, clock := newTestEntitlement()
+	uid := uuid.New()
+
+	if _, err := svc.GrantPlanToUser(ctx(), uid, model.PlanCodeCloud, GrantOptions{BillingPeriod: model.BillingPeriodYearly}); err != nil {
+		t.Fatalf("grant cloud yearly: %v", err)
+	}
+	if bal := fb.liveBalance(uid); bal != 500 {
+		t.Fatalf("balance = %d after activation, want 500", bal)
+	}
+
+	// Within the first period nothing is due.
+	if n, err := svc.GrantDuePeriodCredits(ctx()); err != nil || n != 0 {
+		t.Fatalf("GrantDuePeriodCredits before rollover = %d, %v, want 0, nil", n, err)
+	}
+
+	// After the month boundary the subscription is due; granting rolls it and
+	// the prior period's credits expire.
+	clock.t = clock.t.AddDate(0, 1, 0).Add(24 * time.Hour)
+	n, err := svc.GrantDuePeriodCredits(ctx())
+	if err != nil {
+		t.Fatalf("GrantDuePeriodCredits() error = %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("period grants = %d, want 1", n)
+	}
+	if bal := fb.liveBalance(uid); bal != 500 {
+		t.Fatalf("balance = %d, want 500 (prior expired, new period granted)", bal)
+	}
+
+	// Re-running within the new period grants nothing more (idempotent, no longer due).
+	if n, err := svc.GrantDuePeriodCredits(ctx()); err != nil || n != 0 {
+		t.Fatalf("second GrantDuePeriodCredits = %d, %v, want 0, nil", n, err)
 	}
 }
 

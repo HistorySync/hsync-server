@@ -17,8 +17,9 @@ import (
 // elect its leader independently. Keep these stable across releases so a rolling
 // upgrade does not run two leaders for the same task.
 const (
-	LockQuotaReconcile   int64 = 9_000_001
-	LockRetentionCleanup int64 = 9_000_002
+	LockQuotaReconcile     int64 = 9_000_001
+	LockRetentionCleanup   int64 = 9_000_002
+	LockBillingMaintenance int64 = 9_000_003
 )
 
 // Task is a periodic background job. Run is invoked at most once per Interval and

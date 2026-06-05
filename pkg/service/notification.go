@@ -39,6 +39,7 @@ const (
 	defaultNotificationMaxAttempts     = 5
 	defaultNotificationBaseBackoff     = time.Minute
 	defaultNotificationMaxBackoff      = time.Hour
+	maxNotificationOutboxAdminBatch    = int32(200)
 )
 
 var (
@@ -65,9 +66,14 @@ type NotificationPreferenceStore interface {
 type NotificationOutboxStore interface {
 	Enqueue(ctx context.Context, item *model.NotificationOutbox) error
 	ClaimDue(ctx context.Context, now time.Time, limit int32) ([]model.NotificationOutbox, error)
+	GetByID(ctx context.Context, id uuid.UUID) (*model.NotificationOutbox, error)
+	ClaimFailedByID(ctx context.Context, id uuid.UUID) (*model.NotificationOutbox, error)
+	ClaimFailed(ctx context.Context, limit int32) ([]model.NotificationOutbox, error)
 	MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time) error
 	MarkRetry(ctx context.Context, id uuid.UUID, nextRetryAt time.Time, errText string) error
 	MarkFailed(ctx context.Context, id uuid.UUID, errText string) error
+	RequeueFailed(ctx context.Context, id uuid.UUID, nextRetryAt time.Time) (bool, error)
+	MarkDiscarded(ctx context.Context, id uuid.UUID) (bool, error)
 	ListFailures(ctx context.Context, limit, offset int32) ([]model.NotificationOutbox, error)
 }
 
@@ -611,6 +617,33 @@ type NotificationOutboxProcessResult struct {
 	Failed  int `json:"failed"`
 }
 
+type NotificationOutboxActionResultType string
+
+const (
+	NotificationOutboxActionRetried   NotificationOutboxActionResultType = "retried"
+	NotificationOutboxActionRequeued  NotificationOutboxActionResultType = "requeued"
+	NotificationOutboxActionDiscarded NotificationOutboxActionResultType = "discarded"
+	NotificationOutboxActionSkipped   NotificationOutboxActionResultType = "skipped"
+	NotificationOutboxActionNotFound  NotificationOutboxActionResultType = "not_found"
+)
+
+type NotificationOutboxActionResult struct {
+	Result         NotificationOutboxActionResultType `json:"result"`
+	NotificationID uuid.UUID                          `json:"notification_id,omitempty"`
+	Replayed       bool                               `json:"replayed"`
+	Limit          int32                              `json:"limit,omitempty"`
+	Retried        int                                `json:"retried,omitempty"`
+	Requeued       int                                `json:"requeued,omitempty"`
+	Discarded      int                                `json:"discarded,omitempty"`
+	Skipped        int                                `json:"skipped,omitempty"`
+	NotFound       int                                `json:"not_found,omitempty"`
+	Sent           int                                `json:"sent,omitempty"`
+	Failed         int                                `json:"failed,omitempty"`
+	ScheduledRetry int                                `json:"scheduled_retry,omitempty"`
+	Status         model.NotificationOutboxStatus     `json:"status,omitempty"`
+	PreviousStatus model.NotificationOutboxStatus     `json:"previous_status,omitempty"`
+}
+
 func (s *NotificationService) ProcessOutbox(ctx context.Context, limit int32) (NotificationOutboxProcessResult, error) {
 	var result NotificationOutboxProcessResult
 	if s == nil || s.outbox == nil {
@@ -679,6 +712,227 @@ func (s *NotificationService) ProcessOutbox(ctx context.Context, limit int32) (N
 			Msg("notification delivered")
 	}
 	return result, nil
+}
+
+func (s *NotificationService) RetryFailure(ctx context.Context, id uuid.UUID) (NotificationOutboxActionResult, error) {
+	result := NotificationOutboxActionResult{NotificationID: id}
+	if s == nil || s.outbox == nil || id == uuid.Nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	item, err := s.outbox.GetByID(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if item == nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	result.PreviousStatus = item.Status
+	if item.Status != model.NotificationOutboxFailed {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	claimed, err := s.outbox.ClaimFailedByID(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if claimed == nil {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	return s.retryClaimedOutboxItem(ctx, *claimed)
+}
+
+func (s *NotificationService) RetryFailures(ctx context.Context, limit int32) (NotificationOutboxActionResult, error) {
+	limit = normalizeNotificationAdminLimit(limit)
+	result := NotificationOutboxActionResult{
+		Result: NotificationOutboxActionRetried,
+		Limit:  limit,
+	}
+	if s == nil || s.outbox == nil {
+		return result, nil
+	}
+	items, err := s.outbox.ClaimFailed(ctx, limit)
+	if err != nil {
+		return result, err
+	}
+	if len(items) == 0 {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		return result, nil
+	}
+	for _, item := range items {
+		itemResult, err := s.retryClaimedOutboxItem(ctx, item)
+		if err != nil {
+			return result, err
+		}
+		result.Retried += itemResult.Retried
+		result.Sent += itemResult.Sent
+		result.Failed += itemResult.Failed
+		result.ScheduledRetry += itemResult.ScheduledRetry
+		result.Skipped += itemResult.Skipped
+	}
+	return result, nil
+}
+
+func (s *NotificationService) RequeueFailure(ctx context.Context, id uuid.UUID) (NotificationOutboxActionResult, error) {
+	result := NotificationOutboxActionResult{NotificationID: id}
+	if s == nil || s.outbox == nil || id == uuid.Nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	item, err := s.outbox.GetByID(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if item == nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	result.PreviousStatus = item.Status
+	if item.Status != model.NotificationOutboxFailed {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	updated, err := s.outbox.RequeueFailed(ctx, id, time.Now().UTC())
+	if err != nil {
+		return result, err
+	}
+	if !updated {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	result.Result = NotificationOutboxActionRequeued
+	result.Requeued = 1
+	result.Status = model.NotificationOutboxPending
+	return result, nil
+}
+
+func (s *NotificationService) DiscardFailure(ctx context.Context, id uuid.UUID) (NotificationOutboxActionResult, error) {
+	result := NotificationOutboxActionResult{NotificationID: id}
+	if s == nil || s.outbox == nil || id == uuid.Nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	item, err := s.outbox.GetByID(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if item == nil {
+		result.Result = NotificationOutboxActionNotFound
+		result.NotFound = 1
+		return result, nil
+	}
+	result.PreviousStatus = item.Status
+	if item.Status != model.NotificationOutboxFailed {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	updated, err := s.outbox.MarkDiscarded(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if !updated {
+		result.Result = NotificationOutboxActionSkipped
+		result.Skipped = 1
+		result.Status = item.Status
+		return result, nil
+	}
+	result.Result = NotificationOutboxActionDiscarded
+	result.Discarded = 1
+	result.Status = model.NotificationOutboxDiscarded
+	return result, nil
+}
+
+func (s *NotificationService) retryClaimedOutboxItem(ctx context.Context, item model.NotificationOutbox) (NotificationOutboxActionResult, error) {
+	result := NotificationOutboxActionResult{
+		Result:         NotificationOutboxActionRetried,
+		NotificationID: item.ID,
+		PreviousStatus: model.NotificationOutboxFailed,
+		Retried:        1,
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
+	}
+	if err := s.deliverOutboxItem(ctx, item); err != nil {
+		observability.RecordNotificationDelivery(item.Category, "failure")
+		errText := sanitizeNotificationError(err)
+		nextAttempt := item.AttemptCount + 1
+		if nextAttempt >= defaultNotificationMaxAttempts {
+			if markErr := s.outbox.MarkFailed(ctx, item.ID, errText); markErr != nil {
+				return result, markErr
+			}
+			result.Failed = 1
+			result.Status = model.NotificationOutboxFailed
+			log.Warn().
+				Str("notification_id", item.ID.String()).
+				Str("user_id", item.UserID.String()).
+				Str("channel", string(item.Channel)).
+				Str("category", item.Category).
+				Str("type", item.Type).
+				Int("attempt", nextAttempt).
+				Str("error_summary", errText).
+				Msg("notification delivery permanently failed during admin retry")
+			return result, nil
+		}
+		nextRetry := time.Now().UTC().Add(notificationRetryDelay(nextAttempt))
+		if markErr := s.outbox.MarkRetry(ctx, item.ID, nextRetry, errText); markErr != nil {
+			return result, markErr
+		}
+		result.ScheduledRetry = 1
+		result.Status = model.NotificationOutboxPending
+		log.Warn().
+			Str("notification_id", item.ID.String()).
+			Str("user_id", item.UserID.String()).
+			Str("channel", string(item.Channel)).
+			Str("category", item.Category).
+			Str("type", item.Type).
+			Int("attempt", nextAttempt).
+			Time("next_retry_at", nextRetry).
+			Str("error_summary", errText).
+			Msg("notification delivery failed during admin retry; retry scheduled")
+		return result, nil
+	}
+	if err := s.outbox.MarkSent(ctx, item.ID, time.Now().UTC()); err != nil {
+		return result, err
+	}
+	observability.RecordNotificationDelivery(item.Category, "success")
+	result.Sent = 1
+	result.Status = model.NotificationOutboxSent
+	log.Info().
+		Str("notification_id", item.ID.String()).
+		Str("user_id", item.UserID.String()).
+		Str("channel", string(item.Channel)).
+		Str("category", item.Category).
+		Str("type", item.Type).
+		Msg("notification delivered during admin retry")
+	return result, nil
+}
+
+func normalizeNotificationAdminLimit(limit int32) int32 {
+	if limit <= 0 {
+		return defaultNotificationOutboxBatchSize
+	}
+	if limit > maxNotificationOutboxAdminBatch {
+		return maxNotificationOutboxAdminBatch
+	}
+	return limit
 }
 
 func (s *NotificationService) deliverOutboxItem(ctx context.Context, item model.NotificationOutbox) error {
@@ -874,11 +1128,82 @@ func sanitizeNotificationError(err error) string {
 		return ""
 	}
 	msg := provider.SanitizeWebhookError(err.Error())
+	msg = redactNotificationSecretAssignments(msg)
+	msg = redactNotificationSecretWords(msg)
 	msg = strings.TrimSpace(msg)
 	if len(msg) > 240 {
 		msg = msg[:240]
 	}
 	return msg
+}
+
+func redactNotificationSecretAssignments(message string) string {
+	for _, key := range []string{
+		"smtp_secret=", "smtp-secret=", "smtp_token=", "smtp-token=", "smtp_password=", "smtp-password=",
+		"password=", "token=", "secret=", "smtp_secret:", "smtp-token:", "smtp_password:", "smtp-password:",
+		"password:", "token:", "secret:",
+	} {
+		message = redactNotificationAssignment(message, key)
+	}
+	return message
+}
+
+func redactNotificationAssignment(message, key string) string {
+	lower := strings.ToLower(message)
+	var out strings.Builder
+	for {
+		idx := strings.Index(lower, key)
+		if idx < 0 {
+			out.WriteString(message)
+			return out.String()
+		}
+		out.WriteString(message[:idx])
+		out.WriteString(message[idx : idx+len(key)])
+		out.WriteString("<redacted>")
+		valueStart := idx + len(key)
+		valueEnd := valueStart
+		for valueEnd < len(message) {
+			switch message[valueEnd] {
+			case '&', ' ', '\t', '\r', '\n', '"', '\'', ')', ']', '}', ',', ';':
+				goto done
+			default:
+				valueEnd++
+			}
+		}
+	done:
+		message = message[valueEnd:]
+		lower = strings.ToLower(message)
+	}
+}
+
+func redactNotificationSecretWords(message string) string {
+	fields := strings.Fields(message)
+	for i := 0; i < len(fields); i++ {
+		trimmed := strings.Trim(fields[i], `"'(),;[]{}<>`)
+		normalized := strings.ToLower(strings.TrimRight(trimmed, ":="))
+		if !notificationSecretMarker(normalized) {
+			continue
+		}
+		if strings.HasSuffix(trimmed, ":") || strings.HasSuffix(trimmed, "=") {
+			if i+1 < len(fields) {
+				fields[i+1] = "<redacted>"
+			}
+			continue
+		}
+		if i+1 < len(fields) && !strings.Contains(fields[i], "<redacted>") {
+			fields[i+1] = "<redacted>"
+		}
+	}
+	return strings.Join(fields, " ")
+}
+
+func notificationSecretMarker(value string) bool {
+	switch value {
+	case "secret", "token", "password", "smtp_secret", "smtp-password", "smtp_token", "smtp-token":
+		return true
+	default:
+		return false
+	}
 }
 
 func preferenceAllowsEmail(prefs *model.NotificationPreferences, category string) bool {

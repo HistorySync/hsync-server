@@ -85,6 +85,7 @@ const (
 	NotificationOutboxProcessing NotificationOutboxStatus = "processing"
 	NotificationOutboxSent       NotificationOutboxStatus = "sent"
 	NotificationOutboxFailed     NotificationOutboxStatus = "failed"
+	NotificationOutboxDiscarded  NotificationOutboxStatus = "discarded"
 )
 
 // NotificationOutbox is the durable delivery queue for best-effort user

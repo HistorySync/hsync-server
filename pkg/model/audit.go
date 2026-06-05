@@ -16,6 +16,9 @@ const (
 	AuditEventTwoFactorEnable           AuditEventType = "auth.2fa.enable"
 	AuditEventTwoFactorDisable          AuditEventType = "auth.2fa.disable"
 	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
+	AuditEventNotificationOutboxRetry   AuditEventType = "admin.notification_outbox.retry"
+	AuditEventNotificationOutboxRequeue AuditEventType = "admin.notification_outbox.requeue"
+	AuditEventNotificationOutboxDiscard AuditEventType = "admin.notification_outbox.discard"
 )
 
 type AuditLog struct {

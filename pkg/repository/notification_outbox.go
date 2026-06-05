@@ -92,6 +92,95 @@ func (r *NotificationOutboxRepo) ClaimDue(ctx context.Context, now time.Time, li
 	return scanNotificationOutboxRows(rows)
 }
 
+func (r *NotificationOutboxRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.NotificationOutbox, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	const q = `
+		SELECT id, user_id, channel, category, type, payload_json,
+		       status, attempt_count, next_retry_at, last_error,
+		       created_at, updated_at, sent_at
+		FROM notification_outbox
+		WHERE id = $1`
+	rows, err := r.db.Query(ctx, q, id)
+	if err != nil {
+		return nil, fmt.Errorf("get notification outbox: %w", err)
+	}
+	defer rows.Close()
+	items, err := scanNotificationOutboxRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
+}
+
+func (r *NotificationOutboxRepo) ClaimFailedByID(ctx context.Context, id uuid.UUID) (*model.NotificationOutbox, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	const q = `
+		WITH target AS (
+			SELECT id
+			FROM notification_outbox
+			WHERE id = $1 AND status = 'failed'
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE notification_outbox n
+		SET status = 'processing',
+		    updated_at = now()
+		FROM target
+		WHERE n.id = target.id
+		RETURNING n.id, n.user_id, n.channel, n.category, n.type, n.payload_json,
+		          n.status, n.attempt_count, n.next_retry_at, n.last_error,
+		          n.created_at, n.updated_at, n.sent_at`
+	rows, err := r.db.Query(ctx, q, id)
+	if err != nil {
+		return nil, fmt.Errorf("claim failed notification outbox: %w", err)
+	}
+	defer rows.Close()
+	items, err := scanNotificationOutboxRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return &items[0], nil
+}
+
+func (r *NotificationOutboxRepo) ClaimFailed(ctx context.Context, limit int32) ([]model.NotificationOutbox, error) {
+	if r == nil || r.db == nil {
+		return []model.NotificationOutbox{}, nil
+	}
+	limit = normalizeNotificationLimit(limit, defaultNotificationFailureLimit, maxNotificationFailureLimit)
+	const q = `
+		WITH failed AS (
+			SELECT id
+			FROM notification_outbox
+			WHERE status = 'failed'
+			ORDER BY updated_at DESC, created_at
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE notification_outbox n
+		SET status = 'processing',
+		    updated_at = now()
+		FROM failed
+		WHERE n.id = failed.id
+		RETURNING n.id, n.user_id, n.channel, n.category, n.type, n.payload_json,
+		          n.status, n.attempt_count, n.next_retry_at, n.last_error,
+		          n.created_at, n.updated_at, n.sent_at`
+	rows, err := r.db.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim failed notification outbox batch: %w", err)
+	}
+	defer rows.Close()
+	return scanNotificationOutboxRows(rows)
+}
+
 func (r *NotificationOutboxRepo) MarkSent(ctx context.Context, id uuid.UUID, sentAt time.Time) error {
 	if r == nil || r.db == nil {
 		return fmt.Errorf("notification outbox repository is not configured")
@@ -142,6 +231,42 @@ func (r *NotificationOutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, e
 		return fmt.Errorf("mark notification outbox failed: %w", err)
 	}
 	return nil
+}
+
+func (r *NotificationOutboxRepo) RequeueFailed(ctx context.Context, id uuid.UUID, nextRetryAt time.Time) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, fmt.Errorf("notification outbox repository is not configured")
+	}
+	const q = `
+		UPDATE notification_outbox
+		SET status = 'pending',
+		    attempt_count = 0,
+		    next_retry_at = $2,
+		    last_error = '',
+		    sent_at = NULL,
+		    updated_at = now()
+		WHERE id = $1 AND status = 'failed'`
+	tag, err := r.db.Exec(ctx, q, id, nextRetryAt)
+	if err != nil {
+		return false, fmt.Errorf("requeue notification outbox failure: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (r *NotificationOutboxRepo) MarkDiscarded(ctx context.Context, id uuid.UUID) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, fmt.Errorf("notification outbox repository is not configured")
+	}
+	const q = `
+		UPDATE notification_outbox
+		SET status = 'discarded',
+		    updated_at = now()
+		WHERE id = $1 AND status = 'failed'`
+	tag, err := r.db.Exec(ctx, q, id)
+	if err != nil {
+		return false, fmt.Errorf("mark notification outbox discarded: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *NotificationOutboxRepo) ListFailures(ctx context.Context, limit, offset int32) ([]model.NotificationOutbox, error) {

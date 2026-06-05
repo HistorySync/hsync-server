@@ -263,6 +263,10 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
 	v1Admin.Get("/security/stats", h.AdminSecurityStats)
 	v1Admin.Get("/notifications/failures", h.AdminNotificationFailures)
+	v1Admin.Post("/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
+	v1Admin.Post("/notifications/failures/retry", h.AdminRetryNotificationFailures)
+	v1Admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
+	v1Admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -288,6 +292,10 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Put("/settings/:key", h.AdminSetSetting)
 	admin.Get("/audit-logs", h.AdminListAuditLogs)
 	admin.Get("/notifications/failures", h.AdminNotificationFailures)
+	admin.Post("/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
+	admin.Post("/notifications/failures/retry", h.AdminRetryNotificationFailures)
+	admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
+	admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	admin.Get("/error-codes", h.AdminErrorCodes)
 }
 
@@ -2011,6 +2019,155 @@ func (h *Handlers) AdminNotificationFailures(c fiber.Ctx) error {
 		"limit":         limit,
 		"offset":        offset,
 	})
+}
+
+type notificationOutboxAdminRequest struct {
+	NotificationID string `json:"notification_id,omitempty"`
+	Limit          int32  `json:"limit,omitempty"`
+}
+
+func (h *Handlers) AdminRetryNotificationFailure(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierrors.NewBadRequest("invalid notification id")
+	}
+	payload := notificationOutboxAdminRequest{NotificationID: id.String()}
+	return h.executeNotificationOutboxAdminAction(c, "notification_outbox.retry", payload, func(ctx context.Context) (*service.NotificationOutboxActionResult, int, error) {
+		result, err := h.deps.Services.Notification.RetryFailure(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		h.auditNotificationOutboxAction(c, result, model.AuditEventNotificationOutboxRetry)
+		return &result, notificationOutboxActionStatus(result), nil
+	})
+}
+
+func (h *Handlers) AdminRetryNotificationFailures(c fiber.Ctx) error {
+	limit := int32(50)
+	if len(c.Body()) > 0 {
+		var req struct {
+			Limit int32 `json:"limit"`
+		}
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return apierrors.New(apierrors.CodeInvalidJSON, "request body must be a JSON object")
+		}
+		limit = req.Limit
+	}
+	payload := notificationOutboxAdminRequest{Limit: limit}
+	return h.executeNotificationOutboxAdminAction(c, "notification_outbox.retry_batch", payload, func(ctx context.Context) (*service.NotificationOutboxActionResult, int, error) {
+		result, err := h.deps.Services.Notification.RetryFailures(ctx, limit)
+		if err != nil {
+			return nil, 0, err
+		}
+		h.auditNotificationOutboxAction(c, result, model.AuditEventNotificationOutboxRetry)
+		return &result, notificationOutboxActionStatus(result), nil
+	})
+}
+
+func (h *Handlers) AdminRequeueNotificationFailure(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierrors.NewBadRequest("invalid notification id")
+	}
+	payload := notificationOutboxAdminRequest{NotificationID: id.String()}
+	return h.executeNotificationOutboxAdminAction(c, "notification_outbox.requeue", payload, func(ctx context.Context) (*service.NotificationOutboxActionResult, int, error) {
+		result, err := h.deps.Services.Notification.RequeueFailure(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		h.auditNotificationOutboxAction(c, result, model.AuditEventNotificationOutboxRequeue)
+		return &result, notificationOutboxActionStatus(result), nil
+	})
+}
+
+func (h *Handlers) AdminDiscardNotificationFailure(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierrors.NewBadRequest("invalid notification id")
+	}
+	payload := notificationOutboxAdminRequest{NotificationID: id.String()}
+	return h.executeNotificationOutboxAdminAction(c, "notification_outbox.discard", payload, func(ctx context.Context) (*service.NotificationOutboxActionResult, int, error) {
+		result, err := h.deps.Services.Notification.DiscardFailure(ctx, id)
+		if err != nil {
+			return nil, 0, err
+		}
+		h.auditNotificationOutboxAction(c, result, model.AuditEventNotificationOutboxDiscard)
+		return &result, notificationOutboxActionStatus(result), nil
+	})
+}
+
+func (h *Handlers) executeNotificationOutboxAdminAction(
+	c fiber.Ctx,
+	scope string,
+	payload notificationOutboxAdminRequest,
+	execute func(context.Context) (*service.NotificationOutboxActionResult, int, error),
+) error {
+	if h.deps.Services == nil || h.deps.Services.Notification == nil {
+		return apierrors.NewInternal("notification service is not configured")
+	}
+	execution, err := service.ExecuteIdempotent[service.NotificationOutboxActionResult](c.Context(), h.deps.Services.Idempotency, service.IdempotencyOptions{
+		Scope:          scope,
+		IdempotencyKey: c.Get("Idempotency-Key"),
+		Payload:        payload,
+		RequireKey:     true,
+	}, execute)
+	if err != nil {
+		return mapIdempotencyError(err)
+	}
+	if execution.Data == nil {
+		return apierrors.NewInternal("idempotency response is missing")
+	}
+	execution.Data.Replayed = execution.Replayed
+	return c.Status(execution.ResponseStatus).JSON(execution.Data)
+}
+
+func (h *Handlers) auditNotificationOutboxAction(c fiber.Ctx, result service.NotificationOutboxActionResult, eventType model.AuditEventType) {
+	targetID := result.NotificationID.String()
+	if result.NotificationID == uuid.Nil {
+		targetID = "batch"
+	}
+	metadata := map[string]any{
+		"result":          string(result.Result),
+		"limit":           result.Limit,
+		"retried":         result.Retried,
+		"requeued":        result.Requeued,
+		"discarded":       result.Discarded,
+		"skipped":         result.Skipped,
+		"not_found":       result.NotFound,
+		"sent":            result.Sent,
+		"failed":          result.Failed,
+		"scheduled_retry": result.ScheduledRetry,
+		"status":          string(result.Status),
+		"previous_status": string(result.PreviousStatus),
+	}
+	h.recordAudit(c, service.AuditEventInput{
+		EventType:  eventType,
+		TargetType: "notification_outbox",
+		TargetID:   targetID,
+		Metadata:   metadata,
+	})
+}
+
+func notificationOutboxActionStatus(result service.NotificationOutboxActionResult) int {
+	if result.Result == service.NotificationOutboxActionNotFound {
+		return fiber.StatusNotFound
+	}
+	return fiber.StatusOK
+}
+
+func mapIdempotencyError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrIdempotencyKeyRequired):
+		return apierrors.New(apierrors.CodeIdempotencyKeyMissing, err.Error())
+	case errors.Is(err, service.ErrIdempotencyConflict):
+		return apierrors.New(apierrors.CodeConflict, err.Error())
+	case errors.Is(err, service.ErrIdempotencyInProgress):
+		return apierrors.New(apierrors.CodeConflict, err.Error())
+	case errors.Is(err, service.ErrIdempotencyStoreUnavailable):
+		return apierrors.NewInternal("idempotency store unavailable")
+	default:
+		return apierrors.NewInternal(err.Error())
+	}
 }
 
 // AdminRecalculateQuota recomputes a user's storage usage counters from their

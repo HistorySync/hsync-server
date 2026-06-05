@@ -18,6 +18,7 @@ type fakeNotificationOutboxDB struct {
 	row      fakeNotificationOutboxRow
 	rows     *fakeNotificationOutboxRows
 	execArgs []any
+	execTag  pgconn.CommandTag
 }
 
 func (db *fakeNotificationOutboxDB) QueryRow(context.Context, string, ...any) pgx.Row {
@@ -30,6 +31,9 @@ func (db *fakeNotificationOutboxDB) Query(_ context.Context, _ string, _ ...any)
 
 func (db *fakeNotificationOutboxDB) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
 	db.execArgs = args
+	if db.execTag.RowsAffected() > 0 {
+		return db.execTag, nil
+	}
 	return pgconn.CommandTag{}, nil
 }
 
@@ -191,5 +195,68 @@ func TestNotificationOutboxRepoStatusUpdates(t *testing.T) {
 	}
 	if len(db.execArgs) != 2 || db.execArgs[0] != id {
 		t.Fatalf("MarkFailed args = %+v", db.execArgs)
+	}
+}
+
+func TestNotificationOutboxRepoAdminLifecycleQueries(t *testing.T) {
+	now := time.Now().UTC()
+	id := uuid.New()
+	userID := uuid.New()
+	db := &fakeNotificationOutboxDB{
+		rows: &fakeNotificationOutboxRows{rows: [][]any{{
+			id, userID, string(model.NotificationChannelEmail), "security", "security.login",
+			json.RawMessage(`{"subject":"Login"}`), string(model.NotificationOutboxFailed),
+			3, now, "timeout", now, now, nil,
+		}}},
+	}
+	repo := NewNotificationOutboxRepo(db)
+
+	item, err := repo.GetByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if item == nil || item.ID != id || item.Status != model.NotificationOutboxFailed {
+		t.Fatalf("item = %+v, want failed item", item)
+	}
+
+	db.rows.idx = 0
+	item, err = repo.ClaimFailedByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("ClaimFailedByID: %v", err)
+	}
+	if item == nil || item.ID != id {
+		t.Fatalf("claimed item = %+v, want id %s", item, id)
+	}
+
+	db.rows.idx = 0
+	items, err := repo.ClaimFailed(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ClaimFailed: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != id {
+		t.Fatalf("batch claimed = %+v, want id %s", items, id)
+	}
+}
+
+func TestNotificationOutboxRepoAdminLifecycleUpdates(t *testing.T) {
+	db := &fakeNotificationOutboxDB{execTag: pgconn.NewCommandTag("UPDATE 1")}
+	repo := NewNotificationOutboxRepo(db)
+	id := uuid.New()
+	next := time.Now().UTC()
+
+	updated, err := repo.RequeueFailed(context.Background(), id, next)
+	if err != nil {
+		t.Fatalf("RequeueFailed: %v", err)
+	}
+	if !updated || len(db.execArgs) != 2 || db.execArgs[0] != id || db.execArgs[1] != next {
+		t.Fatalf("RequeueFailed updated=%v args=%+v", updated, db.execArgs)
+	}
+
+	updated, err = repo.MarkDiscarded(context.Background(), id)
+	if err != nil {
+		t.Fatalf("MarkDiscarded: %v", err)
+	}
+	if !updated || len(db.execArgs) != 1 || db.execArgs[0] != id {
+		t.Fatalf("MarkDiscarded updated=%v args=%+v", updated, db.execArgs)
 	}
 }

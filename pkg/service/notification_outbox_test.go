@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,41 @@ func (s *memoryNotificationOutboxStore) ClaimDue(_ context.Context, now time.Tim
 	return claimed, nil
 }
 
+func (s *memoryNotificationOutboxStore) GetByID(_ context.Context, id uuid.UUID) (*model.NotificationOutbox, error) {
+	for i := range s.items {
+		if s.items[i].ID == id {
+			item := s.items[i]
+			return &item, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *memoryNotificationOutboxStore) ClaimFailedByID(_ context.Context, id uuid.UUID) (*model.NotificationOutbox, error) {
+	for i := range s.items {
+		if s.items[i].ID == id && s.items[i].Status == model.NotificationOutboxFailed {
+			s.items[i].Status = model.NotificationOutboxProcessing
+			item := s.items[i]
+			return &item, nil
+		}
+	}
+	return nil, nil
+}
+
+func (s *memoryNotificationOutboxStore) ClaimFailed(_ context.Context, limit int32) ([]model.NotificationOutbox, error) {
+	var claimed []model.NotificationOutbox
+	for i := range s.items {
+		if int32(len(claimed)) >= limit {
+			break
+		}
+		if s.items[i].Status == model.NotificationOutboxFailed {
+			s.items[i].Status = model.NotificationOutboxProcessing
+			claimed = append(claimed, s.items[i])
+		}
+	}
+	return claimed, nil
+}
+
 func (s *memoryNotificationOutboxStore) MarkSent(_ context.Context, id uuid.UUID, sentAt time.Time) error {
 	for i := range s.items {
 		if s.items[i].ID == id {
@@ -72,6 +108,30 @@ func (s *memoryNotificationOutboxStore) MarkFailed(_ context.Context, id uuid.UU
 		}
 	}
 	return nil
+}
+
+func (s *memoryNotificationOutboxStore) RequeueFailed(_ context.Context, id uuid.UUID, nextRetryAt time.Time) (bool, error) {
+	for i := range s.items {
+		if s.items[i].ID == id && s.items[i].Status == model.NotificationOutboxFailed {
+			s.items[i].Status = model.NotificationOutboxPending
+			s.items[i].AttemptCount = 0
+			s.items[i].NextRetryAt = nextRetryAt
+			s.items[i].LastError = ""
+			s.items[i].SentAt = nil
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *memoryNotificationOutboxStore) MarkDiscarded(_ context.Context, id uuid.UUID) (bool, error) {
+	for i := range s.items {
+		if s.items[i].ID == id && s.items[i].Status == model.NotificationOutboxFailed {
+			s.items[i].Status = model.NotificationOutboxDiscarded
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *memoryNotificationOutboxStore) ListFailures(context.Context, int32, int32) ([]model.NotificationOutbox, error) {
@@ -197,5 +257,128 @@ func TestNotificationOutboxRetryAndPermanentFailure(t *testing.T) {
 	after := metricValue(t, "hsync_notification_delivery_total", map[string]string{"category": "security", "result": "failure"})
 	if after != before+2 {
 		t.Fatalf("notification failure metric delta = %v, want 2", after-before)
+	}
+}
+
+func TestAdminRetryFailureDeliversFailedNotification(t *testing.T) {
+	userID := uuid.New()
+	id := uuid.New()
+	prefs := &memoryNotificationPreferenceStore{
+		prefs: map[uuid.UUID]model.NotificationPreferences{
+			userID: {UserID: userID, SecurityEmail: true},
+		},
+	}
+	users := &notificationUserMemoryStore{users: map[uuid.UUID]*model.User{
+		userID: {ID: userID, Email: "user@example.com", DisplayName: "User"},
+	}}
+	outbox := &memoryNotificationOutboxStore{items: []model.NotificationOutbox{{
+		ID:           id,
+		UserID:       userID,
+		Channel:      model.NotificationChannelEmail,
+		Category:     NotificationCategorySecurity,
+		Type:         "security.login",
+		PayloadJSON:  []byte(`{"subject":"Login","message":"Detected","email_kind":"generic"}`),
+		Status:       model.NotificationOutboxFailed,
+		AttemptCount: 2,
+		LastError:    "smtp token secret",
+	}}}
+	notifier := &countingNotifier{}
+	svc := NewNotificationServiceWithStoresAndOutbox(users, prefs, outbox, notifier, nil, NotificationConfig{Enabled: true})
+
+	result, err := svc.RetryFailure(context.Background(), id)
+	if err != nil {
+		t.Fatalf("RetryFailure: %v", err)
+	}
+	if result.Result != NotificationOutboxActionRetried || result.Retried != 1 || result.Sent != 1 {
+		t.Fatalf("result = %+v, want retried and sent", result)
+	}
+	if outbox.items[0].Status != model.NotificationOutboxSent || notifier.sent != 1 {
+		t.Fatalf("item = %+v sent = %d, want sent once", outbox.items[0], notifier.sent)
+	}
+}
+
+func TestAdminRetryFailuresBatchSchedulesRetryWithSanitizedError(t *testing.T) {
+	userID := uuid.New()
+	id := uuid.New()
+	prefs := &memoryNotificationPreferenceStore{
+		prefs: map[uuid.UUID]model.NotificationPreferences{
+			userID: {UserID: userID, SecurityEmail: true},
+		},
+	}
+	users := &notificationUserMemoryStore{users: map[uuid.UUID]*model.User{
+		userID: {ID: userID, Email: "user@example.com"},
+	}}
+	outbox := &memoryNotificationOutboxStore{items: []model.NotificationOutbox{{
+		ID:           id,
+		UserID:       userID,
+		Channel:      model.NotificationChannelEmail,
+		Category:     NotificationCategorySecurity,
+		Type:         "security.login",
+		PayloadJSON:  []byte(`{"subject":"Login","message":"Detected","email_kind":"generic"}`),
+		Status:       model.NotificationOutboxFailed,
+		AttemptCount: 1,
+	}}}
+	notifier := &countingNotifier{err: errors.New("smtp_secret=hunter2 smtp token abc failed")}
+	svc := NewNotificationServiceWithStoresAndOutbox(users, prefs, outbox, notifier, nil, NotificationConfig{Enabled: true})
+
+	result, err := svc.RetryFailures(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("RetryFailures: %v", err)
+	}
+	if result.Result != NotificationOutboxActionRetried || result.Retried != 1 || result.ScheduledRetry != 1 {
+		t.Fatalf("result = %+v, want scheduled retry", result)
+	}
+	if outbox.items[0].Status != model.NotificationOutboxPending || outbox.items[0].LastError == "" {
+		t.Fatalf("item = %+v, want pending with error summary", outbox.items[0])
+	}
+	if strings.Contains(outbox.items[0].LastError, "hunter2") || strings.Contains(outbox.items[0].LastError, "abc") {
+		t.Fatalf("LastError leaked secret: %q", outbox.items[0].LastError)
+	}
+}
+
+func TestAdminRequeueAndDiscardFailure(t *testing.T) {
+	requeueID := uuid.New()
+	discardID := uuid.New()
+	outbox := &memoryNotificationOutboxStore{items: []model.NotificationOutbox{
+		{ID: requeueID, Status: model.NotificationOutboxFailed, AttemptCount: 4, LastError: "timeout"},
+		{ID: discardID, Status: model.NotificationOutboxFailed, AttemptCount: 2, LastError: "timeout"},
+	}}
+	svc := NewNotificationServiceWithStoresAndOutbox(nil, nil, outbox, nil, nil, NotificationConfig{})
+
+	requeued, err := svc.RequeueFailure(context.Background(), requeueID)
+	if err != nil {
+		t.Fatalf("RequeueFailure: %v", err)
+	}
+	if requeued.Result != NotificationOutboxActionRequeued || requeued.Requeued != 1 ||
+		outbox.items[0].Status != model.NotificationOutboxPending || outbox.items[0].AttemptCount != 0 || outbox.items[0].LastError != "" {
+		t.Fatalf("requeued = %+v item = %+v", requeued, outbox.items[0])
+	}
+
+	discarded, err := svc.DiscardFailure(context.Background(), discardID)
+	if err != nil {
+		t.Fatalf("DiscardFailure: %v", err)
+	}
+	if discarded.Result != NotificationOutboxActionDiscarded || discarded.Discarded != 1 ||
+		outbox.items[1].Status != model.NotificationOutboxDiscarded {
+		t.Fatalf("discarded = %+v item = %+v", discarded, outbox.items[1])
+	}
+
+	skipped, err := svc.DiscardFailure(context.Background(), requeueID)
+	if err != nil {
+		t.Fatalf("DiscardFailure skipped: %v", err)
+	}
+	if skipped.Result != NotificationOutboxActionSkipped || skipped.Skipped != 1 {
+		t.Fatalf("skipped = %+v, want skipped", skipped)
+	}
+}
+
+func TestAdminOutboxActionNotFound(t *testing.T) {
+	svc := NewNotificationServiceWithStoresAndOutbox(nil, nil, &memoryNotificationOutboxStore{}, nil, nil, NotificationConfig{})
+	result, err := svc.RetryFailure(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("RetryFailure: %v", err)
+	}
+	if result.Result != NotificationOutboxActionNotFound || result.NotFound != 1 {
+		t.Fatalf("result = %+v, want not_found", result)
 	}
 }

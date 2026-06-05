@@ -64,6 +64,19 @@ type LoginTwoFactorInput struct {
 	Code      string `json:"code"`
 }
 
+// StepUpVerificationInput verifies a logged-in user's current 2FA code.
+type StepUpVerificationInput struct {
+	Method string `json:"method"`
+	Code   string `json:"code"`
+}
+
+// StepUpVerificationResult returns the short-lived token for sensitive routes.
+type StepUpVerificationResult struct {
+	VerificationToken string `json:"verification_token"`
+	ExpiresIn         int64  `json:"expires_in"`
+	Method            string `json:"method"`
+}
+
 func NewTwoFactorService(repos *repository.Repos, tokenManager *auth.TokenManager, securitySecret string) *TwoFactorService {
 	key, err := config.DecodeSecuritySecret(securitySecret)
 	if err != nil {
@@ -234,6 +247,31 @@ func (s *TwoFactorService) Login(ctx context.Context, input LoginTwoFactorInput)
 		return nil, err
 	}
 	return s.issueTokens(ctx, user)
+}
+
+// VerifyStepUp validates the current user's 2FA code and issues a short-lived
+// verification token for sensitive operations.
+func (s *TwoFactorService) VerifyStepUp(ctx context.Context, userID uuid.UUID, input StepUpVerificationInput) (*StepUpVerificationResult, error) {
+	method := strings.ToLower(strings.TrimSpace(input.Method))
+	if method != auth.StepUpMethodTOTP {
+		return nil, ErrTwoFactorInvalidCode
+	}
+	tf, err := s.getEnabled(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.verifyTOTPOnly(ctx, tf, input.Code); err != nil {
+		return nil, err
+	}
+	token, expiresIn, err := s.tokenManager.IssueStepUpToken(userID, method)
+	if err != nil {
+		return nil, err
+	}
+	return &StepUpVerificationResult{
+		VerificationToken: token,
+		ExpiresIn:         expiresIn,
+		Method:            method,
+	}, nil
 }
 
 func (s *TwoFactorService) ready() error {

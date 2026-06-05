@@ -132,6 +132,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authRL := func(window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
 		return authRateLimit(h.deps.RateLimiter, window, classify)
 	}
+	stepUp := auth.StepUpMiddleware(h.deps.TokenManager)
 
 	// Auth (public; endpoint-specific throttles blunt credential-stuffing and
 	// email workflow abuse without applying one coarse limit to every route).
@@ -145,6 +146,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/login/2fa",
 		h.LoginTwoFactor,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:2fa:ip", authLoginIPLimit)))
+	authGroup.Post("/verify", h.VerifyAuth, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
 	authGroup.Post("/logout", h.Logout, publicAuthRL)
 	authGroup.Post("/resend-verification",
@@ -163,7 +165,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	bundles.Post("/", h.UploadBundle)
 	bundles.Get("/", h.ListBundles)
 	bundles.Get("/:id", h.DownloadBundle)
-	bundles.Delete("/:id", h.DeleteBundle)
+	bundles.Delete("/:id", h.DeleteBundle, stepUp)
 
 	// Snapshots (JWT-protected)
 	snapshots := v1.Group("/snapshots", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -174,7 +176,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Devices (JWT-protected)
 	devices := v1.Group("/devices", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	devices.Get("/", h.ListDevices)
-	devices.Post("/:uuid/revoke", h.RevokeDevice)
+	devices.Post("/:uuid/revoke", h.RevokeDevice, stepUp)
 	devices.Get("/revocations", h.ListRevocations)
 
 	// Account security (JWT-protected)
@@ -536,6 +538,11 @@ type loginTwoFactorRequest struct {
 	Code      string `json:"code"`
 }
 
+type authVerifyRequest struct {
+	Method string `json:"method"`
+	Code   string `json:"code"`
+}
+
 type forgotPasswordRequest struct {
 	Email          string `json:"email"`
 	TurnstileToken string `json:"turnstile_token"`
@@ -582,6 +589,30 @@ func (h *Handlers) LoginTwoFactor(c fiber.Ctx) error {
 		"refresh_token": result.RefreshToken,
 		"expires_in":    result.ExpiresIn,
 	})
+}
+
+func (h *Handlers) VerifyAuth(c fiber.Ctx) error {
+	var req authVerifyRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	method := strings.ToLower(strings.TrimSpace(req.Method))
+	if method == "" || strings.TrimSpace(req.Code) == "" {
+		return apierrors.NewBadRequest("method and code are required")
+	}
+	if method != auth.StepUpMethodTOTP {
+		return apierrors.NewBadRequest("method must be totp")
+	}
+
+	result, err := h.deps.Services.TwoFactor.VerifyStepUp(c.Context(), auth.UserID(c), service.StepUpVerificationInput{
+		Method: method,
+		Code:   req.Code,
+	})
+	if err != nil {
+		return mapTwoFactorError(err)
+	}
+
+	return c.JSON(result)
 }
 
 func (h *Handlers) RefreshToken(c fiber.Ctx) error {

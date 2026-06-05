@@ -50,6 +50,9 @@ const (
 	CodeInvalidRefreshToken       Code = "INVALID_REFRESH_TOKEN"
 	CodeInvalidResetToken         Code = "INVALID_RESET_TOKEN"
 	CodeInvalidVerificationToken  Code = "INVALID_VERIFICATION_TOKEN"
+	CodeStepUpExpired             Code = "STEP_UP_EXPIRED"
+	CodeStepUpInvalid             Code = "STEP_UP_INVALID"
+	CodeStepUpRequired            Code = "STEP_UP_REQUIRED"
 	CodeTwoFactorAlreadyEnabled   Code = "TWO_FACTOR_ALREADY_ENABLED"
 	CodeTwoFactorChallengeInvalid Code = "TWO_FACTOR_CHALLENGE_INVALID"
 	CodeTwoFactorInvalidCode      Code = "TWO_FACTOR_INVALID_CODE"
@@ -109,6 +112,9 @@ var catalog = map[Code]Entry{
 	CodeInvalidRefreshToken:       {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
 	CodeInvalidResetToken:         {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
 	CodeInvalidVerificationToken:  {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodeStepUpExpired:             {CodeStepUpExpired, http.StatusForbidden, "step-up verification token is expired"},
+	CodeStepUpInvalid:             {CodeStepUpInvalid, http.StatusForbidden, "invalid step-up verification token"},
+	CodeStepUpRequired:            {CodeStepUpRequired, http.StatusForbidden, "step-up verification is required"},
 	CodeTwoFactorAlreadyEnabled:   {CodeTwoFactorAlreadyEnabled, http.StatusConflict, "two-factor authentication is already enabled"},
 	CodeTwoFactorChallengeInvalid: {CodeTwoFactorChallengeInvalid, http.StatusUnauthorized, "invalid or expired two-factor challenge"},
 	CodeTwoFactorInvalidCode:      {CodeTwoFactorInvalidCode, http.StatusUnauthorized, "invalid two-factor authentication code"},

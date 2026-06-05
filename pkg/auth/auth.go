@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/historysync/hsync-server/pkg/apierrors"
 	"github.com/historysync/hsync-server/pkg/config"
 )
 
@@ -34,10 +36,27 @@ type TokenManager struct {
 	refreshTTL time.Duration
 }
 
+// StepUpClaims captures the validated short-lived verification token payload.
+type StepUpClaims struct {
+	UserID  uuid.UUID
+	Purpose string
+	Method  string
+}
+
 const (
 	tokenTypeAccess         = "access"
 	tokenTypeLoginChallenge = "login_2fa"
+	tokenTypeStepUp         = "verification"
+	stepUpPurpose           = "step_up"
+	StepUpMethodTOTP        = "totp"
+	StepUpHeader            = "X-HSync-Verification"
 	loginChallengeTTL       = 5 * time.Minute
+	stepUpTTL               = 5 * time.Minute
+)
+
+var (
+	ErrStepUpExpired = errors.New("step-up verification token is expired")
+	ErrStepUpInvalid = errors.New("invalid step-up verification token")
 )
 
 // NewTokenManager creates a TokenManager from a base64-encoded Ed25519 seed.
@@ -89,6 +108,31 @@ func (tm *TokenManager) IssueLoginChallengeToken(userID uuid.UUID) (string, int6
 		return "", 0, err
 	}
 	return signed, int64(loginChallengeTTL / time.Second), nil
+}
+
+// IssueStepUpToken creates a short-lived JWT proving the user recently
+// completed a sensitive-operation verification method.
+func (tm *TokenManager) IssueStepUpToken(userID uuid.UUID, method string) (string, int64, error) {
+	if method != StepUpMethodTOTP {
+		return "", 0, ErrStepUpInvalid
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub":     userID.String(),
+		"typ":     tokenTypeStepUp,
+		"purpose": stepUpPurpose,
+		"method":  method,
+		"iat":     jwt.NewNumericDate(now),
+		"exp":     jwt.NewNumericDate(now.Add(stepUpTTL)),
+		"iss":     "historysync",
+		"jti":     uuid.New().String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	signed, err := token.SignedString(tm.privateKey)
+	if err != nil {
+		return "", 0, err
+	}
+	return signed, int64(stepUpTTL / time.Second), nil
 }
 
 // IssueRefreshToken creates a long-lived refresh token (stored server-side).
@@ -155,6 +199,47 @@ func (tm *TokenManager) ValidateLoginChallengeToken(tokenString string) (uuid.UU
 	return userID, nil
 }
 
+// ValidateStepUpToken validates a step-up verification token and returns its
+// security-sensitive claims.
+func (tm *TokenManager) ValidateStepUpToken(tokenString string) (*StepUpClaims, error) {
+	token, err := jwt.Parse(tokenString, tm.keyfunc,
+		jwt.WithValidMethods([]string{"EdDSA"}),
+		jwt.WithIssuer("historysync"),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		if errors.Is(err, jwt.ErrTokenExpired) {
+			return nil, fmt.Errorf("%w: %v", ErrStepUpExpired, err)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrStepUpInvalid, err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return nil, ErrStepUpInvalid
+	}
+	if typ, _ := claims["typ"].(string); typ != tokenTypeStepUp {
+		return nil, ErrStepUpInvalid
+	}
+	purpose, _ := claims["purpose"].(string)
+	if purpose != stepUpPurpose {
+		return nil, ErrStepUpInvalid
+	}
+	method, _ := claims["method"].(string)
+	if method != StepUpMethodTOTP {
+		return nil, ErrStepUpInvalid
+	}
+	sub, _ := claims["sub"].(string)
+	userID, err := uuid.Parse(sub)
+	if err != nil {
+		return nil, ErrStepUpInvalid
+	}
+	return &StepUpClaims{
+		UserID:  userID,
+		Purpose: purpose,
+		Method:  method,
+	}, nil
+}
+
 // keyfunc returns the Ed25519 public key for verifying JWT signatures.
 func (tm *TokenManager) keyfunc(token *jwt.Token) (interface{}, error) {
 	if _, ok := token.Method.(*jwt.SigningMethodEd25519); !ok {
@@ -193,6 +278,36 @@ func AuthMiddleware(tm *TokenManager) fiber.Handler {
 		c.Locals("tier", claims["tier"])
 		c.Locals("token_jti", claims["jti"])
 
+		return c.Next()
+	}
+}
+
+// StepUpMiddleware requires a valid short-lived verification token for
+// sensitive authenticated routes. It must run after AuthMiddleware.
+func StepUpMiddleware(tm *TokenManager) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		tokenStr := strings.TrimSpace(c.Get(StepUpHeader))
+		if tokenStr == "" {
+			return apierrors.New(apierrors.CodeStepUpRequired, "step-up verification is required")
+		}
+
+		userID := UserID(c)
+		if userID == uuid.Nil {
+			return apierrors.New(apierrors.CodeStepUpInvalid, "step-up verification requires an authenticated user")
+		}
+
+		claims, err := tm.ValidateStepUpToken(tokenStr)
+		if err != nil {
+			if errors.Is(err, ErrStepUpExpired) {
+				return apierrors.New(apierrors.CodeStepUpExpired, ErrStepUpExpired.Error())
+			}
+			return apierrors.New(apierrors.CodeStepUpInvalid, ErrStepUpInvalid.Error())
+		}
+		if claims.UserID != userID || claims.Purpose != stepUpPurpose || claims.Method != StepUpMethodTOTP {
+			return apierrors.New(apierrors.CodeStepUpInvalid, ErrStepUpInvalid.Error())
+		}
+
+		c.Locals("verification_method", claims.Method)
 		return c.Next()
 	}
 }

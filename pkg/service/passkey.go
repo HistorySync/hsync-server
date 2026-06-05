@@ -22,6 +22,7 @@ import (
 const (
 	passkeyChallengeRegistration = "registration"
 	passkeyChallengeLogin        = "login"
+	passkeyChallengeStepUp       = "step_up"
 	passkeyChallengeTTL          = 2 * time.Minute
 )
 
@@ -59,6 +60,12 @@ type PasskeyFinishRegistrationInput struct {
 type PasskeyFinishLoginInput struct {
 	ChallengeID uuid.UUID
 	Request     *http.Request
+}
+
+type PasskeyStepUpResult struct {
+	VerificationToken string `json:"verification_token"`
+	ExpiresIn         int64  `json:"expires_in"`
+	Method            string `json:"method"`
 }
 
 type passkeyUser struct {
@@ -248,6 +255,75 @@ func (s *PasskeyService) FinishLogin(ctx context.Context, input PasskeyFinishLog
 		return nil, err
 	}
 	return (&AuthService{repos: s.repos, tokenManager: s.tokenManager}).issueTokens(ctx, userWrapper.user)
+}
+
+func (s *PasskeyService) BeginStepUp(ctx context.Context, userID uuid.UUID, r *http.Request) (*PasskeyBeginResult, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if !s.enabled(ctx) {
+		return nil, ErrPasskeyDisabled
+	}
+	user, credentials, err := s.getActiveUserWithCredentials(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(credentials) == 0 {
+		return nil, ErrPasskeyNotFound
+	}
+	wa, err := s.webAuthn(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	assertion, session, err := wa.BeginLogin(&passkeyUser{user: user, credentials: credentials}, webauthn.WithUserVerification(protocol.VerificationRequired))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPasskeyVerification, err)
+	}
+	return s.saveSession(ctx, userID, passkeyChallengeStepUp, session, assertion)
+}
+
+func (s *PasskeyService) FinishStepUp(ctx context.Context, userID uuid.UUID, input PasskeyFinishLoginInput) (*PasskeyStepUpResult, error) {
+	if err := s.ready(); err != nil {
+		return nil, err
+	}
+	if !s.enabled(ctx) {
+		return nil, ErrPasskeyDisabled
+	}
+	user, credentials, err := s.getActiveUserWithCredentials(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	session, err := s.consumeSession(ctx, input.ChallengeID, passkeyChallengeStepUp, &userID)
+	if err != nil {
+		return nil, err
+	}
+	wa, err := s.webAuthn(ctx, input.Request)
+	if err != nil {
+		return nil, err
+	}
+	credential, err := wa.FinishLogin(&passkeyUser{user: user, credentials: credentials}, *session, input.Request)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPasskeyVerification, err)
+	}
+	matched, err := s.passkeys.GetCredentialByCredentialID(ctx, credential.ID)
+	if err != nil {
+		return nil, err
+	}
+	if matched == nil || matched.UserID != userID {
+		return nil, ErrPasskeyVerification
+	}
+	if err := s.recordUse(ctx, matched, credential); err != nil {
+		return nil, err
+	}
+	token, expiresIn, err := s.tokenManager.IssueStepUpToken(userID, auth.StepUpMethodPasskey)
+	if err != nil {
+		return nil, err
+	}
+	return &PasskeyStepUpResult{
+		VerificationToken: token,
+		ExpiresIn:         expiresIn,
+		Method:            auth.StepUpMethodPasskey,
+	}, nil
 }
 
 func (s *PasskeyService) ready() error {

@@ -99,7 +99,7 @@ func TestStepUpTokenRoundTrip(t *testing.T) {
 	tm := newTestTokenManager(t)
 	userID := uuid.New()
 
-	token, expiresIn, err := tm.IssueStepUpToken(userID, StepUpMethodTOTP)
+	token, expiresIn, err := tm.IssueStepUpToken(userID, StepUpMethodPasskey)
 	if err != nil {
 		t.Fatalf("IssueStepUpToken() error = %v", err)
 	}
@@ -117,8 +117,8 @@ func TestStepUpTokenRoundTrip(t *testing.T) {
 	if claims.Purpose != stepUpPurpose {
 		t.Fatalf("purpose = %q, want %q", claims.Purpose, stepUpPurpose)
 	}
-	if claims.Method != StepUpMethodTOTP {
-		t.Fatalf("method = %q, want %q", claims.Method, StepUpMethodTOTP)
+	if claims.Method != StepUpMethodPasskey {
+		t.Fatalf("method = %q, want %q", claims.Method, StepUpMethodPasskey)
 	}
 }
 
@@ -149,7 +149,7 @@ func TestStepUpMiddleware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("IssueAccessToken() error = %v", err)
 	}
-	validStepUp, _, err := tm.IssueStepUpToken(userID, StepUpMethodTOTP)
+	validStepUp, _, err := tm.IssueStepUpToken(userID, StepUpMethodPasskey)
 	if err != nil {
 		t.Fatalf("IssueStepUpToken() error = %v", err)
 	}

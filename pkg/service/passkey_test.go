@@ -90,6 +90,31 @@ func TestPasskeyConsumeSessionRejectsWrongUserAndReplay(t *testing.T) {
 	}
 }
 
+func TestPasskeyStepUpChallengeConsumeBranches(t *testing.T) {
+	owner := uuid.New()
+	challengeID := uuid.New()
+	sessionJSON, _ := json.Marshal(&webauthn.SessionData{Challenge: "step-up-challenge", Expires: time.Now().Add(time.Minute)})
+	store := &fakePasskeyChallengeStore{
+		challenges: map[uuid.UUID]*model.PasskeyChallenge{
+			challengeID: {
+				ID:          challengeID,
+				UserID:      &owner,
+				Type:        passkeyChallengeStepUp,
+				SessionJSON: sessionJSON,
+				ExpiresAt:   time.Now().Add(time.Minute),
+			},
+		},
+	}
+	svc := &PasskeyService{passkeys: store, now: time.Now}
+
+	if _, err := svc.consumeSession(context.Background(), uuid.New(), passkeyChallengeStepUp, &owner); !errors.Is(err, ErrPasskeyChallenge) {
+		t.Fatalf("consumeSession(missing step-up) err = %v, want ErrPasskeyChallenge", err)
+	}
+	if _, err := svc.consumeSession(context.Background(), challengeID, passkeyChallengeStepUp, &owner); err != nil {
+		t.Fatalf("consumeSession(valid step-up): %v", err)
+	}
+}
+
 type fakePasskeyChallengeStore struct {
 	challenges map[uuid.UUID]*model.PasskeyChallenge
 }

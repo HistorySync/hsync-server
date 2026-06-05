@@ -49,6 +49,7 @@ const (
 	tokenTypeStepUp         = "verification"
 	stepUpPurpose           = "step_up"
 	StepUpMethodTOTP        = "totp"
+	StepUpMethodPasskey     = "passkey"
 	StepUpHeader            = "X-HSync-Verification"
 	loginChallengeTTL       = 5 * time.Minute
 	stepUpTTL               = 5 * time.Minute
@@ -113,7 +114,7 @@ func (tm *TokenManager) IssueLoginChallengeToken(userID uuid.UUID) (string, int6
 // IssueStepUpToken creates a short-lived JWT proving the user recently
 // completed a sensitive-operation verification method.
 func (tm *TokenManager) IssueStepUpToken(userID uuid.UUID, method string) (string, int64, error) {
-	if method != StepUpMethodTOTP {
+	if !validStepUpMethod(method) {
 		return "", 0, ErrStepUpInvalid
 	}
 	now := time.Now()
@@ -225,7 +226,7 @@ func (tm *TokenManager) ValidateStepUpToken(tokenString string) (*StepUpClaims, 
 		return nil, ErrStepUpInvalid
 	}
 	method, _ := claims["method"].(string)
-	if method != StepUpMethodTOTP {
+	if !validStepUpMethod(method) {
 		return nil, ErrStepUpInvalid
 	}
 	sub, _ := claims["sub"].(string)
@@ -303,13 +304,17 @@ func StepUpMiddleware(tm *TokenManager) fiber.Handler {
 			}
 			return apierrors.New(apierrors.CodeStepUpInvalid, ErrStepUpInvalid.Error())
 		}
-		if claims.UserID != userID || claims.Purpose != stepUpPurpose || claims.Method != StepUpMethodTOTP {
+		if claims.UserID != userID || claims.Purpose != stepUpPurpose || !validStepUpMethod(claims.Method) {
 			return apierrors.New(apierrors.CodeStepUpInvalid, ErrStepUpInvalid.Error())
 		}
 
 		c.Locals("verification_method", claims.Method)
 		return c.Next()
 	}
+}
+
+func validStepUpMethod(method string) bool {
+	return method == StepUpMethodTOTP || method == StepUpMethodPasskey
 }
 
 // AdminMiddleware validates the X-Admin-Key header for admin API access.

@@ -208,6 +208,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/passkeys/login/begin", h.BeginPasskeyLogin, publicAuthRL)
 	authGroup.Post("/passkeys/login/finish", h.FinishPasskeyLogin, publicAuthRL)
 	authGroup.Post("/verify", h.VerifyAuth, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
+	authGroup.Post("/verify/passkey/begin", h.BeginPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
+	authGroup.Post("/verify/passkey/finish", h.FinishPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
 	authGroup.Post("/logout", h.Logout, publicAuthRL)
 	authGroup.Post("/resend-verification",
@@ -1008,6 +1010,61 @@ func (h *Handlers) DeletePasskey(c fiber.Ctx) error {
 		return mapPasskeyError(err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (h *Handlers) BeginPasskeyStepUp(c fiber.Ctx) error {
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	result, err := h.deps.Services.Passkey.BeginStepUp(c.Context(), auth.UserID(c), req)
+	if err != nil {
+		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
+		return mapPasskeyError(err)
+	}
+	return c.JSON(result)
+}
+
+func (h *Handlers) FinishPasskeyStepUp(c fiber.Ctx) error {
+	challengeID, err := passkeyChallengeID(c)
+	if err != nil {
+		return err
+	}
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	userID := auth.UserID(c)
+	result, err := h.deps.Services.Passkey.FinishStepUp(c.Context(), userID, service.PasskeyFinishLoginInput{
+		ChallengeID: challengeID,
+		Request:     req,
+	})
+	if err != nil {
+		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
+		h.recordAudit(c, service.AuditEventInput{
+			ActorUserID: auditActor(userID),
+			EventType:   model.AuditEventTwoFactorChallengeFailure,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			Metadata: map[string]any{
+				"flow":   "step_up",
+				"method": "passkey",
+				"reason": passkeyFailureReason(err),
+			},
+		})
+		return mapPasskeyError(err)
+	}
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(userID),
+		EventType:   model.AuditEventTwoFactorChallengeSuccess,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+		Metadata: map[string]any{
+			"flow":   "step_up",
+			"method": result.Method,
+		},
+	})
+	return c.JSON(result)
 }
 
 func passkeyChallengeID(c fiber.Ctx) (uuid.UUID, error) {

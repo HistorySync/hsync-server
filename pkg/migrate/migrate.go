@@ -211,14 +211,22 @@ func SanitizeName(raw string) (string, error) {
 
 // Up applies all pending migrations in order and returns those it applied.
 func Up(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]Migration, error) {
+	return UpWithTable(ctx, pool, fsys, schemaMigrationsTable)
+}
+
+// UpWithTable applies all pending migrations using the supplied tracking table.
+func UpWithTable(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, table string) ([]Migration, error) {
+	if err := validateTrackingTable(table); err != nil {
+		return nil, err
+	}
 	all, err := Parse(fsys)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureSchemaTable(ctx, pool); err != nil {
+	if err := ensureSchemaTable(ctx, pool, table); err != nil {
 		return nil, err
 	}
-	applied, _, err := appliedVersions(ctx, pool)
+	applied, _, err := appliedVersions(ctx, pool, table)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +237,7 @@ func Up(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]Migration, error
 			return nil, fmt.Errorf("apply migration %d (%s): %w", m.Version, m.Name, err)
 		}
 		if _, err := pool.Exec(ctx,
-			"INSERT INTO "+schemaMigrationsTable+" (version, name) VALUES ($1, $2)", m.Version, m.Name); err != nil {
+			"INSERT INTO "+table+" (version, name) VALUES ($1, $2)", m.Version, m.Name); err != nil {
 			return nil, fmt.Errorf("record migration %d: %w", m.Version, err)
 		}
 	}
@@ -238,17 +246,25 @@ func Up(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS) ([]Migration, error
 
 // Down rolls back the most recent n applied migrations and returns them.
 func Down(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, n int) ([]Migration, error) {
+	return DownWithTable(ctx, pool, fsys, n, schemaMigrationsTable)
+}
+
+// DownWithTable rolls back migrations tracked in the supplied table.
+func DownWithTable(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, n int, table string) ([]Migration, error) {
 	if n <= 0 {
 		return nil, nil
+	}
+	if err := validateTrackingTable(table); err != nil {
+		return nil, err
 	}
 	all, err := Parse(fsys)
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureSchemaTable(ctx, pool); err != nil {
+	if err := ensureSchemaTable(ctx, pool, table); err != nil {
 		return nil, err
 	}
-	_, appliedDesc, err := appliedVersions(ctx, pool)
+	_, appliedDesc, err := appliedVersions(ctx, pool, table)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +278,7 @@ func Down(ctx context.Context, pool *pgxpool.Pool, fsys fs.FS, n int) ([]Migrati
 			return nil, fmt.Errorf("roll back migration %d (%s): %w", m.Version, m.Name, err)
 		}
 		if _, err := pool.Exec(ctx,
-			"DELETE FROM "+schemaMigrationsTable+" WHERE version = $1", m.Version); err != nil {
+			"DELETE FROM "+table+" WHERE version = $1", m.Version); err != nil {
 			return nil, fmt.Errorf("unrecord migration %d: %w", m.Version, err)
 		}
 	}
@@ -297,22 +313,22 @@ func Create(dir, rawName string) (upPath, downPath string, err error) {
 	return upPath, downPath, nil
 }
 
-func ensureSchemaTable(ctx context.Context, pool *pgxpool.Pool) error {
-	const q = `CREATE TABLE IF NOT EXISTS ` + schemaMigrationsTable + ` (
+func ensureSchemaTable(ctx context.Context, pool *pgxpool.Pool, table string) error {
+	q := `CREATE TABLE IF NOT EXISTS ` + table + ` (
 		version    BIGINT PRIMARY KEY,
 		name       TEXT NOT NULL,
 		applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`
 	if _, err := pool.Exec(ctx, q); err != nil {
-		return fmt.Errorf("ensure %s table: %w", schemaMigrationsTable, err)
+		return fmt.Errorf("ensure %s table: %w", table, err)
 	}
 	return nil
 }
 
 // appliedVersions returns the set of applied versions and the same versions in
 // descending order (for rollback planning).
-func appliedVersions(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, []int64, error) {
-	rows, err := pool.Query(ctx, "SELECT version FROM "+schemaMigrationsTable+" ORDER BY version DESC")
+func appliedVersions(ctx context.Context, pool *pgxpool.Pool, table string) (map[int64]bool, []int64, error) {
+	rows, err := pool.Query(ctx, "SELECT version FROM "+table+" ORDER BY version DESC")
 	if err != nil {
 		return nil, nil, fmt.Errorf("query applied migrations: %w", err)
 	}
@@ -329,6 +345,23 @@ func appliedVersions(ctx context.Context, pool *pgxpool.Pool) (map[int64]bool, [
 		desc = append(desc, v)
 	}
 	return applied, desc, rows.Err()
+}
+
+func validateTrackingTable(table string) error {
+	if table == "" {
+		return fmt.Errorf("migration tracking table is required")
+	}
+	for i, r := range table {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r == '_':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return fmt.Errorf("invalid migration tracking table %q", table)
+		}
+	}
+	return nil
 }
 
 // execScript runs a multi-statement SQL script using the simple query protocol

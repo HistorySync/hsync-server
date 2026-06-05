@@ -89,7 +89,7 @@ func pageConsoleLayout(opts Options) string {
 		"</div></div>" +
 		"<div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\">" +
 		"<li><span>Quota API</span><span>" + htmlEscape(opts.APIPrefix) + "/quota</span></li>" +
-		"<li><span>Billing webhook</span><span>" + htmlEscape(opts.APIPrefix) + "/billing/webhook</span></li>" +
+		"<li><span>Billing extension seam</span><span>" + htmlEscape(opts.APIPrefix) + "/billing/*</span></li>" +
 		"<li><span>Admin overview</span><span>" + htmlEscape(opts.AdminPath) + "/stats</span></li>" +
 		"</ul></div>" +
 		"</div></div>"

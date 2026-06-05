@@ -128,3 +128,16 @@ func TestSanitizeName(t *testing.T) {
 		t.Fatal("SanitizeName() error = nil for empty name, want error")
 	}
 }
+
+func TestValidateTrackingTable(t *testing.T) {
+	for _, table := range []string{"schema_migrations", "enterprise_schema_migrations", "Migrations_2"} {
+		if err := validateTrackingTable(table); err != nil {
+			t.Fatalf("validateTrackingTable(%q) error = %v", table, err)
+		}
+	}
+	for _, table := range []string{"", "1schema", "schema-migrations", "schema;migrations"} {
+		if err := validateTrackingTable(table); err == nil {
+			t.Fatalf("validateTrackingTable(%q) error = nil, want error", table)
+		}
+	}
+}

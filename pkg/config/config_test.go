@@ -3,6 +3,8 @@ package config
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -14,13 +16,97 @@ func TestValidateRequiresJWTPrivateKey(t *testing.T) {
 	}
 }
 
-func TestValidateRequiresStripeSecretsWhenEnabled(t *testing.T) {
+func TestValidateDoesNotRequireStripeSecretsInCE(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
 	cfg.StripeDisabled = false
 
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "stripe_secret_key") || !strings.Contains(err.Error(), "stripe_webhook_secret") {
-		t.Fatalf("Validate() error = %v, want stripe secret errors", err)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v, want nil", err)
+	}
+}
+
+func TestDefaultConfigDisablesStripeBilling(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.StripeDisabled {
+		t.Fatal("StripeDisabled = false, want true")
+	}
+}
+
+func TestLoadWithExtraFilesMergesEnterpriseOverrides(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "configs"), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	secret := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	base := "jwt_private_key: " + seed + "\nsecurity_secret: " + secret + "\nstripe_disabled: true\nweb_app_name: CE\n"
+	extra := "stripe_disabled: false\nstripe_secret_key: sk_test\nstripe_webhook_secret: whsec_test\nweb_app_name: EE\n"
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.yaml"), []byte(base), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.ee.yaml"), []byte(extra), 0o644); err != nil {
+		t.Fatalf("write config.ee.yaml: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	cfg, err := LoadWithExtraFiles("config.ee")
+	if err != nil {
+		t.Fatalf("LoadWithExtraFiles() error = %v", err)
+	}
+	if cfg.StripeDisabled {
+		t.Fatal("StripeDisabled = true, want merged false")
+	}
+	if cfg.StripeSecretKey != "sk_test" || cfg.StripeWebhookSecret != "whsec_test" {
+		t.Fatalf("stripe secrets not merged: %q %q", cfg.StripeSecretKey, cfg.StripeWebhookSecret)
+	}
+	if cfg.WebAppName != "EE" {
+		t.Fatalf("WebAppName = %q, want EE", cfg.WebAppName)
+	}
+}
+
+func TestLoadWithExtraFilesAllowsMissingBaseConfig(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "configs"), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	secret := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	extra := "jwt_private_key: " + seed + "\nsecurity_secret: " + secret + "\nweb_app_name: EE Only\n"
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.ee.yaml"), []byte(extra), 0o644); err != nil {
+		t.Fatalf("write config.ee.yaml: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+
+	cfg, err := LoadWithExtraFiles("config.ee")
+	if err != nil {
+		t.Fatalf("LoadWithExtraFiles() error = %v", err)
+	}
+	if cfg.WebAppName != "EE Only" {
+		t.Fatalf("WebAppName = %q, want EE Only", cfg.WebAppName)
 	}
 }
 

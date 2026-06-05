@@ -22,13 +22,11 @@ CREATE TABLE users (
     status            TEXT NOT NULL DEFAULT 'active'
                       CHECK (status IN ('active','suspended','deleted')),
     email_verified    BOOLEAN NOT NULL DEFAULT false,
-    stripe_customer_id TEXT,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at        TIMESTAMPTZ
 );
 CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
-CREATE INDEX idx_users_stripe ON users(stripe_customer_id) WHERE stripe_customer_id IS NOT NULL;
 
 -- ============================================================
 -- 刷新令牌表
@@ -140,22 +138,6 @@ CREATE TABLE quota_limits (
 -- ============================================================
 -- 发票表
 -- ============================================================
-CREATE TABLE invoices (
-    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id          UUID NOT NULL REFERENCES users(id),
-    stripe_invoice_id TEXT NOT NULL UNIQUE,
-    amount_paid      BIGINT NOT NULL,
-    currency         TEXT NOT NULL DEFAULT 'usd',
-    status           TEXT NOT NULL,
-    invoice_url      TEXT,
-    invoice_pdf      TEXT,
-    period_start     TIMESTAMPTZ NOT NULL,
-    period_end       TIMESTAMPTZ NOT NULL,
-    paid_at          TIMESTAMPTZ,
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_invoices_user ON invoices(user_id);
-
 -- ============================================================
 -- Trigger: 自动更新 users.updated_at
 -- ============================================================

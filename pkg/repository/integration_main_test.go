@@ -45,7 +45,6 @@ var allTables = []string{
 	"device_revocations",
 	"storage_usage",
 	"quota_limits",
-	"invoices",
 	"email_verifications",
 	"password_resets",
 	"user_two_factor",

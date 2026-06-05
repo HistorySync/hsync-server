@@ -74,7 +74,8 @@ const (
 	// Billing
 	CodeBillingDisabled Code = "BILLING_DISABLED"
 
-	// Plans / entitlements / AI credits
+	// Plans / entitlements / AI credits. CE keeps these as shared API error
+	// codes so Enterprise handlers can reuse the common error envelope.
 	CodeEntitlementRequired   Code = "ENTITLEMENT_REQUIRED"
 	CodeFeatureNotEnabled     Code = "FEATURE_NOT_ENABLED"
 	CodePlanNotFound          Code = "PLAN_NOT_FOUND"

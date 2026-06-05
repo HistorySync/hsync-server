@@ -134,7 +134,18 @@ func DefaultConfig() *Config {
 
 // Load reads configuration from file and environment, then validates it fully.
 func Load() (*Config, error) {
-	cfg, err := load()
+	cfg, err := load(nil)
+	if err != nil {
+		return nil, err
+	}
+	return cfg, cfg.Validate()
+}
+
+// LoadWithExtraFiles loads the base CE configuration and then merges any extra
+// YAML config files by name before environment variables are applied. Enterprise
+// uses this to layer configs/config.ee.yaml over the CE defaults.
+func LoadWithExtraFiles(extraNames ...string) (*Config, error) {
+	cfg, err := load(extraNames)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +156,13 @@ func Load() (*Config, error) {
 // validates only the database connection so migrations can run without
 // requiring unrelated settings such as the JWT signing key or billing secrets.
 func LoadForMigrations() (*Config, error) {
-	cfg, err := load()
+	return LoadForMigrationsWithExtraFiles()
+}
+
+// LoadForMigrationsWithExtraFiles loads configuration for migration commands
+// that layer deployment-specific config files over the CE defaults.
+func LoadForMigrationsWithExtraFiles(extraNames ...string) (*Config, error) {
+	cfg, err := load(extraNames)
 	if err != nil {
 		return nil, err
 	}
@@ -160,8 +177,9 @@ func LoadForMigrations() (*Config, error) {
 // Precedence (lowest to highest):
 //  1. Default values
 //  2. config.yaml / configs/config.yaml
-//  3. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
-func load() (*Config, error) {
+//  3. Optional extra YAML files, if requested
+//  4. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
+func load(extraNames []string) (*Config, error) {
 	cfg := DefaultConfig()
 
 	v := viper.New()
@@ -223,6 +241,18 @@ func load() (*Config, error) {
 			return nil, fmt.Errorf("read config: %w", err)
 		}
 	}
+	for _, name := range extraNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		v.SetConfigName(name)
+		if err := v.MergeInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return nil, fmt.Errorf("merge config %s: %w", name, err)
+			}
+		}
+	}
 
 	if err := v.Unmarshal(cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
@@ -255,15 +285,6 @@ func (c *Config) Validate() error {
 	}
 	if _, err := DecodeSecuritySecret(c.SecuritySecret); err != nil {
 		errs = append(errs, "security_secret "+err.Error())
-	}
-
-	if !c.StripeDisabled {
-		if c.StripeSecretKey == "" {
-			errs = append(errs, "stripe_secret_key is required when billing is enabled")
-		}
-		if c.StripeWebhookSecret == "" {
-			errs = append(errs, "stripe_webhook_secret is required when billing is enabled")
-		}
 	}
 
 	if c.OIDCEnabled {

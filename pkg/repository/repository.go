@@ -116,13 +116,13 @@ func (r *UserRepo) Create(ctx context.Context, user *model.User) error {
 func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
 	const q = `
 		SELECT id, email, password_hash, display_name, tier, status,
-		       email_verified, stripe_customer_id, created_at, updated_at, deleted_at
+		       email_verified, created_at, updated_at, deleted_at
 		FROM users WHERE id = $1 AND deleted_at IS NULL`
 
 	user := &model.User{}
 	err := r.pool.QueryRow(ctx, q, id).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.DisplayName,
-		&user.Tier, &user.Status, &user.EmailVerified, &user.StripeCustomerID,
+		&user.Tier, &user.Status, &user.EmailVerified,
 		&user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -138,13 +138,13 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.User, erro
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	const q = `
 		SELECT id, email, password_hash, display_name, tier, status,
-		       email_verified, stripe_customer_id, created_at, updated_at, deleted_at
+		       email_verified, created_at, updated_at, deleted_at
 		FROM users WHERE email = $1 AND deleted_at IS NULL`
 
 	user := &model.User{}
 	err := r.pool.QueryRow(ctx, q, email).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.DisplayName,
-		&user.Tier, &user.Status, &user.EmailVerified, &user.StripeCustomerID,
+		&user.Tier, &user.Status, &user.EmailVerified,
 		&user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -167,13 +167,6 @@ func (r *UserRepo) UpdateTier(ctx context.Context, id uuid.UUID, tier model.User
 func (r *UserRepo) UpdatePassword(ctx context.Context, id uuid.UUID, hash string) error {
 	const q = `UPDATE users SET password_hash = $1 WHERE id = $2 AND deleted_at IS NULL`
 	_, err := r.pool.Exec(ctx, q, hash, id)
-	return err
-}
-
-// UpdateStripeCustomerID associates a Stripe customer with a user.
-func (r *UserRepo) UpdateStripeCustomerID(ctx context.Context, id uuid.UUID, customerID string) error {
-	const q = `UPDATE users SET stripe_customer_id = $1 WHERE id = $2 AND deleted_at IS NULL`
-	_, err := r.pool.Exec(ctx, q, customerID, id)
 	return err
 }
 
@@ -203,7 +196,7 @@ func (r *UserRepo) List(ctx context.Context, limit, offset int32) ([]model.User,
 
 	const q = `
 		SELECT id, email, password_hash, display_name, tier, status,
-		       email_verified, stripe_customer_id, created_at, updated_at, deleted_at
+		       email_verified, created_at, updated_at, deleted_at
 		FROM users WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
 		LIMIT $1 OFFSET $2`
@@ -265,7 +258,7 @@ func (r *UserRepo) TwoFactorEnabledStats(ctx context.Context) (int64, int64, err
 func (r *UserRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.User, error) {
 	const q = `
 		SELECT id, email, password_hash, display_name, tier, status,
-		       email_verified, stripe_customer_id, created_at, updated_at, deleted_at
+		       email_verified, created_at, updated_at, deleted_at
 		FROM users WHERE status = 'deleted' AND deleted_at < $1
 		ORDER BY deleted_at LIMIT 100`
 
@@ -279,7 +272,7 @@ func (r *UserRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]m
 	for rows.Next() {
 		var u model.User
 		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName,
-			&u.Tier, &u.Status, &u.EmailVerified, &u.StripeCustomerID,
+			&u.Tier, &u.Status, &u.EmailVerified,
 			&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
@@ -293,7 +286,7 @@ func scanUsers(rows pgx.Rows) ([]model.User, error) {
 	for rows.Next() {
 		var u model.User
 		if err := rows.Scan(&u.ID, &u.Email, &u.PasswordHash, &u.DisplayName,
-			&u.Tier, &u.Status, &u.EmailVerified, &u.StripeCustomerID,
+			&u.Tier, &u.Status, &u.EmailVerified,
 			&u.CreatedAt, &u.UpdatedAt, &u.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}

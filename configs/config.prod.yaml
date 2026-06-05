@@ -5,9 +5,10 @@ web_enabled: true
 web_app_name: "HistorySync Cloud Server"
 web_console_path: "/console"
 s3_use_ssl: true
-stripe_disabled: false
-# database_url, s3_*, jwt_private_key, security_secret, and stripe_* should
-# come from HSYNC_* env vars
+stripe_disabled: true
+# database_url, s3_*, jwt_private_key, and security_secret should come from
+# HSYNC_* env vars. CE billing is a no-op extension seam; commercial billing
+# secrets are configured by HistorySync Enterprise, not this CE config.
 
 # Background maintenance runs by default (leader-elected). Retention purge is
 # opt-in and destructive; enable it only after reviewing the dry-run logs:

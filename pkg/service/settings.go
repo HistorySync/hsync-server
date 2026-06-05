@@ -41,6 +41,10 @@ const (
 	SettingKeySignupsEnabled  = "signups_enabled"
 	SettingKeyMaintenanceMode = "maintenance_mode"
 	SettingKeyAnnouncement    = "announcement"
+	SettingKeyPasskeyEnabled  = "passkey_enabled"
+	SettingKeyPasskeyOrigins  = "passkey_origins"
+	SettingKeyPasskeyRPID     = "passkey_rp_id"
+	SettingKeyPasskeyRPName   = "passkey_rp_name"
 )
 
 const (
@@ -304,6 +308,34 @@ func defaultSettingDefinitions() []SettingDefinition {
 			Default:     "",
 			Description: "Operator broadcast message surfaced to clients.",
 			Group:       SettingGroupNotifications,
+		},
+		{
+			Key:         SettingKeyPasskeyEnabled,
+			Type:        SettingTypeBool,
+			Default:     "false",
+			Description: "Whether passkey/WebAuthn registration, login, and step-up verification are enabled.",
+			Group:       SettingGroupAuth,
+		},
+		{
+			Key:         SettingKeyPasskeyOrigins,
+			Type:        SettingTypeString,
+			Default:     "",
+			Description: "Comma-separated HTTPS origins allowed for passkey/WebAuthn ceremonies. When blank, the request origin is used for localhost only.",
+			Group:       SettingGroupSecurity,
+		},
+		{
+			Key:         SettingKeyPasskeyRPID,
+			Type:        SettingTypeString,
+			Default:     "",
+			Description: "Relying party ID for passkey/WebAuthn ceremonies. Defaults to the host of the configured origin.",
+			Group:       SettingGroupSecurity,
+		},
+		{
+			Key:         SettingKeyPasskeyRPName,
+			Type:        SettingTypeString,
+			Default:     "HistorySync",
+			Description: "Relying party display name shown by authenticators during passkey/WebAuthn ceremonies.",
+			Group:       SettingGroupSecurity,
 		},
 	}
 }

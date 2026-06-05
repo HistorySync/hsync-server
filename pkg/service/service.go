@@ -75,6 +75,10 @@ var (
 	ErrTwoFactorLocked      = errors.New("two-factor authentication is temporarily locked")
 	ErrTwoFactorChallenge   = errors.New("invalid or expired two-factor challenge")
 	ErrSignupsDisabled      = errors.New("new account registration is currently disabled")
+	ErrPasskeyDisabled      = errors.New("passkey authentication is disabled")
+	ErrPasskeyChallenge     = errors.New("invalid or expired passkey challenge")
+	ErrPasskeyNotFound      = errors.New("passkey credential not found")
+	ErrPasskeyVerification  = errors.New("passkey verification failed")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -192,6 +196,7 @@ type Services struct {
 	Notification  *NotificationService
 	Retention     *RetentionService
 	TwoFactor     *TwoFactorService
+	Passkey       *PasskeyService
 	Audit         *AuditService
 	SecurityStats *SecurityStatsService
 	Settings      *SettingsService
@@ -267,6 +272,7 @@ func New(deps Deps) *Services {
 	}
 	settingsSvc := NewSettingsService(settingStoreImpl, defaultSettingDefinitions())
 	authSvc.settings = settingsSvc
+	passkeySvc := NewPasskeyService(deps.Repos, deps.TokenManager, settingsSvc)
 
 	var idempotencySvc *IdempotencyService
 	if deps.Repos != nil {
@@ -283,6 +289,7 @@ func New(deps Deps) *Services {
 		Notification:  notifSvc,
 		Retention:     retentionSvc,
 		TwoFactor:     twoFactorSvc,
+		Passkey:       passkeySvc,
 		Audit:         auditSvc,
 		SecurityStats: securityStatsSvc,
 		Settings:      settingsSvc,
@@ -656,28 +663,7 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterRes
 		}, nil
 	}
 
-	// Issue tokens
-	accessToken, err := s.tokenManager.IssueAccessToken(user.ID, string(user.Tier))
-	if err != nil {
-		return nil, fmt.Errorf("issue access token: %w", err)
-	}
-
-	refreshToken, tokenHash, err := s.issueRefreshToken(user.ID)
-	if err != nil {
-		return nil, fmt.Errorf("issue refresh token: %w", err)
-	}
-
-	if err := s.repos.RefreshTokens.SaveRefreshToken(ctx, user.ID, tokenHash, "",
-		time.Now().Add(30*24*time.Hour)); err != nil {
-		return nil, fmt.Errorf("save refresh token: %w", err)
-	}
-
-	return &RegisterResult{
-		User:         *user,
-		AccessToken:  accessToken,
-		RefreshToken: refreshToken,
-		ExpiresIn:    900,
-	}, nil
+	return s.issueTokens(ctx, user)
 }
 
 // RefreshPasswordInput contains the fields required to complete a password reset.
@@ -915,6 +901,26 @@ func (s *AuthService) issueRefreshToken(userID uuid.UUID) (tokenStr string, toke
 	tokenStr = base64.RawURLEncoding.EncodeToString(raw)
 	tokenHash = hashToken(tokenStr)
 	return tokenStr, tokenHash, nil
+}
+
+func (s *AuthService) issueTokens(ctx context.Context, user *model.User) (*RegisterResult, error) {
+	accessToken, err := s.tokenManager.IssueAccessToken(user.ID, string(user.Tier))
+	if err != nil {
+		return nil, fmt.Errorf("issue access token: %w", err)
+	}
+	refreshToken, tokenHash, err := s.issueRefreshToken(user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("issue refresh token: %w", err)
+	}
+	if err := s.repos.RefreshTokens.SaveRefreshToken(ctx, user.ID, tokenHash, "", time.Now().Add(30*24*time.Hour)); err != nil {
+		return nil, fmt.Errorf("save refresh token: %w", err)
+	}
+	return &RegisterResult{
+		User:         *user,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresIn:    900,
+	}, nil
 }
 
 func hashToken(token string) []byte {

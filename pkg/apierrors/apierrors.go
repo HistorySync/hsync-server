@@ -51,6 +51,9 @@ const (
 	CodeInvalidRefreshToken       Code = "INVALID_REFRESH_TOKEN"
 	CodeInvalidResetToken         Code = "INVALID_RESET_TOKEN"
 	CodeInvalidVerificationToken  Code = "INVALID_VERIFICATION_TOKEN"
+	CodePasskeyDisabled           Code = "PASSKEY_DISABLED"
+	CodePasskeyInvalid            Code = "PASSKEY_INVALID"
+	CodePasskeyNotFound           Code = "PASSKEY_NOT_FOUND"
 	CodeSignupsDisabled           Code = "SIGNUPS_DISABLED"
 	CodeStepUpExpired             Code = "STEP_UP_EXPIRED"
 	CodeStepUpInvalid             Code = "STEP_UP_INVALID"
@@ -130,6 +133,9 @@ var catalog = map[Code]Entry{
 	CodeInvalidRefreshToken:       {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
 	CodeInvalidResetToken:         {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
 	CodeInvalidVerificationToken:  {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodePasskeyDisabled:           {CodePasskeyDisabled, http.StatusForbidden, "passkey authentication is disabled"},
+	CodePasskeyInvalid:            {CodePasskeyInvalid, http.StatusUnauthorized, "passkey verification failed"},
+	CodePasskeyNotFound:           {CodePasskeyNotFound, http.StatusNotFound, "passkey credential not found"},
 	CodeSignupsDisabled:           {CodeSignupsDisabled, http.StatusForbidden, "new account registration is disabled"},
 	CodeStepUpExpired:             {CodeStepUpExpired, http.StatusForbidden, "step-up verification token is expired"},
 	CodeStepUpInvalid:             {CodeStepUpInvalid, http.StatusForbidden, "invalid step-up verification token"},

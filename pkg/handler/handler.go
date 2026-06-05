@@ -205,6 +205,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/login/2fa",
 		h.LoginTwoFactor,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:2fa:ip", authLoginIPLimit)))
+	authGroup.Post("/passkeys/login/begin", h.BeginPasskeyLogin, publicAuthRL)
+	authGroup.Post("/passkeys/login/finish", h.FinishPasskeyLogin, publicAuthRL)
 	authGroup.Post("/verify", h.VerifyAuth, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
 	authGroup.Post("/logout", h.Logout, publicAuthRL)
@@ -245,6 +247,10 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Post("/2fa/enable", h.EnableTwoFactor)
 	me.Post("/2fa/disable", h.DisableTwoFactor)
 	me.Post("/2fa/backup-codes/regenerate", h.RegenerateTwoFactorBackupCodes)
+	me.Get("/passkeys", h.ListPasskeys)
+	me.Post("/passkeys/registration/begin", h.BeginPasskeyRegistration)
+	me.Post("/passkeys/registration/finish", h.RequirePasskeyRegistrationStepUp, h.FinishPasskeyRegistration)
+	me.Delete("/passkeys/:id", h.DeletePasskey, stepUp)
 	me.Get("/notification-preferences", h.GetNotificationPreferences)
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
@@ -876,6 +882,154 @@ func (h *Handlers) VerifyAuth(c fiber.Ctx) error {
 	})
 
 	return c.JSON(result)
+}
+
+func (h *Handlers) BeginPasskeyLogin(c fiber.Ctx) error {
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	result, err := h.deps.Services.Passkey.BeginLogin(c.Context(), req)
+	if err != nil {
+		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
+		return mapPasskeyError(err)
+	}
+	return c.JSON(result)
+}
+
+func (h *Handlers) FinishPasskeyLogin(c fiber.Ctx) error {
+	challengeID, err := passkeyChallengeID(c)
+	if err != nil {
+		return err
+	}
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	result, err := h.deps.Services.Passkey.FinishLogin(c.Context(), service.PasskeyFinishLoginInput{
+		ChallengeID: challengeID,
+		Request:     req,
+	})
+	if err != nil {
+		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventLoginFailure,
+			TargetType: "user",
+			Metadata: map[string]any{
+				"method": "passkey",
+				"reason": passkeyFailureReason(err),
+			},
+		})
+		return mapPasskeyError(err)
+	}
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(result.User.ID),
+		EventType:   model.AuditEventLoginSuccess,
+		TargetType:  "user",
+		TargetID:    result.User.ID.String(),
+		Metadata: map[string]any{
+			"method": "passkey",
+		},
+	})
+	return c.JSON(fiber.Map{
+		"user":          result.User,
+		"access_token":  result.AccessToken,
+		"refresh_token": result.RefreshToken,
+		"expires_in":    result.ExpiresIn,
+	})
+}
+
+func (h *Handlers) ListPasskeys(c fiber.Ctx) error {
+	credentials, err := h.deps.Services.Passkey.ListCredentials(c.Context(), auth.UserID(c))
+	if err != nil {
+		return mapPasskeyError(err)
+	}
+	return c.JSON(fiber.Map{"credentials": credentials})
+}
+
+func (h *Handlers) BeginPasskeyRegistration(c fiber.Ctx) error {
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	result, err := h.deps.Services.Passkey.BeginRegistration(c.Context(), auth.UserID(c), req)
+	if err != nil {
+		return mapPasskeyError(err)
+	}
+	return c.JSON(result)
+}
+
+func (h *Handlers) FinishPasskeyRegistration(c fiber.Ctx) error {
+	challengeID, err := passkeyChallengeID(c)
+	if err != nil {
+		return err
+	}
+	req, err := adaptor.ConvertRequest(c, true)
+	if err != nil {
+		return apierrors.NewBadRequest("invalid request")
+	}
+	view, err := h.deps.Services.Passkey.FinishRegistration(c.Context(), auth.UserID(c), service.PasskeyFinishRegistrationInput{
+		ChallengeID: challengeID,
+		Name:        passkeyName(c),
+		Request:     req,
+	})
+	if err != nil {
+		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
+		return mapPasskeyError(err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(view)
+}
+
+func (h *Handlers) RequirePasskeyRegistrationStepUp(c fiber.Ctx) error {
+	credentials, err := h.deps.Services.Passkey.ListCredentials(c.Context(), auth.UserID(c))
+	if err != nil {
+		return mapPasskeyError(err)
+	}
+	requiresStepUp := len(credentials) > 0
+	if !requiresStepUp && h.deps.Services.TwoFactor != nil {
+		status, err := h.deps.Services.TwoFactor.Status(c.Context(), auth.UserID(c))
+		if err != nil {
+			return mapTwoFactorError(err)
+		}
+		requiresStepUp = status.Enabled
+	}
+	if !requiresStepUp {
+		return c.Next()
+	}
+	return auth.StepUpMiddleware(h.deps.TokenManager)(c)
+}
+
+func (h *Handlers) DeletePasskey(c fiber.Ctx) error {
+	id, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierrors.NewBadRequest("invalid passkey id")
+	}
+	if err := h.deps.Services.Passkey.DeleteCredential(c.Context(), auth.UserID(c), id); err != nil {
+		return mapPasskeyError(err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func passkeyChallengeID(c fiber.Ctx) (uuid.UUID, error) {
+	raw := strings.TrimSpace(c.Query("challenge_id"))
+	if raw == "" {
+		raw = strings.TrimSpace(c.Get("X-HSync-Passkey-Challenge"))
+	}
+	if raw == "" {
+		return uuid.Nil, apierrors.NewBadRequest("challenge_id is required")
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return uuid.Nil, apierrors.NewBadRequest("invalid challenge_id")
+	}
+	return id, nil
+}
+
+func passkeyName(c fiber.Ctx) string {
+	if raw := strings.TrimSpace(c.Query("name")); raw != "" {
+		return raw
+	}
+	return strings.TrimSpace(c.Get("X-HSync-Passkey-Name"))
 }
 
 func (h *Handlers) RefreshToken(c fiber.Ctx) error {
@@ -1517,6 +1671,36 @@ func mapTwoFactorError(err error) error {
 		return apierrors.New(apierrors.CodeUserNotFound, err.Error())
 	default:
 		return apierrors.NewInternal(err.Error())
+	}
+}
+
+func mapPasskeyError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrPasskeyDisabled):
+		return apierrors.New(apierrors.CodePasskeyDisabled, err.Error())
+	case errors.Is(err, service.ErrPasskeyChallenge), errors.Is(err, service.ErrPasskeyVerification):
+		return apierrors.New(apierrors.CodePasskeyInvalid, err.Error())
+	case errors.Is(err, service.ErrPasskeyNotFound):
+		return apierrors.New(apierrors.CodePasskeyNotFound, err.Error())
+	case errors.Is(err, service.ErrUserNotFound), errors.Is(err, service.ErrInvalidCredentials):
+		return apierrors.New(apierrors.CodeInvalidCredentials, err.Error())
+	default:
+		return apierrors.NewInternal(err.Error())
+	}
+}
+
+func passkeyFailureReason(err error) string {
+	switch {
+	case errors.Is(err, service.ErrPasskeyDisabled):
+		return "disabled"
+	case errors.Is(err, service.ErrPasskeyChallenge):
+		return "invalid_challenge"
+	case errors.Is(err, service.ErrPasskeyNotFound):
+		return "not_found"
+	case errors.Is(err, service.ErrUserNotFound), errors.Is(err, service.ErrInvalidCredentials):
+		return "invalid_user"
+	default:
+		return "verification_failed"
 	}
 }
 

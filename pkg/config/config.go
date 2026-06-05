@@ -66,11 +66,12 @@ type Config struct {
 	TurnstileTimeout time.Duration `mapstructure:"turnstile_timeout"`
 
 	// Background tasks
-	BackgroundTasksEnabled   bool          `mapstructure:"background_tasks_enabled"`
-	QuotaReconcileInterval   time.Duration `mapstructure:"quota_reconcile_interval"`
-	RetentionCleanupInterval time.Duration `mapstructure:"retention_cleanup_interval"`
-	RetentionGracePeriod     time.Duration `mapstructure:"retention_grace_period"`
-	RetentionDryRun          bool          `mapstructure:"retention_dry_run"`
+	BackgroundTasksEnabled     bool          `mapstructure:"background_tasks_enabled"`
+	QuotaReconcileInterval     time.Duration `mapstructure:"quota_reconcile_interval"`
+	RetentionCleanupInterval   time.Duration `mapstructure:"retention_cleanup_interval"`
+	RetentionGracePeriod       time.Duration `mapstructure:"retention_grace_period"`
+	RetentionDryRun            bool          `mapstructure:"retention_dry_run"`
+	NotificationOutboxInterval time.Duration `mapstructure:"notification_outbox_interval"`
 
 	// Runtime options
 	OptionsFile string `mapstructure:"options_file"`
@@ -113,22 +114,23 @@ func DefaultConfig() *Config {
 		OIDCScopes:       "openid profile email",
 		TurnstileTimeout: 3 * time.Second,
 
-		BackgroundTasksEnabled:   true,
-		QuotaReconcileInterval:   24 * time.Hour,
-		RetentionCleanupInterval: 0,
-		RetentionGracePeriod:     30 * 24 * time.Hour,
-		RetentionDryRun:          true,
-		OptionsFile:              "",
-		PublicURL:                "http://localhost:8080",
-		NotificationsEnabled:     false,
-		QuotaWarningThreshold:    80,
-		QuotaExhaustedThreshold:  100,
-		EmailVerificationPath:    "/verify-email",
-		PasswordResetPath:        "/reset-password",
-		SMTPEnabled:              false,
-		SMTPPort:                 587,
-		SMTPFromName:             "HistorySync Cloud",
-		SMTPTLSMode:              "starttls",
+		BackgroundTasksEnabled:     true,
+		QuotaReconcileInterval:     24 * time.Hour,
+		RetentionCleanupInterval:   0,
+		RetentionGracePeriod:       30 * 24 * time.Hour,
+		RetentionDryRun:            true,
+		NotificationOutboxInterval: time.Minute,
+		OptionsFile:                "",
+		PublicURL:                  "http://localhost:8080",
+		NotificationsEnabled:       false,
+		QuotaWarningThreshold:      80,
+		QuotaExhaustedThreshold:    100,
+		EmailVerificationPath:      "/verify-email",
+		PasswordResetPath:          "/reset-password",
+		SMTPEnabled:                false,
+		SMTPPort:                   587,
+		SMTPFromName:               "HistorySync Cloud",
+		SMTPTLSMode:                "starttls",
 	}
 }
 
@@ -219,6 +221,7 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
+	v.SetDefault("notification_outbox_interval", cfg.NotificationOutboxInterval)
 	v.SetDefault("options_file", cfg.OptionsFile)
 	v.SetDefault("public_url", cfg.PublicURL)
 	v.SetDefault("notifications_enabled", cfg.NotificationsEnabled)

@@ -48,7 +48,7 @@ type failingWebhookProvider struct {
 
 func (p failingWebhookProvider) DeliveryEnabled() bool { return true }
 
-func (p failingWebhookProvider) Send(context.Context, string, provider.WebhookNotification) error {
+func (p failingWebhookProvider) Send(context.Context, string, string, provider.WebhookNotification) error {
 	return p.err
 }
 

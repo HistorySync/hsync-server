@@ -242,6 +242,24 @@ func main() {
 					return nil
 				},
 			},
+			scheduler.Task{
+				Name:     "notification-outbox",
+				LockKey:  scheduler.LockNotificationOutbox,
+				Interval: cfg.NotificationOutboxInterval,
+				Run: func(ctx context.Context) error {
+					result, err := svcs.Notification.ProcessOutbox(ctx, 50)
+					if err != nil {
+						return err
+					}
+					log.Info().
+						Int("claimed", result.Claimed).
+						Int("sent", result.Sent).
+						Int("retried", result.Retried).
+						Int("failed", result.Failed).
+						Msg("notification outbox processed")
+					return nil
+				},
+			},
 		)
 		go sched.Run(bgCtx)
 		log.Info().Msg("background scheduler started")

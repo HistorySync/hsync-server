@@ -51,6 +51,7 @@ var allTables = []string{
 	"user_two_factor_backup_codes",
 	"audit_logs",
 	"user_notification_preferences",
+	"notification_outbox",
 }
 
 func TestMain(m *testing.M) {

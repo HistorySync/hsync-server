@@ -77,17 +77,17 @@ var (
 
 // Deps holds all dependencies needed by the service layer.
 type Deps struct {
-	Repos                *repository.Repos
-	TokenManager         *auth.TokenManager
-	BlobStore            storage.BlobStorage
-	StripeKey            string
-	StripeWebhook        string
-	StripeDisabled       bool
-	Reservation          UsageReservationHook
-	Notifier             provider.Notifier
-	Webhook              provider.WebhookProvider
-	Notification         NotificationConfig
-	SecuritySecret       string
+	Repos          *repository.Repos
+	TokenManager   *auth.TokenManager
+	BlobStore      storage.BlobStorage
+	StripeKey      string
+	StripeWebhook  string
+	StripeDisabled bool
+	Reservation    UsageReservationHook
+	Notifier       provider.Notifier
+	Webhook        provider.WebhookProvider
+	Notification   NotificationConfig
+	SecuritySecret string
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -159,19 +159,19 @@ func (g *reservationGuard) release(ctx context.Context) {
 
 // Services aggregates all business service instances.
 type Services struct {
-	Repos          *repository.Repos
-	Auth           *AuthService
-	Bundle         *BundleService
-	Snapshot       *SnapshotService
-	Quota          *QuotaService
-	Billing        *BillingService
-	Notification   *NotificationService
-	Retention      *RetentionService
-	TwoFactor      *TwoFactorService
-	Audit          *AuditService
-	SecurityStats  *SecurityStatsService
-	Settings       *SettingsService
-	Idempotency    *IdempotencyService
+	Repos         *repository.Repos
+	Auth          *AuthService
+	Bundle        *BundleService
+	Snapshot      *SnapshotService
+	Quota         *QuotaService
+	Billing       *BillingService
+	Notification  *NotificationService
+	Retention     *RetentionService
+	TwoFactor     *TwoFactorService
+	Audit         *AuditService
+	SecurityStats *SecurityStatsService
+	Settings      *SettingsService
+	Idempotency   *IdempotencyService
 }
 
 // New creates all service instances with their dependencies.
@@ -188,7 +188,11 @@ func New(deps Deps) *Services {
 		notifUsers = deps.Repos.Users
 		notifPrefs = deps.Repos.NotificationPrefs
 	}
-	notifSvc := NewNotificationServiceWithStores(notifUsers, notifPrefs, deps.Notifier, deps.Webhook, deps.Notification)
+	var notifOutbox NotificationOutboxStore
+	if deps.Repos != nil {
+		notifOutbox = deps.Repos.NotificationOutbox
+	}
+	notifSvc := NewNotificationServiceWithStoresAndOutbox(notifUsers, notifPrefs, notifOutbox, deps.Notifier, deps.Webhook, deps.Notification)
 	authSvc := &AuthService{
 		repos:         deps.Repos,
 		tokenManager:  deps.TokenManager,
@@ -245,19 +249,19 @@ func New(deps Deps) *Services {
 	}
 
 	return &Services{
-		Repos:          deps.Repos,
-		Auth:           authSvc,
-		Bundle:         bundleSvc,
-		Snapshot:       snapshotSvc,
-		Quota:          quotaSvc,
-		Billing:        billingSvc,
-		Notification:   notifSvc,
-		Retention:      retentionSvc,
-		TwoFactor:      twoFactorSvc,
-		Audit:          auditSvc,
-		SecurityStats:  securityStatsSvc,
-		Settings:       settingsSvc,
-		Idempotency:    idempotencySvc,
+		Repos:         deps.Repos,
+		Auth:          authSvc,
+		Bundle:        bundleSvc,
+		Snapshot:      snapshotSvc,
+		Quota:         quotaSvc,
+		Billing:       billingSvc,
+		Notification:  notifSvc,
+		Retention:     retentionSvc,
+		TwoFactor:     twoFactorSvc,
+		Audit:         auditSvc,
+		SecurityStats: securityStatsSvc,
+		Settings:      settingsSvc,
+		Idempotency:   idempotencySvc,
 	}
 }
 

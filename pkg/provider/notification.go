@@ -31,7 +31,7 @@ type Notifier interface {
 // webhook endpoints.
 type WebhookProvider interface {
 	DeliveryEnabled() bool
-	Send(ctx context.Context, webhookURL string, notification WebhookNotification) error
+	Send(ctx context.Context, webhookURL, secret string, notification WebhookNotification) error
 }
 
 // WebhookNotification is the payload shape posted to user webhooks. Callers

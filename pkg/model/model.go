@@ -5,6 +5,7 @@
 package model
 
 import (
+	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,6 +56,7 @@ type NotificationPreferences struct {
 	BillingEmail    bool      `json:"billing_email"    db:"billing_email"`
 	BillingWebhook  bool      `json:"billing_webhook"  db:"billing_webhook"`
 	WebhookURL      string    `json:"webhook_url"      db:"webhook_url"`
+	WebhookSecret   string    `json:"-"                db:"webhook_secret"`
 	CreatedAt       time.Time `json:"created_at"       db:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"       db:"updated_at"`
 }
@@ -67,6 +69,53 @@ func DefaultNotificationPreferences(userID uuid.UUID) NotificationPreferences {
 		SecurityEmail: true,
 		BillingEmail:  true,
 	}
+}
+
+type NotificationChannel string
+
+const (
+	NotificationChannelEmail   NotificationChannel = "email"
+	NotificationChannelWebhook NotificationChannel = "webhook"
+)
+
+type NotificationOutboxStatus string
+
+const (
+	NotificationOutboxPending    NotificationOutboxStatus = "pending"
+	NotificationOutboxProcessing NotificationOutboxStatus = "processing"
+	NotificationOutboxSent       NotificationOutboxStatus = "sent"
+	NotificationOutboxFailed     NotificationOutboxStatus = "failed"
+)
+
+// NotificationOutbox is the durable delivery queue for best-effort user
+// notifications. PayloadJSON contains only delivery payload fields; webhook
+// endpoints and secrets are read from current user preferences at send time.
+type NotificationOutbox struct {
+	ID           uuid.UUID                `json:"id"             db:"id"`
+	UserID       uuid.UUID                `json:"user_id"        db:"user_id"`
+	Channel      NotificationChannel      `json:"channel"        db:"channel"`
+	Category     string                   `json:"category"       db:"category"`
+	Type         string                   `json:"type"           db:"type"`
+	PayloadJSON  json.RawMessage          `json:"-"              db:"payload_json"`
+	Status       NotificationOutboxStatus `json:"status"         db:"status"`
+	AttemptCount int                      `json:"attempt_count"  db:"attempt_count"`
+	NextRetryAt  time.Time                `json:"next_retry_at"  db:"next_retry_at"`
+	LastError    string                   `json:"last_error,omitempty" db:"last_error"`
+	CreatedAt    time.Time                `json:"created_at"     db:"created_at"`
+	UpdatedAt    time.Time                `json:"updated_at"     db:"updated_at"`
+	SentAt       *time.Time               `json:"sent_at,omitempty" db:"sent_at"`
+}
+
+type NotificationFailureView struct {
+	ID           uuid.UUID           `json:"id"`
+	UserID       uuid.UUID           `json:"user_id"`
+	Channel      NotificationChannel `json:"channel"`
+	Category     string              `json:"category"`
+	Type         string              `json:"type"`
+	AttemptCount int                 `json:"attempt_count"`
+	ErrorSummary string              `json:"error_summary"`
+	CreatedAt    time.Time           `json:"created_at"`
+	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
 // ── Device ───────────────────────────────────────────────────

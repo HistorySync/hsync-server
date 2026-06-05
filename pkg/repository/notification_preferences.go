@@ -34,7 +34,7 @@ func (r *NotificationPreferenceRepo) GetByUserID(ctx context.Context, userID uui
 	}
 	const q = `
 		SELECT user_id, security_email, security_webhook, billing_email, billing_webhook,
-		       webhook_url, created_at, updated_at
+		       webhook_url, webhook_secret, created_at, updated_at
 		FROM user_notification_preferences
 		WHERE user_id = $1`
 
@@ -42,7 +42,7 @@ func (r *NotificationPreferenceRepo) GetByUserID(ctx context.Context, userID uui
 	err := r.db.QueryRow(ctx, q, userID).Scan(
 		&prefs.UserID, &prefs.SecurityEmail, &prefs.SecurityWebhook,
 		&prefs.BillingEmail, &prefs.BillingWebhook, &prefs.WebhookURL,
-		&prefs.CreatedAt, &prefs.UpdatedAt,
+		&prefs.WebhookSecret, &prefs.CreatedAt, &prefs.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		defaults := model.DefaultNotificationPreferences(userID)
@@ -61,20 +61,21 @@ func (r *NotificationPreferenceRepo) Upsert(ctx context.Context, prefs *model.No
 	}
 	const q = `
 		INSERT INTO user_notification_preferences (
-			user_id, security_email, security_webhook, billing_email, billing_webhook, webhook_url
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			user_id, security_email, security_webhook, billing_email, billing_webhook, webhook_url, webhook_secret
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (user_id) DO UPDATE SET
 			security_email = EXCLUDED.security_email,
 			security_webhook = EXCLUDED.security_webhook,
 			billing_email = EXCLUDED.billing_email,
 			billing_webhook = EXCLUDED.billing_webhook,
 			webhook_url = EXCLUDED.webhook_url,
+			webhook_secret = EXCLUDED.webhook_secret,
 			updated_at = now()
 		RETURNING created_at, updated_at`
 
 	if err := r.db.QueryRow(ctx, q,
 		prefs.UserID, prefs.SecurityEmail, prefs.SecurityWebhook,
-		prefs.BillingEmail, prefs.BillingWebhook, prefs.WebhookURL,
+		prefs.BillingEmail, prefs.BillingWebhook, prefs.WebhookURL, prefs.WebhookSecret,
 	).Scan(&prefs.CreatedAt, &prefs.UpdatedAt); err != nil {
 		return fmt.Errorf("upsert notification preferences: %w", err)
 	}

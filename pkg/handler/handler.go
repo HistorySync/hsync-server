@@ -233,6 +233,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Admin security stats for the v1 API surface.
 	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
 	v1Admin.Get("/security/stats", h.AdminSecurityStats)
+	v1Admin.Get("/notifications/failures", h.AdminNotificationFailures)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -257,6 +258,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/settings", h.AdminListSettings)
 	admin.Put("/settings/:key", h.AdminSetSetting)
 	admin.Get("/audit-logs", h.AdminListAuditLogs)
+	admin.Get("/notifications/failures", h.AdminNotificationFailures)
 	admin.Get("/error-codes", h.AdminErrorCodes)
 }
 
@@ -1216,6 +1218,7 @@ type notificationPreferencesRequest struct {
 	BillingEmail    *bool   `json:"billing_email"`
 	BillingWebhook  *bool   `json:"billing_webhook"`
 	WebhookURL      *string `json:"webhook_url"`
+	WebhookSecret   *string `json:"webhook_secret"`
 }
 
 func (h *Handlers) GetNotificationPreferences(c fiber.Ctx) error {
@@ -1243,6 +1246,7 @@ func (h *Handlers) UpdateNotificationPreferences(c fiber.Ctx) error {
 		BillingEmail:    req.BillingEmail,
 		BillingWebhook:  req.BillingWebhook,
 		WebhookURL:      req.WebhookURL,
+		WebhookSecret:   req.WebhookSecret,
 	})
 	if err != nil {
 		switch {
@@ -1600,6 +1604,33 @@ func (h *Handlers) AdminSecurityStats(c fiber.Ctx) error {
 		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(stats)
+}
+
+func (h *Handlers) AdminNotificationFailures(c fiber.Ctx) error {
+	limit := int32(50)
+	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
+		limit = int32(l)
+	}
+	offset := int32(0)
+	if o, err := strconv.Atoi(c.Query("offset", "0")); err == nil && o > 0 {
+		offset = int32(o)
+	}
+	if h.deps.Services == nil || h.deps.Services.Notification == nil {
+		return c.JSON(fiber.Map{
+			"notifications": []model.NotificationFailureView{},
+			"limit":         limit,
+			"offset":        offset,
+		})
+	}
+	failures, err := h.deps.Services.Notification.RecentFailures(c.Context(), limit, offset)
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(fiber.Map{
+		"notifications": failures,
+		"limit":         limit,
+		"offset":        offset,
+	})
 }
 
 // AdminRecalculateQuota recomputes a user's storage usage counters from their

@@ -31,6 +31,7 @@ type Repos struct {
 	TwoFactor          *TwoFactorRepo
 	AuditLogs          *AuditRepo
 	NotificationPrefs  *NotificationPreferenceRepo
+	NotificationOutbox *NotificationOutboxRepo
 	SystemSettings     *SystemSettingRepo
 	Idempotency        *IdempotencyRepo
 }
@@ -50,6 +51,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		TwoFactor:          &TwoFactorRepo{pool: pgPool},
 		AuditLogs:          &AuditRepo{pool: pgPool},
 		NotificationPrefs:  NewNotificationPreferenceRepo(pgPool),
+		NotificationOutbox: NewNotificationOutboxRepo(pgPool),
 		SystemSettings:     NewSystemSettingRepo(pgPool),
 		Idempotency:        &IdempotencyRepo{pool: pgPool},
 	}

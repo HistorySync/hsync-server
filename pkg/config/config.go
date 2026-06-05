@@ -23,6 +23,11 @@ type Config struct {
 	WebConsolePath  string        `mapstructure:"web_console_path"`
 	WebSupportEmail string        `mapstructure:"web_support_email"`
 
+	// Prometheus metrics
+	MetricsEnabled      bool     `mapstructure:"metrics_enabled"`
+	MetricsPath         string   `mapstructure:"metrics_path"`
+	MetricsAllowedCIDRs []string `mapstructure:"metrics_allowed_cidrs"`
+
 	// Database
 	DatabaseURL string `mapstructure:"database_url"`
 
@@ -98,12 +103,21 @@ type Config struct {
 // DefaultConfig returns a Config with reasonable defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:       ":8080",
-		LogLevel:         zerolog.InfoLevel,
-		WebEnabled:       true,
-		WebAppName:       "HistorySync Cloud Server",
-		WebConsolePath:   "/console",
-		WebSupportEmail:  "support@historysync.app",
+		ListenAddr:      ":8080",
+		LogLevel:        zerolog.InfoLevel,
+		WebEnabled:      true,
+		WebAppName:      "HistorySync Cloud Server",
+		WebConsolePath:  "/console",
+		WebSupportEmail: "support@historysync.app",
+		MetricsEnabled:  false,
+		MetricsPath:     "/metrics",
+		MetricsAllowedCIDRs: []string{
+			"127.0.0.0/8",
+			"::1/128",
+			"10.0.0.0/8",
+			"172.16.0.0/12",
+			"192.168.0.0/16",
+		},
 		DatabaseURL:      "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
 		RedisURL:         "redis://localhost:6379/0",
 		S3Endpoint:       "localhost:9000",
@@ -200,6 +214,9 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("web_app_name", cfg.WebAppName)
 	v.SetDefault("web_console_path", cfg.WebConsolePath)
 	v.SetDefault("web_support_email", cfg.WebSupportEmail)
+	v.SetDefault("metrics_enabled", cfg.MetricsEnabled)
+	v.SetDefault("metrics_path", cfg.MetricsPath)
+	v.SetDefault("metrics_allowed_cidrs", cfg.MetricsAllowedCIDRs)
 	v.SetDefault("database_url", cfg.DatabaseURL)
 	v.SetDefault("redis_url", cfg.RedisURL)
 	v.SetDefault("s3_endpoint", cfg.S3Endpoint)
@@ -310,6 +327,11 @@ func (c *Config) Validate() error {
 		}
 		if c.TurnstileTimeout <= 0 {
 			errs = append(errs, "turnstile_timeout must be greater than 0 when turnstile is enabled")
+		}
+	}
+	if c.MetricsEnabled {
+		if !strings.HasPrefix(strings.TrimSpace(c.MetricsPath), "/") {
+			errs = append(errs, "metrics_path must start with /")
 		}
 	}
 

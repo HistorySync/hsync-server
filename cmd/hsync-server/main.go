@@ -19,6 +19,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/handler"
 	"github.com/historysync/hsync-server/pkg/middleware"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/scheduler"
@@ -279,6 +280,11 @@ func main() {
 		RateLimiter:  rateLimiter,
 		OptionStore:  optionStore,
 		Turnstile:    turnstile,
+		Metrics: handler.MetricsConfig{
+			Enabled:      cfg.MetricsEnabled,
+			Path:         cfg.MetricsPath,
+			AllowedCIDRs: cfg.MetricsAllowedCIDRs,
+		},
 	})
 
 	// ── Fiber App ─────────────────────────────────────────────
@@ -291,6 +297,9 @@ func main() {
 		ErrorHandler: h.ErrorHandler,
 	})
 	app.Use(middleware.RequestID())
+	if cfg.MetricsEnabled {
+		app.Use(observability.HTTPMetricsMiddleware())
+	}
 
 	// Register all routes
 	h.RegisterRoutes(app)

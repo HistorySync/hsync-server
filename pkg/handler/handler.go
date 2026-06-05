@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -16,8 +18,10 @@ import (
 	"github.com/historysync/hsync-server/pkg/apierrors"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/adaptor"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 
@@ -25,6 +29,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -43,11 +48,21 @@ type Deps struct {
 	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
 	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
 	Turnstile    middleware.TurnstileConfig
+	Metrics      MetricsConfig
 }
 
 // Handlers groups all HTTP handler instances.
 type Handlers struct {
 	deps Deps
+}
+
+// MetricsConfig controls the unauthenticated Prometheus scrape endpoint. It is
+// intentionally separate from AdminKey because Prometheus pull auth is normally
+// handled by network policy or a reverse proxy.
+type MetricsConfig struct {
+	Enabled      bool
+	Path         string
+	AllowedCIDRs []string
 }
 
 // New creates a Handlers instance with the given dependencies.
@@ -105,7 +120,11 @@ func (h *Handlers) enforceAuthRateLimit(c fiber.Ctx, window time.Duration, decis
 }
 
 func (h *Handlers) enforceTurnstile(c fiber.Ctx, token string) error {
-	return middleware.EnforceTurnstile(c, h.deps.Turnstile, token)
+	err := middleware.EnforceTurnstile(c, h.deps.Turnstile, token)
+	if err != nil {
+		observability.RecordAuthFailure("turnstile", "rejected")
+	}
+	return err
 }
 
 func (h *Handlers) recordAudit(c fiber.Ctx, input service.AuditEventInput) {
@@ -150,6 +169,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// ── Health (no auth) ─────────────────────────────────
 	app.Get("/healthz", h.Healthz)
 	app.Get("/readyz", h.Readyz)
+	h.registerMetricsRoute(app)
 
 	// ── API v1 ───────────────────────────────────────────
 	v1 := app.Group("/api/v1")
@@ -264,6 +284,75 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 // ── Health ───────────────────────────────────────────────────
 
+func (h *Handlers) registerMetricsRoute(app *fiber.App) {
+	if !h.deps.Metrics.Enabled {
+		return
+	}
+	path := strings.TrimSpace(h.deps.Metrics.Path)
+	if path == "" {
+		path = "/metrics"
+	}
+	handler := promhttp.HandlerFor(observability.Registry(), promhttp.HandlerOpts{
+		ErrorHandling: promhttp.ContinueOnError,
+	})
+	app.Get(path, adaptor.HTTPHandler(handler), h.metricsAccessMiddleware)
+}
+
+func (h *Handlers) metricsAccessMiddleware(c fiber.Ctx) error {
+	if len(h.deps.Metrics.AllowedCIDRs) == 0 {
+		return c.Next()
+	}
+	ip, ok := clientAddr(c)
+	if !ok || !addrAllowed(ip, h.deps.Metrics.AllowedCIDRs) {
+		return fiber.NewError(fiber.StatusForbidden, "metrics endpoint is restricted")
+	}
+	return c.Next()
+}
+
+func clientAddr(c fiber.Ctx) (netip.Addr, bool) {
+	raw := strings.TrimSpace(c.IP())
+	if raw == "" {
+		return netip.Addr{}, false
+	}
+	if host, _, err := net.SplitHostPort(raw); err == nil {
+		raw = host
+	}
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return addr.Unmap(), true
+}
+
+func addrAllowed(addr netip.Addr, cidrs []string) bool {
+	if !addr.IsValid() {
+		return false
+	}
+	for _, raw := range cidrs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(raw)
+		if err != nil {
+			single, singleErr := netip.ParseAddr(raw)
+			if singleErr != nil {
+				continue
+			}
+			single = single.Unmap()
+			bits := 128
+			if single.Is4() {
+				bits = 32
+			}
+			prefix = netip.PrefixFrom(single, bits)
+		}
+		if prefix.Masked().Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handlers) Healthz(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
@@ -278,32 +367,41 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 	if h.deps.DB == nil {
 		status = "degraded"
 		checks["database"] = "not_configured"
+		observability.RecordReadinessDependency("database", "not_configured")
 	} else if err := h.deps.DB.Ping(ctx); err != nil {
 		status = "unhealthy"
 		checks["database"] = "error: " + err.Error()
+		observability.RecordReadinessDependency("database", "error")
 	} else {
 		checks["database"] = "ok"
+		observability.RecordReadinessDependency("database", "ok")
 	}
 
 	if h.deps.Redis == nil {
 		checks["redis"] = "disabled"
+		observability.RecordReadinessDependency("redis", "disabled")
 	} else if err := h.deps.Redis.Ping(ctx).Err(); err != nil {
 		if status == "ok" {
 			status = "degraded"
 		}
 		checks["redis"] = "error: " + err.Error()
+		observability.RecordReadinessDependency("redis", "error")
 	} else {
 		checks["redis"] = "ok"
+		observability.RecordReadinessDependency("redis", "ok")
 	}
 
 	if h.deps.BlobStore == nil {
 		status = "unhealthy"
 		checks["storage"] = "not_configured"
+		observability.RecordReadinessDependency("storage", "not_configured")
 	} else if _, err := h.deps.BlobStore.List(ctx, ""); err != nil {
 		status = "unhealthy"
 		checks["storage"] = "error: " + err.Error()
+		observability.RecordReadinessDependency("storage", "error")
 	} else {
 		checks["storage"] = "ok"
+		observability.RecordReadinessDependency("storage", "ok")
 	}
 
 	// Merge any provider-contributed checks (Enterprise dependencies). A failing
@@ -311,6 +409,7 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 	// degrades it.
 	for _, check := range provider.Registry().Readiness.ReadinessChecks(ctx) {
 		checks[check.Name] = check.Status
+		observability.RecordReadinessDependency(check.Name, check.Status)
 		if check.Healthy {
 			continue
 		}
@@ -565,6 +664,7 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 		Password: req.Password,
 	})
 	if err != nil {
+		observability.RecordAuthFailure("login", auditFailureReason(err))
 		h.recordAudit(c, service.AuditEventInput{
 			EventType:  model.AuditEventLoginFailure,
 			TargetType: "user",
@@ -655,6 +755,7 @@ func (h *Handlers) LoginTwoFactor(c fiber.Ctx) error {
 		Code:      req.Code,
 	})
 	if err != nil {
+		observability.RecordAuthFailure("2fa", auditFailureReason(err))
 		h.recordAudit(c, service.AuditEventInput{
 			EventType:  model.AuditEventTwoFactorChallengeFailure,
 			TargetType: "user",
@@ -711,6 +812,7 @@ func (h *Handlers) VerifyAuth(c fiber.Ctx) error {
 		Code:   req.Code,
 	})
 	if err != nil {
+		observability.RecordAuthFailure("2fa", auditFailureReason(err))
 		userID := auth.UserID(c)
 		h.recordAudit(c, service.AuditEventInput{
 			ActorUserID: auditActor(userID),
@@ -1287,6 +1389,7 @@ func (h *Handlers) EnableTwoFactor(c fiber.Ctx) error {
 		return apierrors.NewBadRequest("code is required")
 	}
 	if err := h.deps.Services.TwoFactor.Enable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		observability.RecordAuthFailure("2fa", auditFailureReason(err))
 		userID := auth.UserID(c)
 		h.recordAudit(c, service.AuditEventInput{
 			ActorUserID: auditActor(userID),
@@ -1320,6 +1423,7 @@ func (h *Handlers) DisableTwoFactor(c fiber.Ctx) error {
 		return apierrors.NewBadRequest("code is required")
 	}
 	if err := h.deps.Services.TwoFactor.Disable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		observability.RecordAuthFailure("2fa", auditFailureReason(err))
 		userID := auth.UserID(c)
 		h.recordAudit(c, service.AuditEventInput{
 			ActorUserID: auditActor(userID),

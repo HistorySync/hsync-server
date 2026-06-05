@@ -21,6 +21,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -112,9 +113,10 @@ type UsageReservationHook interface {
 // lifecycle. When no reservation hook is configured the guard stays inactive and
 // every operation is a no-op, so callers fall back to the legacy quota path.
 type reservationGuard struct {
-	hook    UsageReservationHook
-	id      string
-	settled bool
+	hook     UsageReservationHook
+	id       string
+	category string
+	settled  bool
 }
 
 // reserve acquires a storage reservation when a hook is configured. With no hook
@@ -125,9 +127,17 @@ func reserve(ctx context.Context, hook UsageReservationHook, userID uuid.UUID, b
 	}
 	id, err := hook.ReserveStorage(ctx, userID, bytes, req)
 	if err != nil {
+		result := "failure"
+		if errors.Is(err, ErrReservationDenied) {
+			result = "rejected"
+		}
+		observability.RecordQuotaReservation(reservationCategory(req), result)
 		return nil, err
 	}
-	return &reservationGuard{hook: hook, id: id}, nil
+	if id != "" {
+		observability.RecordQuotaReservation(reservationCategory(req), "success")
+	}
+	return &reservationGuard{hook: hook, id: id, category: reservationCategory(req)}, nil
 }
 
 // active reports whether a reservation was acquired and still drives quota.
@@ -142,6 +152,7 @@ func (g *reservationGuard) settle(ctx context.Context, bytes int64) error {
 		return nil
 	}
 	if err := g.hook.SettleStorage(ctx, g.id, bytes); err != nil {
+		observability.RecordQuotaReservation(g.category, "rollback")
 		return err
 	}
 	g.settled = true
@@ -155,6 +166,18 @@ func (g *reservationGuard) release(ctx context.Context) {
 		return
 	}
 	g.hook.ReleaseStorage(ctx, g.id)
+	observability.RecordQuotaReservation(g.category, "release")
+}
+
+func reservationCategory(req ReservationRequest) string {
+	switch req.Reason {
+	case "bundle_upload":
+		return "bundle"
+	case "snapshot_upload":
+		return "snapshot"
+	default:
+		return "storage"
+	}
 }
 
 // Services aggregates all business service instances.
@@ -1011,6 +1034,11 @@ type UploadInput struct {
 
 // UploadBundle validates and persists a bundle.
 func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, input UploadInput) (*model.BundleMeta, error) {
+	uploadResult := "failure"
+	defer func() {
+		observability.RecordUpload("bundle", uploadResult)
+	}()
+
 	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
 		Reason:     "bundle_upload",
 		TeamID:     input.TeamID,
@@ -1062,8 +1090,10 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 			return nil, fmt.Errorf("reserve bundle quota: %w", err)
 		}
 		if !ok {
+			observability.RecordQuotaReservation("bundle", "rejected")
 			return nil, ErrQuotaExceeded
 		}
+		observability.RecordQuotaReservation("bundle", "success")
 	}
 
 	// Store the blob
@@ -1071,7 +1101,9 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("bundle", "rollback")
 		}
+		uploadResult = "storage_error"
 		return nil, fmt.Errorf("store bundle: %w", err)
 	}
 
@@ -1093,6 +1125,7 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		_ = s.blobStore.Delete(ctx, key)
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("bundle", "rollback")
 		}
 		return nil, fmt.Errorf("create bundle meta: %w", err)
 	}
@@ -1107,6 +1140,7 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		s.quota.NotifyBundleUsageAdded(ctx, userID, input.SizeBytes, storageLimit)
 	}
 
+	uploadResult = "success"
 	return meta, nil
 }
 
@@ -1179,6 +1213,11 @@ type UploadSnapshotInput struct {
 
 // UploadSnapshot validates and persists a snapshot.
 func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, input UploadSnapshotInput) (*model.SnapshotMeta, error) {
+	uploadResult := "failure"
+	defer func() {
+		observability.RecordUpload("snapshot", uploadResult)
+	}()
+
 	guard, err := reserve(ctx, s.reservation, userID, input.SizeBytes, ReservationRequest{
 		Reason:     "snapshot_upload",
 		TeamID:     input.TeamID,
@@ -1224,15 +1263,19 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 			return nil, fmt.Errorf("reserve snapshot quota: %w", err)
 		}
 		if !ok {
+			observability.RecordQuotaReservation("snapshot", "rejected")
 			return nil, ErrQuotaExceeded
 		}
+		observability.RecordQuotaReservation("snapshot", "success")
 	}
 
 	key := storage.SnapshotKey(userID.String(), input.SnapshotID)
 	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("snapshot", "rollback")
 		}
+		uploadResult = "storage_error"
 		return nil, fmt.Errorf("store snapshot: %w", err)
 	}
 
@@ -1248,6 +1291,7 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		_ = s.blobStore.Delete(ctx, key)
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("snapshot", "rollback")
 		}
 		return nil, fmt.Errorf("create snapshot meta: %w", err)
 	}
@@ -1262,6 +1306,7 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		s.quota.NotifySnapshotUsageAdded(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
 	}
 
+	uploadResult = "success"
 	return meta, nil
 }
 

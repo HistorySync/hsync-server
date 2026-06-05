@@ -12,6 +12,17 @@ web_support_email: "support@historysync.app"
 # Public base URL used in emails, such as password reset links.
 public_url: "http://localhost:8080"
 
+# Prometheus metrics. Disabled by default for CE self-hosted deployments; expose
+# it on an internal network or through a reverse proxy when enabling.
+metrics_enabled: false
+metrics_path: "/metrics"
+metrics_allowed_cidrs:
+  - "127.0.0.0/8"
+  - "::1/128"
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+  - "192.168.0.0/16"
+
 # Log level: debug, info, warn, error
 log_level: "info"
 

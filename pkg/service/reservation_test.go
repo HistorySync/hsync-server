@@ -69,6 +69,7 @@ func TestReserveNilHookInactive(t *testing.T) {
 func TestReserveErrorPropagates(t *testing.T) {
 	wantErr := errors.New("over quota")
 	hook := &fakeReservationHook{reserveErr: wantErr}
+	before := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "bundle", "result": "failure"})
 	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("reserve() error = %v, want %v", err, wantErr)
@@ -78,6 +79,10 @@ func TestReserveErrorPropagates(t *testing.T) {
 	}
 	if hook.reserveCalls != 1 {
 		t.Fatalf("reserveCalls = %d, want 1", hook.reserveCalls)
+	}
+	after := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "bundle", "result": "failure"})
+	if after != before+1 {
+		t.Fatalf("reservation failure metric delta = %v, want 1", after-before)
 	}
 }
 
@@ -153,6 +158,7 @@ func TestGuardSettleThenReleaseNoOp(t *testing.T) {
 
 func TestGuardReleaseWithoutSettle(t *testing.T) {
 	hook := &fakeReservationHook{reserveID: "res-2"}
+	beforeRelease := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "snapshot", "result": "release"})
 	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "snapshot_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
@@ -169,11 +175,16 @@ func TestGuardReleaseWithoutSettle(t *testing.T) {
 	if hook.settleCalls != 0 {
 		t.Fatalf("settleCalls = %d, want 0", hook.settleCalls)
 	}
+	afterRelease := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "snapshot", "result": "release"})
+	if afterRelease != beforeRelease+1 {
+		t.Fatalf("reservation release metric delta = %v, want 1", afterRelease-beforeRelease)
+	}
 }
 
 func TestGuardSettleErrorAllowsRelease(t *testing.T) {
 	settleErr := errors.New("settle failed")
 	hook := &fakeReservationHook{reserveID: "res-3", settleErr: settleErr}
+	beforeRollback := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "bundle", "result": "rollback"})
 	guard, err := reserve(context.Background(), hook, uuid.New(), 100, ReservationRequest{Reason: "bundle_upload"})
 	if err != nil {
 		t.Fatalf("reserve() error = %v, want nil", err)
@@ -186,5 +197,9 @@ func TestGuardSettleErrorAllowsRelease(t *testing.T) {
 	guard.release(context.Background())
 	if hook.releaseCalls != 1 {
 		t.Fatalf("releaseCalls = %d after settle failure, want 1", hook.releaseCalls)
+	}
+	afterRollback := metricValue(t, "hsync_quota_reservations_total", map[string]string{"category": "bundle", "result": "rollback"})
+	if afterRollback != beforeRollback+1 {
+		t.Fatalf("reservation rollback metric delta = %v, want 1", afterRollback-beforeRollback)
 	}
 }

@@ -52,6 +52,8 @@ var allTables = []string{
 	"audit_logs",
 	"user_notification_preferences",
 	"notification_outbox",
+	"passkey_credentials",
+	"passkey_challenges",
 }
 
 func TestMain(m *testing.M) {

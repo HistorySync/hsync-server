@@ -29,6 +29,7 @@ type Repos struct {
 	EmailVerifications *EmailVerificationRepo
 	PasswordResets     *PasswordResetRepo
 	TwoFactor          *TwoFactorRepo
+	Passkeys           *PasskeyRepo
 	AuditLogs          *AuditRepo
 	NotificationPrefs  *NotificationPreferenceRepo
 	NotificationOutbox *NotificationOutboxRepo
@@ -49,6 +50,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		EmailVerifications: &EmailVerificationRepo{pool: pgPool},
 		PasswordResets:     &PasswordResetRepo{pool: pgPool},
 		TwoFactor:          &TwoFactorRepo{pool: pgPool},
+		Passkeys:           &PasskeyRepo{pool: pgPool},
 		AuditLogs:          &AuditRepo{pool: pgPool},
 		NotificationPrefs:  NewNotificationPreferenceRepo(pgPool),
 		NotificationOutbox: NewNotificationOutboxRepo(pgPool),

@@ -251,7 +251,7 @@ func (h *Handlers) AdminListPaymentOrders(c fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	orders, err := h.deps.Services.PaymentWebhook.ListOrders(c.Context(), model.PaymentOrderListFilter{
+	orders, err := h.deps.Services.PaymentWebhook.ListPaymentOrders(c.Context(), model.PaymentOrderListFilter{
 		Provider:        provider,
 		Status:          status,
 		ExternalOrderID: strings.TrimSpace(c.Query("external_order_id")),
@@ -273,7 +273,7 @@ func (h *Handlers) AdminRetryPaymentOrder(c fiber.Ctx) error {
 	if err != nil {
 		return apierrors.NewBadRequest("invalid payment order id")
 	}
-	result, err := h.deps.Services.PaymentWebhook.RetryFulfillment(c.Context(), orderID)
+	result, err := h.deps.Services.PaymentWebhook.RetryPaymentFulfillment(c.Context(), orderID)
 	if err != nil {
 		return mapPaymentWebhookError(err)
 	}

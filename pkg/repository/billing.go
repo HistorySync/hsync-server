@@ -729,19 +729,21 @@ func (r *PaymentOrderRepo) Upsert(ctx context.Context, o *model.PaymentOrder) er
 		const q = `
 			INSERT INTO payment_orders (user_id, provider, external_order_id, plan_code,
 			                            currency, amount, status, raw_metadata,
-			                            paid_at, completed_at, failed_at, failed_reason)
-			VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			                            paid_at, completed_at, failed_at, failed_reason,
+			                            retry_count, last_retry_at)
+			VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 			RETURNING id, created_at, updated_at`
 		return r.pool.QueryRow(ctx, q,
 			o.UserID, string(o.Provider), o.PlanCode, o.Currency, o.Amount, string(o.Status), rawMetadata,
-			o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason,
+			o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason, o.RetryCount, o.LastRetryAt,
 		).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
 	}
 	const q = `
 		INSERT INTO payment_orders (user_id, provider, external_order_id, plan_code,
 		                            currency, amount, status, raw_metadata,
-		                            paid_at, completed_at, failed_at, failed_reason)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		                            paid_at, completed_at, failed_at, failed_reason,
+		                            retry_count, last_retry_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		ON CONFLICT (provider, external_order_id) WHERE external_order_id <> '' DO UPDATE SET
 			user_id = EXCLUDED.user_id,
 			plan_code = EXCLUDED.plan_code,
@@ -761,28 +763,36 @@ func (r *PaymentOrderRepo) Upsert(ctx context.Context, o *model.PaymentOrder) er
 			failed_reason = CASE
 				WHEN payment_orders.status = 'completed' THEN payment_orders.failed_reason
 				ELSE EXCLUDED.failed_reason
-			END
+			END,
+			retry_count = payment_orders.retry_count,
+			last_retry_at = payment_orders.last_retry_at
 		RETURNING id, created_at, updated_at`
 	return r.pool.QueryRow(ctx, q,
 		o.UserID, string(o.Provider), o.ExternalOrderID, o.PlanCode,
 		o.Currency, o.Amount, string(o.Status), rawMetadata,
-		o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason,
+		o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason, o.RetryCount, o.LastRetryAt,
 	).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
 }
 
 // Get returns a recorded order by provider + external order id, or nil.
 func (r *PaymentOrderRepo) Get(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
+	return r.GetPaymentOrderByExternalID(ctx, provider, externalOrderID)
+}
+
+// GetPaymentOrderByExternalID returns a recorded order by provider + external
+// order id, or nil when it is not found.
+func (r *PaymentOrderRepo) GetPaymentOrderByExternalID(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
 	const q = `
 		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
 		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
-		       created_at, updated_at
+		       retry_count, last_retry_at, created_at, updated_at
 		FROM payment_orders WHERE provider = $1 AND external_order_id = $2`
 	o := &model.PaymentOrder{}
 	var rawMetadata []byte
 	err := r.pool.QueryRow(ctx, q, string(provider), externalOrderID).Scan(
 		&o.ID, &o.UserID, &o.Provider, &o.ExternalOrderID, &o.PlanCode, &o.Currency,
 		&o.Amount, &o.Status, &rawMetadata, &o.PaidAt, &o.CompletedAt, &o.FailedAt,
-		&o.FailedReason, &o.CreatedAt, &o.UpdatedAt,
+		&o.FailedReason, &o.RetryCount, &o.LastRetryAt, &o.CreatedAt, &o.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -803,13 +813,18 @@ func (r *PaymentOrderRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.Pa
 	const q = `
 		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
 		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
-		       created_at, updated_at
+		       retry_count, last_retry_at, created_at, updated_at
 		FROM payment_orders WHERE id = $1`
 	return r.scanOne(ctx, q, id)
 }
 
 // List returns payment orders for admin troubleshooting.
 func (r *PaymentOrderRepo) List(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
+	return r.ListPaymentOrders(ctx, filter)
+}
+
+// ListPaymentOrders returns payment orders for admin troubleshooting.
+func (r *PaymentOrderRepo) ListPaymentOrders(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
 	if filter.Limit <= 0 || filter.Limit > 200 {
 		filter.Limit = 50
 	}
@@ -835,7 +850,7 @@ func (r *PaymentOrderRepo) List(ctx context.Context, filter model.PaymentOrderLi
 	q := fmt.Sprintf(`
 		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
 		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
-		       created_at, updated_at
+		       retry_count, last_retry_at, created_at, updated_at
 		FROM payment_orders %s
 		ORDER BY created_at DESC, id DESC
 		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
@@ -888,6 +903,20 @@ func (r *PaymentOrderRepo) MarkFailed(ctx context.Context, id uuid.UUID, failedA
 	return nil
 }
 
+// MarkRetryAttempt records an operator-triggered retry attempt. Completed
+// orders are never touched, so accidental retries remain no-ops.
+func (r *PaymentOrderRepo) MarkRetryAttempt(ctx context.Context, id uuid.UUID, retriedAt time.Time) error {
+	const q = `
+		UPDATE payment_orders
+		SET retry_count = retry_count + 1, last_retry_at = $2
+		WHERE id = $1 AND status IN ('paid', 'failed')`
+	_, err := r.pool.Exec(ctx, q, id, retriedAt)
+	if err != nil {
+		return fmt.Errorf("mark order retry attempt: %w", err)
+	}
+	return nil
+}
+
 func (r *PaymentOrderRepo) scanOne(ctx context.Context, query string, args ...any) (*model.PaymentOrder, error) {
 	rows, err := r.pool.Query(ctx, query, args...)
 	if err != nil {
@@ -912,7 +941,7 @@ func scanPaymentOrders(rows pgx.Rows) ([]model.PaymentOrder, error) {
 		if err := rows.Scan(
 			&o.ID, &o.UserID, &o.Provider, &o.ExternalOrderID, &o.PlanCode, &o.Currency,
 			&o.Amount, &o.Status, &rawMetadata, &o.PaidAt, &o.CompletedAt, &o.FailedAt,
-			&o.FailedReason, &o.CreatedAt, &o.UpdatedAt,
+			&o.FailedReason, &o.RetryCount, &o.LastRetryAt, &o.CreatedAt, &o.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan payment order: %w", err)
 		}

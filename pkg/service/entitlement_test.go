@@ -428,6 +428,10 @@ func (f *fakeBilling) GetOrder(_ context.Context, provider model.PaymentProvider
 	return nil, nil
 }
 
+func (f *fakeBilling) GetPaymentOrderByExternalID(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
+	return f.GetOrder(ctx, provider, externalOrderID)
+}
+
 func keyPtr(key string) *string {
 	if key == "" {
 		return nil

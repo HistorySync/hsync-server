@@ -25,11 +25,13 @@ var (
 type paymentOrderLifecycleStore interface {
 	Upsert(ctx context.Context, o *model.PaymentOrder) error
 	Get(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error)
+	GetPaymentOrderByExternalID(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*model.PaymentOrder, error)
-	List(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error)
+	ListPaymentOrders(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error)
 	MarkPaid(ctx context.Context, id uuid.UUID, paidAt time.Time) error
 	MarkCompleted(ctx context.Context, id uuid.UUID, completedAt time.Time) error
 	MarkFailed(ctx context.Context, id uuid.UUID, failedAt time.Time, reason string) error
+	MarkRetryAttempt(ctx context.Context, id uuid.UUID, retriedAt time.Time) error
 }
 
 // PaymentWebhookService closes the verified-payment -> entitlement fulfillment
@@ -127,7 +129,7 @@ func (s *PaymentWebhookService) Handle(ctx context.Context, in PaymentWebhookInp
 	}
 	s.auditOrder(ctx, model.AuditEventBillingOrderPaid, order, nil)
 
-	if existing, err := s.orders.Get(ctx, event.Provider, event.ExternalOrderID); err == nil && existing != nil {
+	if existing, err := s.GetPaymentOrderByExternalID(ctx, event.Provider, event.ExternalOrderID); err == nil && existing != nil {
 		order = existing
 	}
 	if order.Status == model.PaymentOrderStatusCompleted {
@@ -137,6 +139,10 @@ func (s *PaymentWebhookService) Handle(ctx context.Context, in PaymentWebhookInp
 }
 
 func (s *PaymentWebhookService) RetryFulfillment(ctx context.Context, orderID uuid.UUID) (*PaymentWebhookResult, error) {
+	return s.RetryPaymentFulfillment(ctx, orderID)
+}
+
+func (s *PaymentWebhookService) RetryPaymentFulfillment(ctx context.Context, orderID uuid.UUID) (*PaymentWebhookResult, error) {
 	order, err := s.orders.GetByID(ctx, orderID)
 	if err != nil {
 		return nil, err
@@ -150,12 +156,22 @@ func (s *PaymentWebhookService) RetryFulfillment(ctx context.Context, orderID uu
 	if order.Status != model.PaymentOrderStatusPaid && order.Status != model.PaymentOrderStatusFailed {
 		return nil, ErrPaymentOrderNotRetryable
 	}
+	if err := s.orders.MarkRetryAttempt(ctx, order.ID, s.now()); err != nil {
+		return nil, err
+	}
+	if updated, err := s.orders.GetByID(ctx, order.ID); err == nil && updated != nil {
+		order = updated
+	}
 	s.auditOrder(ctx, model.AuditEventBillingOrderRetry, order, nil)
 	return s.fulfill(ctx, order, "admin_retry")
 }
 
 func (s *PaymentWebhookService) ListOrders(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
-	orders, err := s.orders.List(ctx, filter)
+	return s.ListPaymentOrders(ctx, filter)
+}
+
+func (s *PaymentWebhookService) ListPaymentOrders(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
+	orders, err := s.orders.ListPaymentOrders(ctx, filter)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +179,13 @@ func (s *PaymentWebhookService) ListOrders(ctx context.Context, filter model.Pay
 		return []model.PaymentOrder{}, nil
 	}
 	return orders, nil
+}
+
+func (s *PaymentWebhookService) GetPaymentOrderByExternalID(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
+	if externalOrderID == "" {
+		return nil, nil
+	}
+	return s.orders.GetPaymentOrderByExternalID(ctx, provider, externalOrderID)
 }
 
 func (s *PaymentWebhookService) fulfill(ctx context.Context, order *model.PaymentOrder, reason string) (*PaymentWebhookResult, error) {
@@ -290,6 +313,7 @@ func (s *PaymentWebhookService) auditOrder(ctx context.Context, eventType model.
 		"external_order_id": order.ExternalOrderID,
 		"plan_code":         order.PlanCode,
 		"status":            string(order.Status),
+		"retry_count":       order.RetryCount,
 	}
 	for key, value := range metadata {
 		clean[key] = value

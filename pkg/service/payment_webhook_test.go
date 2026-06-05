@@ -27,6 +27,10 @@ func (f fakePaymentOrderLifecycle) Get(ctx context.Context, provider model.Payme
 	return f.fakeBilling.GetOrder(ctx, provider, externalOrderID)
 }
 
+func (f fakePaymentOrderLifecycle) GetPaymentOrderByExternalID(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
+	return f.fakeBilling.GetPaymentOrderByExternalID(ctx, provider, externalOrderID)
+}
+
 func (f fakePaymentOrderLifecycle) GetByID(_ context.Context, id uuid.UUID) (*model.PaymentOrder, error) {
 	for _, order := range f.orders {
 		if order.ID == id {
@@ -38,6 +42,10 @@ func (f fakePaymentOrderLifecycle) GetByID(_ context.Context, id uuid.UUID) (*mo
 }
 
 func (f fakePaymentOrderLifecycle) List(_ context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
+	return f.ListPaymentOrders(context.Background(), filter)
+}
+
+func (f fakePaymentOrderLifecycle) ListPaymentOrders(_ context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
 	var orders []model.PaymentOrder
 	for _, order := range f.orders {
 		if filter.Provider != "" && order.Provider != filter.Provider {
@@ -63,6 +71,16 @@ func (f fakePaymentOrderLifecycle) MarkPaid(_ context.Context, id uuid.UUID, pai
 			}
 			order.FailedAt = nil
 			order.FailedReason = ""
+		}
+	}
+	return nil
+}
+
+func (f fakePaymentOrderLifecycle) MarkRetryAttempt(_ context.Context, id uuid.UUID, retriedAt time.Time) error {
+	for _, order := range f.orders {
+		if order.ID == id && (order.Status == model.PaymentOrderStatusPaid || order.Status == model.PaymentOrderStatusFailed) {
+			order.RetryCount++
+			order.LastRetryAt = &retriedAt
 		}
 	}
 	return nil
@@ -267,7 +285,7 @@ func TestAdminRetryFailedOrderFulfillsOnce(t *testing.T) {
 		t.Fatalf("Upsert() error = %v", err)
 	}
 
-	result, err := svc.RetryFulfillment(ctx(), order.ID)
+	result, err := svc.RetryPaymentFulfillment(ctx(), order.ID)
 	if err != nil {
 		t.Fatalf("RetryFulfillment() error = %v", err)
 	}
@@ -277,7 +295,11 @@ func TestAdminRetryFailedOrderFulfillsOnce(t *testing.T) {
 	if bal := fb.liveBalance(uid); bal != 200 {
 		t.Fatalf("balance = %d, want 200", bal)
 	}
-	result, err = svc.RetryFulfillment(ctx(), order.ID)
+	got, _ := fb.GetOrder(ctx(), model.PaymentProviderGumroad, "retry-pro")
+	if got.RetryCount != 1 || got.LastRetryAt == nil {
+		t.Fatalf("retry tracking = count %d at %v, want one attempt", got.RetryCount, got.LastRetryAt)
+	}
+	result, err = svc.RetryPaymentFulfillment(ctx(), order.ID)
 	if err != nil {
 		t.Fatalf("retry completed order error = %v", err)
 	}
@@ -286,6 +308,10 @@ func TestAdminRetryFailedOrderFulfillsOnce(t *testing.T) {
 	}
 	if bal := fb.liveBalance(uid); bal != 200 {
 		t.Fatalf("balance = %d after completed retry, want 200", bal)
+	}
+	got, _ = fb.GetOrder(ctx(), model.PaymentProviderGumroad, "retry-pro")
+	if got.RetryCount != 1 {
+		t.Fatalf("retry count after completed retry = %d, want still 1", got.RetryCount)
 	}
 }
 
@@ -314,7 +340,7 @@ func TestFulfillmentErrorMarksOrderFailed(t *testing.T) {
 
 	fb.seedCatalog()
 	ent.now = svc.now
-	result, err := svc.RetryFulfillment(context.Background(), order.ID)
+	result, err := svc.RetryPaymentFulfillment(context.Background(), order.ID)
 	if err != nil {
 		t.Fatalf("RetryFulfillment() error = %v", err)
 	}

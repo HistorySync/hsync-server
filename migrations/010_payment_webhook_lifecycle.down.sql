@@ -20,6 +20,8 @@ ALTER TABLE payment_orders
     DROP COLUMN IF EXISTS paid_at,
     DROP COLUMN IF EXISTS completed_at,
     DROP COLUMN IF EXISTS failed_at,
-    DROP COLUMN IF EXISTS failed_reason;
+    DROP COLUMN IF EXISTS failed_reason,
+    DROP COLUMN IF EXISTS retry_count,
+    DROP COLUMN IF EXISTS last_retry_at;
 
 COMMIT;

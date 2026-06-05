@@ -272,6 +272,8 @@ type PaymentOrder struct {
 	CompletedAt     *time.Time         `json:"completed_at,omitempty" db:"completed_at"`
 	FailedAt        *time.Time         `json:"failed_at,omitempty" db:"failed_at"`
 	FailedReason    string             `json:"failed_reason,omitempty" db:"failed_reason"`
+	RetryCount      int32              `json:"retry_count"       db:"retry_count"`
+	LastRetryAt     *time.Time         `json:"last_retry_at,omitempty" db:"last_retry_at"`
 	CreatedAt       time.Time          `json:"created_at"        db:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"        db:"updated_at"`
 }

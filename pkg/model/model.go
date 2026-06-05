@@ -50,16 +50,16 @@ type User struct {
 
 // Device represents a registered client device.
 type Device struct {
-	ID           uuid.UUID  `json:"id"            db:"id"`
-	UserID       uuid.UUID  `json:"user_id"       db:"user_id"`
-	DeviceUUID   uuid.UUID  `json:"device_uuid"   db:"device_uuid"`
-	DeviceName   string     `json:"device_name"   db:"device_name"`
-	Platform     string     `json:"platform"      db:"platform"`
-	AppVersion   string     `json:"app_version"   db:"app_version"`
-	TokenHash    []byte     `json:"-"             db:"token_hash"`
-	LastSyncAt   *time.Time `json:"last_sync_at"  db:"last_sync_at"`
-	RevokedAt    *time.Time `json:"revoked_at"    db:"revoked_at"`
-	CreatedAt    time.Time  `json:"created_at"    db:"created_at"`
+	ID         uuid.UUID  `json:"id"            db:"id"`
+	UserID     uuid.UUID  `json:"user_id"       db:"user_id"`
+	DeviceUUID uuid.UUID  `json:"device_uuid"   db:"device_uuid"`
+	DeviceName string     `json:"device_name"   db:"device_name"`
+	Platform   string     `json:"platform"      db:"platform"`
+	AppVersion string     `json:"app_version"   db:"app_version"`
+	TokenHash  []byte     `json:"-"             db:"token_hash"`
+	LastSyncAt *time.Time `json:"last_sync_at"  db:"last_sync_at"`
+	RevokedAt  *time.Time `json:"revoked_at"    db:"revoked_at"`
+	CreatedAt  time.Time  `json:"created_at"    db:"created_at"`
 }
 
 // ── Bundle ───────────────────────────────────────────────────
@@ -127,6 +127,29 @@ type DeviceRevocation struct {
 	DeviceUUID uuid.UUID `json:"device_uuid" db:"device_uuid"`
 	RevokedAt  time.Time `json:"revoked_at"  db:"revoked_at"`
 	RevokedBy  uuid.UUID `json:"revoked_by"  db:"revoked_by"`
+}
+
+// TwoFactor stores a user's TOTP configuration. The encrypted secret is never
+// returned over the API.
+type TwoFactor struct {
+	UserID          uuid.UUID  `json:"user_id"         db:"user_id"`
+	SecretEncrypted []byte     `json:"-"               db:"secret_encrypted"`
+	Enabled         bool       `json:"enabled"         db:"enabled"`
+	FailedAttempts  int        `json:"-"               db:"failed_attempts"`
+	LockedUntil     *time.Time `json:"locked_until,omitempty" db:"locked_until"`
+	LastUsedAt      *time.Time `json:"last_used_at,omitempty"  db:"last_used_at"`
+	EnabledAt       *time.Time `json:"enabled_at,omitempty"    db:"enabled_at"`
+	CreatedAt       time.Time  `json:"created_at"      db:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"      db:"updated_at"`
+}
+
+// TwoFactorBackupCode stores a hashed one-time backup code.
+type TwoFactorBackupCode struct {
+	ID        uuid.UUID  `json:"id"         db:"id"`
+	UserID    uuid.UUID  `json:"user_id"    db:"user_id"`
+	CodeHash  string     `json:"-"          db:"code_hash"`
+	UsedAt    *time.Time `json:"used_at,omitempty" db:"used_at"`
+	CreatedAt time.Time  `json:"created_at" db:"created_at"`
 }
 
 // TierLimits returns the default quota limits for a given tier.

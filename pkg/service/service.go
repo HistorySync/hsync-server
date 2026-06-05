@@ -67,6 +67,12 @@ var (
 	ErrBillingNotSupported  = errors.New("billing not supported")
 	ErrRefreshTokenRequired = errors.New("refresh token is required")
 	ErrReservationDenied    = errors.New("storage reservation denied")
+	ErrTwoFactorRequired    = errors.New("two-factor authentication is required")
+	ErrTwoFactorNotEnabled  = errors.New("two-factor authentication is not enabled")
+	ErrTwoFactorEnabled     = errors.New("two-factor authentication is already enabled")
+	ErrTwoFactorInvalidCode = errors.New("invalid two-factor authentication code")
+	ErrTwoFactorLocked      = errors.New("two-factor authentication is temporarily locked")
+	ErrTwoFactorChallenge   = errors.New("invalid or expired two-factor challenge")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -80,6 +86,7 @@ type Deps struct {
 	Reservation    UsageReservationHook
 	Notifier       provider.Notifier
 	Notification   NotificationConfig
+	SecuritySecret string
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -159,6 +166,7 @@ type Services struct {
 	Billing      *BillingService
 	Notification *NotificationService
 	Retention    *RetentionService
+	TwoFactor    *TwoFactorService
 }
 
 // New creates all service instances with their dependencies.
@@ -196,6 +204,7 @@ func New(deps Deps) *Services {
 		provider:   provider.Registry().Billing,
 	}
 	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
+	twoFactorSvc := NewTwoFactorService(deps.Repos, deps.TokenManager, deps.SecuritySecret)
 
 	return &Services{
 		Repos:        deps.Repos,
@@ -206,6 +215,7 @@ func New(deps Deps) *Services {
 		Billing:      billingSvc,
 		Notification: notifSvc,
 		Retention:    retentionSvc,
+		TwoFactor:    twoFactorSvc,
 	}
 }
 
@@ -430,6 +440,8 @@ type RegisterResult struct {
 	RefreshToken           string     `json:"refresh_token"`
 	ExpiresIn              int64      `json:"expires_in"`
 	EmailVerificationToken string     `json:"email_verification_token,omitempty"`
+	RequiresTwoFactor      bool       `json:"requires_2fa,omitempty"`
+	Challenge              string     `json:"challenge,omitempty"`
 }
 
 // Register creates a new user account and returns tokens.
@@ -549,6 +561,23 @@ func (s *AuthService) Login(ctx context.Context, input LoginInput) (*RegisterRes
 	// Verify password
 	if !verifyPassword(input.Password, user.PasswordHash) {
 		return nil, ErrInvalidCredentials
+	}
+
+	twoFactor, err := s.repos.TwoFactor.Get(ctx, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("get two factor: %w", err)
+	}
+	if twoFactor != nil && twoFactor.Enabled {
+		challenge, expiresIn, err := s.tokenManager.IssueLoginChallengeToken(user.ID)
+		if err != nil {
+			return nil, fmt.Errorf("issue two factor challenge: %w", err)
+		}
+		return &RegisterResult{
+			User:              *user,
+			RequiresTwoFactor: true,
+			Challenge:         challenge,
+			ExpiresIn:         expiresIn,
+		}, nil
 	}
 
 	// Issue tokens

@@ -59,6 +59,37 @@ func TestValidateAccessTokenRejectsMalformedToken(t *testing.T) {
 	}
 }
 
+func TestLoginChallengeTokenRoundTrip(t *testing.T) {
+	tm := newTestTokenManager(t)
+	userID := uuid.New()
+
+	token, expiresIn, err := tm.IssueLoginChallengeToken(userID)
+	if err != nil {
+		t.Fatalf("IssueLoginChallengeToken() error = %v", err)
+	}
+	if expiresIn <= 0 {
+		t.Fatalf("expiresIn = %d, want > 0", expiresIn)
+	}
+	got, err := tm.ValidateLoginChallengeToken(token)
+	if err != nil {
+		t.Fatalf("ValidateLoginChallengeToken() error = %v", err)
+	}
+	if got != userID {
+		t.Fatalf("challenge user = %s, want %s", got, userID)
+	}
+}
+
+func TestAccessValidatorRejectsLoginChallenge(t *testing.T) {
+	tm := newTestTokenManager(t)
+	token, _, err := tm.IssueLoginChallengeToken(uuid.New())
+	if err != nil {
+		t.Fatalf("IssueLoginChallengeToken() error = %v", err)
+	}
+	if _, err := tm.ValidateAccessToken(token); err == nil {
+		t.Fatal("ValidateAccessToken() accepted login challenge")
+	}
+}
+
 func TestIssueRefreshTokenReturnsOpaqueTokenAndHash(t *testing.T) {
 	tm := newTestTokenManager(t)
 

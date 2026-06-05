@@ -17,7 +17,7 @@ import (
 // Config holds all server configuration.
 type Config struct {
 	ListenAddr      string        `mapstructure:"listen_addr"`
-	LogLevel        zerolog.Level `mapstructure:"log_level"`
+	LogLevel        zerolog.Level `mapstructure:"-"`
 	WebEnabled      bool          `mapstructure:"web_enabled"`
 	WebAppName      string        `mapstructure:"web_app_name"`
 	WebConsolePath  string        `mapstructure:"web_console_path"`
@@ -38,6 +38,9 @@ type Config struct {
 
 	// JWT
 	JWTPrivateKey string `mapstructure:"jwt_private_key"` // Ed25519 private key, PEM or base64(raw seed)
+
+	// Security
+	SecuritySecret string `mapstructure:"security_secret"` // 32-byte AES-GCM key, raw or base64
 
 	// Stripe (optional)
 	StripeSecretKey     string `mapstructure:"stripe_secret_key"`
@@ -184,6 +187,7 @@ func load() (*Config, error) {
 	v.SetDefault("s3_access_key", cfg.S3AccessKey)
 	v.SetDefault("s3_secret_key", cfg.S3SecretKey)
 	v.SetDefault("s3_use_ssl", cfg.S3UseSSL)
+	v.SetDefault("security_secret", cfg.SecuritySecret)
 	v.SetDefault("stripe_disabled", cfg.StripeDisabled)
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
 	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
@@ -248,6 +252,9 @@ func (c *Config) Validate() error {
 
 	if c.JWTPrivateKey == "" {
 		errs = append(errs, "jwt_private_key is required")
+	}
+	if _, err := DecodeSecuritySecret(c.SecuritySecret); err != nil {
+		errs = append(errs, "security_secret "+err.Error())
 	}
 
 	if !c.StripeDisabled {
@@ -324,4 +331,32 @@ func DecodeEd25519PrivateKey(encoded string) (ed25519.PrivateKey, error) {
 	}
 
 	return nil, fmt.Errorf("unable to decode Ed25519 key: must be base64-encoded 32-byte seed")
+}
+
+// DecodeSecuritySecret decodes the AES-GCM key used for local secret
+// encryption. It accepts either a raw 32-byte value or a base64-encoded 32-byte
+// value so operators can generate it with `openssl rand -base64 32`.
+func DecodeSecuritySecret(secret string) ([]byte, error) {
+	trimmed := strings.TrimSpace(secret)
+	if trimmed == "" {
+		return nil, fmt.Errorf("is required")
+	}
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		decoded, err := enc.DecodeString(trimmed)
+		if err == nil {
+			if len(decoded) == 32 {
+				return decoded, nil
+			}
+			return nil, fmt.Errorf("must decode to exactly 32 bytes")
+		}
+	}
+	if len([]byte(trimmed)) == 32 {
+		return []byte(trimmed), nil
+	}
+	return nil, fmt.Errorf("must be exactly 32 raw bytes or base64-encoded 32 bytes")
 }

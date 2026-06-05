@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/pquerna/otp"
+	"github.com/pquerna/otp/totp"
 )
 
 func TestPasswordHashRoundTrip(t *testing.T) {
@@ -121,5 +124,79 @@ func TestHashTokenIsDeterministic(t *testing.T) {
 	second := hashToken("reset-token")
 	if string(first) != string(second) {
 		t.Fatal("hashToken() produced different hashes for same token")
+	}
+}
+
+func TestNormalizeBackupCode(t *testing.T) {
+	got, ok := normalizeBackupCode("abcd-2345")
+	if !ok {
+		t.Fatal("normalizeBackupCode() ok = false, want true")
+	}
+	if got != "ABCD2345" {
+		t.Fatalf("normalizeBackupCode() = %q, want ABCD2345", got)
+	}
+	if _, ok := normalizeBackupCode("short"); ok {
+		t.Fatal("normalizeBackupCode(short) ok = true, want false")
+	}
+}
+
+func TestGenerateBackupCodesReturnsFormattedCodes(t *testing.T) {
+	codes, err := generateBackupCodes()
+	if err != nil {
+		t.Fatalf("generateBackupCodes() error = %v", err)
+	}
+	if len(codes) != twoFactorBackupCount {
+		t.Fatalf("count = %d, want %d", len(codes), twoFactorBackupCount)
+	}
+	for _, code := range codes {
+		if _, ok := normalizeBackupCode(code); !ok {
+			t.Fatalf("generated code %q did not normalize", code)
+		}
+	}
+}
+
+func TestBackupCodeHMACHash(t *testing.T) {
+	svc := NewTwoFactorService(nil, nil, "0123456789abcdef0123456789abcdef")
+	normalized, ok := normalizeBackupCode("abcd-2345")
+	if !ok {
+		t.Fatal("normalizeBackupCode() ok = false, want true")
+	}
+	hash := svc.hashBackupCode(normalized)
+	if hash == normalized || hash == "" {
+		t.Fatalf("hashBackupCode() = %q", hash)
+	}
+	if !svc.backupCodeHashMatches(normalized, hash) {
+		t.Fatal("backupCodeHashMatches() = false, want true")
+	}
+	if svc.backupCodeHashMatches("ZZZZ9999", hash) {
+		t.Fatal("backupCodeHashMatches() = true for wrong code")
+	}
+}
+
+func TestValidateTOTP(t *testing.T) {
+	key, err := totp.Generate(totp.GenerateOpts{
+		Issuer:      twoFactorIssuer,
+		AccountName: "user@example.com",
+		Period:      30,
+		Digits:      otp.DigitsSix,
+		Algorithm:   otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("Generate() error = %v", err)
+	}
+	code, err := totp.GenerateCodeCustom(key.Secret(), time.Now(), totp.ValidateOpts{
+		Period:    30,
+		Skew:      1,
+		Digits:    otp.DigitsSix,
+		Algorithm: otp.AlgorithmSHA1,
+	})
+	if err != nil {
+		t.Fatalf("GenerateCodeCustom() error = %v", err)
+	}
+	if !validateTOTP(key.Secret(), code) {
+		t.Fatal("validateTOTP() = false, want true")
+	}
+	if validateTOTP(key.Secret(), "000000") {
+		t.Fatal("validateTOTP() = true for wrong code")
 	}
 }

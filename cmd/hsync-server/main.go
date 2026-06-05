@@ -151,6 +151,7 @@ func main() {
 		StripeKey:      cfg.StripeSecretKey,
 		StripeWebhook:  cfg.StripeWebhookSecret,
 		StripeDisabled: cfg.StripeDisabled,
+		SecuritySecret: cfg.SecuritySecret,
 		Notifier:       notifier,
 		Notification: service.NotificationConfig{
 			Enabled:            cfg.NotificationsEnabled,

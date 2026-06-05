@@ -44,15 +44,21 @@ const (
 	CodeRateLimited    Code = "RATE_LIMITED"
 
 	// Auth
-	CodeConflict                 Code = "CONFLICT"
-	CodeEmailTaken               Code = "EMAIL_TAKEN"
-	CodeInvalidCredentials       Code = "INVALID_CREDENTIALS"
-	CodeInvalidRefreshToken      Code = "INVALID_REFRESH_TOKEN"
-	CodeInvalidResetToken        Code = "INVALID_RESET_TOKEN"
-	CodeInvalidVerificationToken Code = "INVALID_VERIFICATION_TOKEN"
-	CodeTurnstileFailed          Code = "TURNSTILE_FAILED"
-	CodeTurnstileRequired        Code = "TURNSTILE_REQUIRED"
-	CodeTurnstileUnavailable     Code = "TURNSTILE_UNAVAILABLE"
+	CodeConflict                  Code = "CONFLICT"
+	CodeEmailTaken                Code = "EMAIL_TAKEN"
+	CodeInvalidCredentials        Code = "INVALID_CREDENTIALS"
+	CodeInvalidRefreshToken       Code = "INVALID_REFRESH_TOKEN"
+	CodeInvalidResetToken         Code = "INVALID_RESET_TOKEN"
+	CodeInvalidVerificationToken  Code = "INVALID_VERIFICATION_TOKEN"
+	CodeTwoFactorAlreadyEnabled   Code = "TWO_FACTOR_ALREADY_ENABLED"
+	CodeTwoFactorChallengeInvalid Code = "TWO_FACTOR_CHALLENGE_INVALID"
+	CodeTwoFactorInvalidCode      Code = "TWO_FACTOR_INVALID_CODE"
+	CodeTwoFactorLocked           Code = "TWO_FACTOR_LOCKED"
+	CodeTwoFactorNotEnabled       Code = "TWO_FACTOR_NOT_ENABLED"
+	CodeTwoFactorRequired         Code = "TWO_FACTOR_REQUIRED"
+	CodeTurnstileFailed           Code = "TURNSTILE_FAILED"
+	CodeTurnstileRequired         Code = "TURNSTILE_REQUIRED"
+	CodeTurnstileUnavailable      Code = "TURNSTILE_UNAVAILABLE"
 
 	// Quota / reservation
 	CodeQuotaExceeded     Code = "QUOTA_EXCEEDED"
@@ -92,30 +98,36 @@ type Entry struct {
 // translations keyed by BCP-47 language tag.
 
 var catalog = map[Code]Entry{
-	CodeBadRequest:               {CodeBadRequest, http.StatusBadRequest, "bad request"},
-	CodeInternalError:            {CodeInternalError, http.StatusInternalServerError, "internal server error"},
-	CodeNotImplemented:           {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
-	CodeNotFound:                 {CodeNotFound, http.StatusNotFound, "not found"},
-	CodeRateLimited:              {CodeRateLimited, http.StatusTooManyRequests, "rate limit exceeded, retry later"},
-	CodeConflict:                 {CodeConflict, http.StatusConflict, "conflict"},
-	CodeEmailTaken:               {CodeEmailTaken, http.StatusConflict, "email already registered"},
-	CodeInvalidCredentials:       {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
-	CodeInvalidRefreshToken:      {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
-	CodeInvalidResetToken:        {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
-	CodeInvalidVerificationToken: {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
-	CodeTurnstileFailed:          {CodeTurnstileFailed, http.StatusForbidden, "turnstile verification failed"},
-	CodeTurnstileRequired:        {CodeTurnstileRequired, http.StatusBadRequest, "turnstile token is required"},
-	CodeTurnstileUnavailable:     {CodeTurnstileUnavailable, http.StatusServiceUnavailable, "turnstile verification is unavailable"},
-	CodeQuotaExceeded:            {CodeQuotaExceeded, 507, "storage quota exceeded"},
-	CodeReservationDenied:        {CodeReservationDenied, http.StatusForbidden, "reservation denied"},
-	CodeDeviceNotRegistered:      {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
-	CodeDeviceRevoked:            {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
-	CodeBillingDisabled:          {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
-	CodeInvalidUserID:            {CodeInvalidUserID, http.StatusBadRequest, "invalid user id"},
-	CodeUserNotFound:             {CodeUserNotFound, http.StatusNotFound, "user not found"},
-	CodeInvalidJSON:              {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},
-	CodeMissingKey:               {CodeMissingKey, http.StatusBadRequest, "option key is required"},
-	CodeOptionsDisabled:          {CodeOptionsDisabled, http.StatusNotImplemented, "dynamic options are disabled"},
+	CodeBadRequest:                {CodeBadRequest, http.StatusBadRequest, "bad request"},
+	CodeInternalError:             {CodeInternalError, http.StatusInternalServerError, "internal server error"},
+	CodeNotImplemented:            {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
+	CodeNotFound:                  {CodeNotFound, http.StatusNotFound, "not found"},
+	CodeRateLimited:               {CodeRateLimited, http.StatusTooManyRequests, "rate limit exceeded, retry later"},
+	CodeConflict:                  {CodeConflict, http.StatusConflict, "conflict"},
+	CodeEmailTaken:                {CodeEmailTaken, http.StatusConflict, "email already registered"},
+	CodeInvalidCredentials:        {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
+	CodeInvalidRefreshToken:       {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
+	CodeInvalidResetToken:         {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
+	CodeInvalidVerificationToken:  {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodeTwoFactorAlreadyEnabled:   {CodeTwoFactorAlreadyEnabled, http.StatusConflict, "two-factor authentication is already enabled"},
+	CodeTwoFactorChallengeInvalid: {CodeTwoFactorChallengeInvalid, http.StatusUnauthorized, "invalid or expired two-factor challenge"},
+	CodeTwoFactorInvalidCode:      {CodeTwoFactorInvalidCode, http.StatusUnauthorized, "invalid two-factor authentication code"},
+	CodeTwoFactorLocked:           {CodeTwoFactorLocked, http.StatusTooManyRequests, "two-factor authentication is temporarily locked"},
+	CodeTwoFactorNotEnabled:       {CodeTwoFactorNotEnabled, http.StatusBadRequest, "two-factor authentication is not enabled"},
+	CodeTwoFactorRequired:         {CodeTwoFactorRequired, http.StatusUnauthorized, "two-factor authentication is required"},
+	CodeTurnstileFailed:           {CodeTurnstileFailed, http.StatusForbidden, "turnstile verification failed"},
+	CodeTurnstileRequired:         {CodeTurnstileRequired, http.StatusBadRequest, "turnstile token is required"},
+	CodeTurnstileUnavailable:      {CodeTurnstileUnavailable, http.StatusServiceUnavailable, "turnstile verification is unavailable"},
+	CodeQuotaExceeded:             {CodeQuotaExceeded, 507, "storage quota exceeded"},
+	CodeReservationDenied:         {CodeReservationDenied, http.StatusForbidden, "reservation denied"},
+	CodeDeviceNotRegistered:       {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
+	CodeDeviceRevoked:             {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
+	CodeBillingDisabled:           {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
+	CodeInvalidUserID:             {CodeInvalidUserID, http.StatusBadRequest, "invalid user id"},
+	CodeUserNotFound:              {CodeUserNotFound, http.StatusNotFound, "user not found"},
+	CodeInvalidJSON:               {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},
+	CodeMissingKey:                {CodeMissingKey, http.StatusBadRequest, "option key is required"},
+	CodeOptionsDisabled:           {CodeOptionsDisabled, http.StatusNotImplemented, "dynamic options are disabled"},
 }
 
 // Lookup returns the catalog entry for c. Unknown codes fall back to the

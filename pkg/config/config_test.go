@@ -85,6 +85,26 @@ func TestDecodeEd25519PrivateKeyRejectsInvalidSeed(t *testing.T) {
 	}
 }
 
+func TestDecodeSecuritySecretAcceptsBase64Key(t *testing.T) {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	key, err := DecodeSecuritySecret(base64.StdEncoding.EncodeToString(raw))
+	if err != nil {
+		t.Fatalf("DecodeSecuritySecret() error = %v", err)
+	}
+	if string(key) != string(raw) {
+		t.Fatal("DecodeSecuritySecret() returned unexpected key")
+	}
+}
+
+func TestDecodeSecuritySecretRejectsShortKey(t *testing.T) {
+	if _, err := DecodeSecuritySecret(base64.StdEncoding.EncodeToString([]byte("short"))); err == nil {
+		t.Fatal("DecodeSecuritySecret() error = nil, want error")
+	}
+}
+
 func TestDefaultConfigEnablesWebSurface(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.WebEnabled {

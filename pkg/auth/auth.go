@@ -34,6 +34,12 @@ type TokenManager struct {
 	refreshTTL time.Duration
 }
 
+const (
+	tokenTypeAccess         = "access"
+	tokenTypeLoginChallenge = "login_2fa"
+	loginChallengeTTL       = 5 * time.Minute
+)
+
 // NewTokenManager creates a TokenManager from a base64-encoded Ed25519 seed.
 func NewTokenManager(encodedKey string, cfg TokenConfig) (*TokenManager, error) {
 	priv, err := config.DecodeEd25519PrivateKey(encodedKey)
@@ -55,6 +61,7 @@ func (tm *TokenManager) IssueAccessToken(userID uuid.UUID, tier string) (string,
 	claims := jwt.MapClaims{
 		"sub":  userID.String(),
 		"tier": tier,
+		"typ":  tokenTypeAccess,
 		"iat":  jwt.NewNumericDate(now),
 		"exp":  jwt.NewNumericDate(now.Add(tm.accessTTL)),
 		"iss":  "historysync",
@@ -62,6 +69,26 @@ func (tm *TokenManager) IssueAccessToken(userID uuid.UUID, tier string) (string,
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
 	return token.SignedString(tm.privateKey)
+}
+
+// IssueLoginChallengeToken creates a short-lived JWT used only to complete a
+// password-verified login for accounts with two-factor authentication enabled.
+func (tm *TokenManager) IssueLoginChallengeToken(userID uuid.UUID) (string, int64, error) {
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"sub": userID.String(),
+		"typ": tokenTypeLoginChallenge,
+		"iat": jwt.NewNumericDate(now),
+		"exp": jwt.NewNumericDate(now.Add(loginChallengeTTL)),
+		"iss": "historysync",
+		"jti": uuid.New().String(),
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodEdDSA, claims)
+	signed, err := token.SignedString(tm.privateKey)
+	if err != nil {
+		return "", 0, err
+	}
+	return signed, int64(loginChallengeTTL / time.Second), nil
 }
 
 // IssueRefreshToken creates a long-lived refresh token (stored server-side).
@@ -93,7 +120,39 @@ func (tm *TokenManager) ValidateAccessToken(tokenString string) (jwt.MapClaims, 
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid token claims")
 	}
+	if typ, _ := claims["typ"].(string); typ != "" && typ != tokenTypeAccess {
+		return nil, fmt.Errorf("invalid token type")
+	}
+	if _, ok := claims["tier"].(string); !ok {
+		return nil, fmt.Errorf("missing tier claim")
+	}
 	return claims, nil
+}
+
+// ValidateLoginChallengeToken validates a two-factor login challenge and returns
+// the user ID that already passed password authentication.
+func (tm *TokenManager) ValidateLoginChallengeToken(tokenString string) (uuid.UUID, error) {
+	token, err := jwt.Parse(tokenString, tm.keyfunc,
+		jwt.WithValidMethods([]string{"EdDSA"}),
+		jwt.WithIssuer("historysync"),
+		jwt.WithLeeway(30*time.Second),
+	)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("parse token: %w", err)
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok || !token.Valid {
+		return uuid.Nil, fmt.Errorf("invalid token claims")
+	}
+	if typ, _ := claims["typ"].(string); typ != tokenTypeLoginChallenge {
+		return uuid.Nil, fmt.Errorf("invalid token type")
+	}
+	sub, _ := claims["sub"].(string)
+	userID, err := uuid.Parse(sub)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("invalid subject")
+	}
+	return userID, nil
 }
 
 // keyfunc returns the Ed25519 public key for verifying JWT signatures.

@@ -32,6 +32,10 @@ s3_use_ssl: false
 # Generate: openssl rand -base64 32
 # jwt_private_key: ""  # MUST be set via HSYNC_JWT_PRIVATE_KEY env var
 
+# Secret encryption key for local server-side secrets such as TOTP seeds.
+# Must be a base64-encoded 32-byte value. Generate: openssl rand -base64 32
+# security_secret: ""  # MUST be set via HSYNC_SECURITY_SECRET env var
+
 # Stripe billing (set stripe_disabled: true for self-hosted without billing)
 stripe_disabled: true
 # stripe_secret_key: ""

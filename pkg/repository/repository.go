@@ -28,6 +28,7 @@ type Repos struct {
 	DeviceRevocations  *DeviceRevocationRepo
 	EmailVerifications *EmailVerificationRepo
 	PasswordResets     *PasswordResetRepo
+	TwoFactor          *TwoFactorRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -42,6 +43,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		DeviceRevocations:  &DeviceRevocationRepo{pool: pgPool},
 		EmailVerifications: &EmailVerificationRepo{pool: pgPool},
 		PasswordResets:     &PasswordResetRepo{pool: pgPool},
+		TwoFactor:          &TwoFactorRepo{pool: pgPool},
 	}
 }
 

@@ -8,6 +8,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -141,6 +142,9 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/login",
 		h.Login,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:ip", authLoginIPLimit)))
+	authGroup.Post("/login/2fa",
+		h.LoginTwoFactor,
+		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:2fa:ip", authLoginIPLimit)))
 	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
 	authGroup.Post("/logout", h.Logout, publicAuthRL)
 	authGroup.Post("/resend-verification",
@@ -172,6 +176,14 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	devices.Get("/", h.ListDevices)
 	devices.Post("/:uuid/revoke", h.RevokeDevice)
 	devices.Get("/revocations", h.ListRevocations)
+
+	// Account security (JWT-protected)
+	me := v1.Group("/me", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
+	me.Get("/2fa/status", h.TwoFactorStatus)
+	me.Post("/2fa/setup", h.SetupTwoFactor)
+	me.Post("/2fa/enable", h.EnableTwoFactor)
+	me.Post("/2fa/disable", h.DisableTwoFactor)
+	me.Post("/2fa/backup-codes/regenerate", h.RegenerateTwoFactorBackupCodes)
 
 	// Quota (JWT-protected)
 	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
@@ -499,6 +511,13 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 		}
 		return apierrors.NewInternal(err.Error())
 	}
+	if result.RequiresTwoFactor {
+		return c.JSON(fiber.Map{
+			"requires_2fa": true,
+			"challenge":    result.Challenge,
+			"expires_in":   result.ExpiresIn,
+		})
+	}
 
 	return c.JSON(fiber.Map{
 		"user":          result.User,
@@ -510,6 +529,11 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 
 type refreshRequest struct {
 	RefreshToken string `json:"refresh_token"`
+}
+
+type loginTwoFactorRequest struct {
+	Challenge string `json:"challenge"`
+	Code      string `json:"code"`
 }
 
 type forgotPasswordRequest struct {
@@ -529,6 +553,35 @@ type verifyEmailRequest struct {
 type resetPasswordRequest struct {
 	Token       string `json:"token"`
 	NewPassword string `json:"new_password"`
+}
+
+type twoFactorCodeRequest struct {
+	Code string `json:"code"`
+}
+
+func (h *Handlers) LoginTwoFactor(c fiber.Ctx) error {
+	var req loginTwoFactorRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	if strings.TrimSpace(req.Challenge) == "" || strings.TrimSpace(req.Code) == "" {
+		return apierrors.NewBadRequest("challenge and code are required")
+	}
+
+	result, err := h.deps.Services.TwoFactor.Login(c.Context(), service.LoginTwoFactorInput{
+		Challenge: req.Challenge,
+		Code:      req.Code,
+	})
+	if err != nil {
+		return mapTwoFactorError(err)
+	}
+
+	return c.JSON(fiber.Map{
+		"user":          result.User,
+		"access_token":  result.AccessToken,
+		"refresh_token": result.RefreshToken,
+		"expires_in":    result.ExpiresIn,
+	})
 }
 
 func (h *Handlers) RefreshToken(c fiber.Ctx) error {
@@ -1000,7 +1053,95 @@ func (h *Handlers) ListRevocations(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"revocations": revs})
 }
 
-// ── Quota ───────────────────────────────────────────────────
+// Account security.
+
+// TwoFactorStatus returns the authenticated user's 2FA state.
+func (h *Handlers) TwoFactorStatus(c fiber.Ctx) error {
+	status, err := h.deps.Services.TwoFactor.Status(c.Context(), auth.UserID(c))
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(status)
+}
+
+// SetupTwoFactor creates a pending TOTP secret and backup codes.
+func (h *Handlers) SetupTwoFactor(c fiber.Ctx) error {
+	result, err := h.deps.Services.TwoFactor.Setup(c.Context(), auth.UserID(c))
+	if err != nil {
+		return mapTwoFactorError(err)
+	}
+	return c.JSON(result)
+}
+
+// EnableTwoFactor verifies the pending TOTP code and enables 2FA.
+func (h *Handlers) EnableTwoFactor(c fiber.Ctx) error {
+	var req twoFactorCodeRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		return apierrors.NewBadRequest("code is required")
+	}
+	if err := h.deps.Services.TwoFactor.Enable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		return mapTwoFactorError(err)
+	}
+	return c.JSON(fiber.Map{"status": "enabled"})
+}
+
+// DisableTwoFactor verifies a current code and disables 2FA.
+func (h *Handlers) DisableTwoFactor(c fiber.Ctx) error {
+	var req twoFactorCodeRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		return apierrors.NewBadRequest("code is required")
+	}
+	if err := h.deps.Services.TwoFactor.Disable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		return mapTwoFactorError(err)
+	}
+	return c.JSON(fiber.Map{"status": "disabled"})
+}
+
+// RegenerateTwoFactorBackupCodes verifies a current code and returns new backup
+// codes. The plaintext codes are shown only in this response.
+func (h *Handlers) RegenerateTwoFactorBackupCodes(c fiber.Ctx) error {
+	var req twoFactorCodeRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	if strings.TrimSpace(req.Code) == "" {
+		return apierrors.NewBadRequest("code is required")
+	}
+	codes, err := h.deps.Services.TwoFactor.RegenerateBackupCodes(c.Context(), auth.UserID(c), req.Code)
+	if err != nil {
+		return mapTwoFactorError(err)
+	}
+	return c.JSON(fiber.Map{"backup_codes": codes})
+}
+
+func mapTwoFactorError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrTwoFactorRequired):
+		return apierrors.New(apierrors.CodeTwoFactorRequired, err.Error())
+	case errors.Is(err, service.ErrTwoFactorNotEnabled):
+		return apierrors.New(apierrors.CodeTwoFactorNotEnabled, err.Error())
+	case errors.Is(err, service.ErrTwoFactorEnabled):
+		return apierrors.New(apierrors.CodeTwoFactorAlreadyEnabled, err.Error())
+	case errors.Is(err, service.ErrTwoFactorInvalidCode):
+		return apierrors.New(apierrors.CodeTwoFactorInvalidCode, err.Error())
+	case errors.Is(err, service.ErrTwoFactorLocked):
+		return apierrors.New(apierrors.CodeTwoFactorLocked, err.Error())
+	case errors.Is(err, service.ErrTwoFactorChallenge):
+		return apierrors.New(apierrors.CodeTwoFactorChallengeInvalid, err.Error())
+	case errors.Is(err, service.ErrUserNotFound):
+		return apierrors.New(apierrors.CodeUserNotFound, err.Error())
+	default:
+		return apierrors.NewInternal(err.Error())
+	}
+}
+
+// Quota.
 
 func (h *Handlers) GetQuota(c fiber.Ctx) error {
 	userID := auth.UserID(c)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/repository"
 )
 
@@ -78,6 +79,7 @@ func ExecuteIdempotent[T any](
 	execute func(context.Context) (*T, int, error),
 ) (*IdempotencyExecution[T], error) {
 	if svc == nil || svc.store == nil {
+		observability.RecordIdempotency("store_unavailable")
 		return nil, ErrIdempotencyStoreUnavailable
 	}
 	key := strings.TrimSpace(opts.IdempotencyKey)
@@ -95,6 +97,7 @@ func ExecuteIdempotent[T any](
 		return &IdempotencyExecution[T]{Data: data, ResponseStatus: status}, nil
 	}
 	if strings.TrimSpace(opts.Scope) == "" {
+		observability.RecordIdempotency("store_unavailable")
 		return nil, fmt.Errorf("%w: scope is required", ErrIdempotencyStoreUnavailable)
 	}
 	fingerprint, err := FingerprintPayload(opts.Payload)
@@ -119,10 +122,12 @@ func ExecuteIdempotent[T any](
 		ExpiresAt:          now.Add(ttl),
 	})
 	if err != nil {
+		observability.RecordIdempotency("store_unavailable")
 		return nil, fmt.Errorf("%w: %v", ErrIdempotencyStoreUnavailable, err)
 	}
 	switch claim.Status {
 	case repository.IdempotencyClaimReplayed:
+		observability.RecordIdempotency("replay")
 		var data T
 		if len(claim.Record.ResponseBody) > 0 {
 			if err := json.Unmarshal(claim.Record.ResponseBody, &data); err != nil {
@@ -135,8 +140,10 @@ func ExecuteIdempotent[T any](
 		}
 		return &IdempotencyExecution[T]{Data: &data, ResponseStatus: status, Replayed: true}, nil
 	case repository.IdempotencyClaimConflict:
+		observability.RecordIdempotency("conflict")
 		return nil, ErrIdempotencyConflict
 	case repository.IdempotencyClaimProcessing:
+		observability.RecordIdempotency("in_progress")
 		return nil, ErrIdempotencyInProgress
 	}
 
@@ -154,6 +161,7 @@ func ExecuteIdempotent[T any](
 		return nil, fmt.Errorf("encode idempotency response: %w", err)
 	}
 	if err := svc.store.MarkSucceeded(ctx, claim.Record.ID, status, responseBody, svc.now()); err != nil {
+		observability.RecordIdempotency("store_unavailable")
 		return nil, fmt.Errorf("%w: %v", ErrIdempotencyStoreUnavailable, err)
 	}
 	return &IdempotencyExecution[T]{Data: data, ResponseStatus: status}, nil

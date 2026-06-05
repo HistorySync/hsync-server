@@ -133,10 +133,15 @@ func TestExecuteIdempotentReplaysSucceededResponse(t *testing.T) {
 	if !second.Replayed || first.Data.BalanceAfter != second.Data.BalanceAfter {
 		t.Fatalf("replay = %+v first = %+v", second, first)
 	}
+	got := metricValue(t, "hsync_idempotency_events_total", map[string]string{"result": "replay"})
+	if got < 1 {
+		t.Fatalf("idempotency replay metric = %v, want >= 1", got)
+	}
 }
 
 func TestExecuteIdempotentRejectsFingerprintConflict(t *testing.T) {
 	svc, _ := newFakeIdempotencyService()
+	before := metricValue(t, "hsync_idempotency_events_total", map[string]string{"result": "conflict"})
 	if _, err := ExecuteIdempotent[testIdempotentResult](ctx(), svc, IdempotencyOptions{
 		Scope: "test.adjust", IdempotencyKey: "same-key", Payload: map[string]any{"amount": 25}, RequireKey: true,
 	}, func(context.Context) (*testIdempotentResult, int, error) {
@@ -154,9 +159,14 @@ func TestExecuteIdempotentRejectsFingerprintConflict(t *testing.T) {
 	if !errors.Is(err, ErrIdempotencyConflict) {
 		t.Fatalf("conflict error = %v, want ErrIdempotencyConflict", err)
 	}
+	after := metricValue(t, "hsync_idempotency_events_total", map[string]string{"result": "conflict"})
+	if after != before+1 {
+		t.Fatalf("idempotency conflict metric delta = %v, want 1", after-before)
+	}
 }
 
 func TestExecuteIdempotentStoreUnavailableFailsClosed(t *testing.T) {
+	before := metricValue(t, "hsync_idempotency_events_total", map[string]string{"result": "store_unavailable"})
 	_, err := ExecuteIdempotent[testIdempotentResult](ctx(), nil, IdempotencyOptions{
 		Scope: "test.adjust", IdempotencyKey: "same-key", Payload: map[string]any{"amount": 25}, RequireKey: true,
 	}, func(context.Context) (*testIdempotentResult, int, error) {
@@ -165,5 +175,9 @@ func TestExecuteIdempotentStoreUnavailableFailsClosed(t *testing.T) {
 	})
 	if !errors.Is(err, ErrIdempotencyStoreUnavailable) {
 		t.Fatalf("error = %v, want ErrIdempotencyStoreUnavailable", err)
+	}
+	after := metricValue(t, "hsync_idempotency_events_total", map[string]string{"result": "store_unavailable"})
+	if after != before+1 {
+		t.Fatalf("idempotency store_unavailable metric delta = %v, want 1", after-before)
 	}
 }

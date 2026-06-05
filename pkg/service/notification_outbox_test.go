@@ -118,6 +118,7 @@ func (n *countingNotifier) SendNotification(context.Context, provider.Notificati
 
 func TestNotificationOutboxEnqueueAndProcessSuccess(t *testing.T) {
 	userID := uuid.New()
+	before := metricValue(t, "hsync_notification_delivery_total", map[string]string{"category": "security", "result": "success"})
 	prefs := &memoryNotificationPreferenceStore{
 		prefs: map[uuid.UUID]model.NotificationPreferences{
 			userID: {UserID: userID, SecurityEmail: true},
@@ -146,10 +147,15 @@ func TestNotificationOutboxEnqueueAndProcessSuccess(t *testing.T) {
 	if result.Sent != 1 || notifier.sent != 1 || outbox.items[0].Status != model.NotificationOutboxSent {
 		t.Fatalf("result=%+v sent=%d item=%+v", result, notifier.sent, outbox.items[0])
 	}
+	after := metricValue(t, "hsync_notification_delivery_total", map[string]string{"category": "security", "result": "success"})
+	if after != before+1 {
+		t.Fatalf("notification success metric delta = %v, want 1", after-before)
+	}
 }
 
 func TestNotificationOutboxRetryAndPermanentFailure(t *testing.T) {
 	userID := uuid.New()
+	before := metricValue(t, "hsync_notification_delivery_total", map[string]string{"category": "security", "result": "failure"})
 	prefs := &memoryNotificationPreferenceStore{
 		prefs: map[uuid.UUID]model.NotificationPreferences{
 			userID: {UserID: userID, SecurityEmail: true},
@@ -187,5 +193,9 @@ func TestNotificationOutboxRetryAndPermanentFailure(t *testing.T) {
 	}
 	if result.Failed != 1 || outbox.items[0].Status != model.NotificationOutboxFailed {
 		t.Fatalf("failed result=%+v item=%+v", result, outbox.items[0])
+	}
+	after := metricValue(t, "hsync_notification_delivery_total", map[string]string{"category": "security", "result": "failure"})
+	if after != before+2 {
+		t.Fatalf("notification failure metric delta = %v, want 2", after-before)
 	}
 }

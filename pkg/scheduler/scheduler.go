@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
+
+	"github.com/historysync/hsync-server/pkg/observability"
 )
 
 // Advisory-lock keys for built-in periodic tasks. Distinct values let each task
@@ -106,7 +108,9 @@ func (s *Scheduler) runOnce(ctx context.Context, t Task) {
 	}()
 
 	start := time.Now()
-	if err := t.Run(ctx); err != nil {
+	err = t.Run(ctx)
+	observability.RecordSchedulerRun(t.Name, time.Since(start), err)
+	if err != nil {
 		s.logger.Error().Err(err).Str("task", t.Name).Msg("scheduler task failed")
 		return
 	}

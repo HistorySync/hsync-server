@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 )
@@ -477,11 +478,15 @@ func (s *NotificationService) dispatchUserNotification(ctx context.Context, user
 			}
 		}
 		if err := s.dispatch(ctx, send); err != nil {
+			observability.RecordNotificationDelivery(input.Category, "failure")
 			errs = append(errs, fmt.Errorf("send email notification: %w", err))
+		} else {
+			observability.RecordNotificationDelivery(input.Category, "success")
 		}
 	}
 	if preferenceAllowsWebhook(prefs, input.Category) {
 		if strings.TrimSpace(prefs.WebhookURL) == "" {
+			observability.RecordNotificationDelivery(input.Category, "failure")
 			errs = append(errs, ErrWebhookURLRequired)
 		} else if err := s.dispatchWebhook(ctx, prefs.WebhookURL, prefs.WebhookSecret, provider.WebhookNotification{
 			Type:     input.Type,
@@ -490,7 +495,10 @@ func (s *NotificationService) dispatchUserNotification(ctx context.Context, user
 			Message:  input.Message,
 			Data:     input.Data,
 		}); err != nil {
+			observability.RecordNotificationDelivery(input.Category, "failure")
 			errs = append(errs, fmt.Errorf("send webhook notification: %w", err))
+		} else {
+			observability.RecordNotificationDelivery(input.Category, "success")
 		}
 	}
 	if len(errs) == 0 {
@@ -621,6 +629,7 @@ func (s *NotificationService) ProcessOutbox(ctx context.Context, limit int32) (N
 			return result, err
 		}
 		if err := s.deliverOutboxItem(ctx, item); err != nil {
+			observability.RecordNotificationDelivery(item.Category, "failure")
 			errText := sanitizeNotificationError(err)
 			nextAttempt := item.AttemptCount + 1
 			if nextAttempt >= defaultNotificationMaxAttempts {
@@ -659,6 +668,7 @@ func (s *NotificationService) ProcessOutbox(ctx context.Context, limit int32) (N
 		if err := s.outbox.MarkSent(ctx, item.ID, time.Now().UTC()); err != nil {
 			return result, err
 		}
+		observability.RecordNotificationDelivery(item.Category, "success")
 		result.Sent++
 		log.Info().
 			Str("notification_id", item.ID.String()).

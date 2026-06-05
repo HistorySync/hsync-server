@@ -250,6 +250,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)
+	admin.Get("/settings", h.AdminListSettings)
+	admin.Put("/settings/:key", h.AdminSetSetting)
 	admin.Get("/audit-logs", h.AdminListAuditLogs)
 	admin.Get("/error-codes", h.AdminErrorCodes)
 }
@@ -1651,6 +1653,65 @@ func (h *Handlers) AdminSetOption(c fiber.Ctx) error {
 		},
 	})
 	return c.JSON(fiber.Map{"key": key, "value": req.Value})
+}
+
+// ── Dynamic System Settings ──────────────────────────────────
+
+// AdminListSettings returns every whitelisted system setting with its effective
+// value, type, description, and metadata. Sensitive values are masked by the
+// service and never returned in plaintext.
+func (h *Handlers) AdminListSettings(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Settings == nil {
+		return c.JSON(fiber.Map{"settings": []service.SettingView{}})
+	}
+	views, err := h.deps.Services.Settings.List(c.Context())
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(fiber.Map{"settings": views})
+}
+
+type setSettingRequest struct {
+	Value string `json:"value"`
+}
+
+// AdminSetSetting writes a whitelisted system setting. Unknown keys and values
+// that do not match the declared type are rejected. The response does not echo
+// the value, so writing a sensitive setting does not leak it.
+func (h *Handlers) AdminSetSetting(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Settings == nil {
+		return apierrors.NewInternal("system settings are not configured")
+	}
+	key := c.Params("key")
+	if key == "" {
+		return apierrors.New(apierrors.CodeMissingKey, "setting key is required")
+	}
+
+	var req setSettingRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.New(apierrors.CodeInvalidJSON, "request body must be a JSON object with a \"value\" field")
+	}
+
+	if err := h.deps.Services.Settings.Set(c.Context(), key, req.Value); err != nil {
+		switch {
+		case errors.Is(err, service.ErrUnknownSetting):
+			return apierrors.New(apierrors.CodeUnknownSetting, err.Error())
+		case errors.Is(err, service.ErrInvalidSettingValue):
+			return apierrors.New(apierrors.CodeInvalidSettingValue, err.Error())
+		default:
+			return apierrors.NewInternal(err.Error())
+		}
+	}
+
+	h.recordAudit(c, service.AuditEventInput{
+		EventType:  model.AuditEventAdminConfigChange,
+		TargetType: "system_setting",
+		TargetID:   key,
+		Metadata: map[string]any{
+			"key": key,
+		},
+	})
+	return c.JSON(fiber.Map{"key": key, "status": "updated"})
 }
 
 // AdminListAuditLogs returns recent structured audit events for operators.

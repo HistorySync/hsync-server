@@ -82,6 +82,10 @@ const (
 	CodeInvalidJSON     Code = "INVALID_JSON"
 	CodeMissingKey      Code = "MISSING_KEY"
 	CodeOptionsDisabled Code = "OPTIONS_DISABLED"
+
+	// Dynamic system settings
+	CodeInvalidSettingValue Code = "INVALID_SETTING_VALUE"
+	CodeUnknownSetting      Code = "UNKNOWN_SETTING"
 )
 
 // ── Entry: one row in the error catalog ───────────────────────────
@@ -134,6 +138,8 @@ var catalog = map[Code]Entry{
 	CodeInvalidJSON:               {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},
 	CodeMissingKey:                {CodeMissingKey, http.StatusBadRequest, "option key is required"},
 	CodeOptionsDisabled:           {CodeOptionsDisabled, http.StatusNotImplemented, "dynamic options are disabled"},
+	CodeInvalidSettingValue:       {CodeInvalidSettingValue, http.StatusBadRequest, "invalid value for system setting"},
+	CodeUnknownSetting:            {CodeUnknownSetting, http.StatusBadRequest, "unknown system setting key"},
 }
 
 // Lookup returns the catalog entry for c. Unknown codes fall back to the

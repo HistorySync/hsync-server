@@ -31,6 +31,7 @@ type Repos struct {
 	TwoFactor          *TwoFactorRepo
 	AuditLogs          *AuditRepo
 	NotificationPrefs  *NotificationPreferenceRepo
+	SystemSettings     *SystemSettingRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -48,6 +49,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		TwoFactor:          &TwoFactorRepo{pool: pgPool},
 		AuditLogs:          &AuditRepo{pool: pgPool},
 		NotificationPrefs:  NewNotificationPreferenceRepo(pgPool),
+		SystemSettings:     NewSystemSettingRepo(pgPool),
 	}
 }
 

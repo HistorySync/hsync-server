@@ -169,6 +169,7 @@ type Services struct {
 	Retention    *RetentionService
 	TwoFactor    *TwoFactorService
 	Audit        *AuditService
+	Settings     *SettingsService
 }
 
 // New creates all service instances with their dependencies.
@@ -218,6 +219,15 @@ func New(deps Deps) *Services {
 	twoFactorSvc := NewTwoFactorService(deps.Repos, deps.TokenManager, deps.SecuritySecret)
 	auditSvc := NewAuditService(deps.Repos.AuditLogs)
 
+	// Dynamic system settings: a database-backed, whitelisted, typed override
+	// layer over code-declared defaults. A nil store (no repos) keeps reads
+	// working off defaults, so this never blocks startup.
+	var settingStoreImpl settingStore
+	if deps.Repos != nil && deps.Repos.SystemSettings != nil {
+		settingStoreImpl = deps.Repos.SystemSettings
+	}
+	settingsSvc := NewSettingsService(settingStoreImpl, defaultSettingDefinitions())
+
 	return &Services{
 		Repos:        deps.Repos,
 		Auth:         authSvc,
@@ -229,6 +239,7 @@ func New(deps Deps) *Services {
 		Retention:    retentionSvc,
 		TwoFactor:    twoFactorSvc,
 		Audit:        auditSvc,
+		Settings:     settingsSvc,
 	}
 }
 

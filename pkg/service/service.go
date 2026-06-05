@@ -74,6 +74,7 @@ var (
 	ErrTwoFactorInvalidCode = errors.New("invalid two-factor authentication code")
 	ErrTwoFactorLocked      = errors.New("two-factor authentication is temporarily locked")
 	ErrTwoFactorChallenge   = errors.New("invalid or expired two-factor challenge")
+	ErrSignupsDisabled      = errors.New("new account registration is currently disabled")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -265,6 +266,7 @@ func New(deps Deps) *Services {
 		settingStoreImpl = deps.Repos.SystemSettings
 	}
 	settingsSvc := NewSettingsService(settingStoreImpl, defaultSettingDefinitions())
+	authSvc.settings = settingsSvc
 
 	var idempotencySvc *IdempotencyService
 	if deps.Repos != nil {
@@ -493,6 +495,7 @@ type AuthService struct {
 	repos         *repository.Repos
 	tokenManager  *auth.TokenManager
 	notifications *NotificationService
+	settings      *SettingsService
 }
 
 // RegisterInput contains the fields required for user registration.
@@ -515,6 +518,10 @@ type RegisterResult struct {
 
 // Register creates a new user account and returns tokens.
 func (s *AuthService) Register(ctx context.Context, input RegisterInput) (*RegisterResult, error) {
+	if s.settings != nil && !s.settings.GetBoolOrDefault(ctx, SettingKeySignupsEnabled) {
+		return nil, ErrSignupsDisabled
+	}
+
 	email, err := normalizeEmail(input.Email)
 	if err != nil {
 		return nil, err

@@ -37,11 +37,12 @@ type Code string
 
 const (
 	// Generic
-	CodeBadRequest     Code = "BAD_REQUEST"
-	CodeInternalError  Code = "INTERNAL_ERROR"
-	CodeNotImplemented Code = "NOT_IMPLEMENTED"
-	CodeNotFound       Code = "NOT_FOUND"
-	CodeRateLimited    Code = "RATE_LIMITED"
+	CodeBadRequest      Code = "BAD_REQUEST"
+	CodeInternalError   Code = "INTERNAL_ERROR"
+	CodeNotImplemented  Code = "NOT_IMPLEMENTED"
+	CodeNotFound        Code = "NOT_FOUND"
+	CodeRateLimited     Code = "RATE_LIMITED"
+	CodeMaintenanceMode Code = "MAINTENANCE_MODE"
 
 	// Auth
 	CodeConflict                  Code = "CONFLICT"
@@ -50,6 +51,7 @@ const (
 	CodeInvalidRefreshToken       Code = "INVALID_REFRESH_TOKEN"
 	CodeInvalidResetToken         Code = "INVALID_RESET_TOKEN"
 	CodeInvalidVerificationToken  Code = "INVALID_VERIFICATION_TOKEN"
+	CodeSignupsDisabled           Code = "SIGNUPS_DISABLED"
 	CodeStepUpExpired             Code = "STEP_UP_EXPIRED"
 	CodeStepUpInvalid             Code = "STEP_UP_INVALID"
 	CodeStepUpRequired            Code = "STEP_UP_REQUIRED"
@@ -121,12 +123,14 @@ var catalog = map[Code]Entry{
 	CodeNotImplemented:            {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
 	CodeNotFound:                  {CodeNotFound, http.StatusNotFound, "not found"},
 	CodeRateLimited:               {CodeRateLimited, http.StatusTooManyRequests, "rate limit exceeded, retry later"},
+	CodeMaintenanceMode:           {CodeMaintenanceMode, http.StatusServiceUnavailable, "service is in maintenance mode"},
 	CodeConflict:                  {CodeConflict, http.StatusConflict, "conflict"},
 	CodeEmailTaken:                {CodeEmailTaken, http.StatusConflict, "email already registered"},
 	CodeInvalidCredentials:        {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
 	CodeInvalidRefreshToken:       {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
 	CodeInvalidResetToken:         {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
 	CodeInvalidVerificationToken:  {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodeSignupsDisabled:           {CodeSignupsDisabled, http.StatusForbidden, "new account registration is disabled"},
 	CodeStepUpExpired:             {CodeStepUpExpired, http.StatusForbidden, "step-up verification token is expired"},
 	CodeStepUpInvalid:             {CodeStepUpInvalid, http.StatusForbidden, "invalid step-up verification token"},
 	CodeStepUpRequired:            {CodeStepUpRequired, http.StatusForbidden, "step-up verification is required"},

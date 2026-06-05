@@ -173,6 +173,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// ── API v1 ───────────────────────────────────────────
 	v1 := app.Group("/api/v1")
+	v1.Use(h.maintenanceModeMiddleware)
 
 	// Rate limiting: per-user (tier MaxRPM) on authenticated groups, and
 	// endpoint-specific controls on public auth endpoints. A nil RateLimiter
@@ -364,8 +365,15 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 	status := "ok"
 	checks := fiber.Map{}
 
+	if h.maintenanceModeEnabled(c.Context()) {
+		status = "unhealthy"
+		checks["maintenance_mode"] = "enabled"
+	}
+
 	if h.deps.DB == nil {
-		status = "degraded"
+		if status == "ok" {
+			status = "degraded"
+		}
 		checks["database"] = "not_configured"
 		observability.RecordReadinessDependency("database", "not_configured")
 	} else if err := h.deps.DB.Ping(ctx); err != nil {
@@ -426,6 +434,31 @@ func (h *Handlers) Readyz(c fiber.Ctx) error {
 	}
 
 	return c.Status(code).JSON(fiber.Map{"status": status, "checks": checks})
+}
+
+func (h *Handlers) maintenanceModeMiddleware(c fiber.Ctx) error {
+	if !h.maintenanceModeEnabled(c.Context()) {
+		return c.Next()
+	}
+	if isMaintenanceAllowedRequest(c) {
+		return c.Next()
+	}
+	return apierrors.New(apierrors.CodeMaintenanceMode, "service is in maintenance mode")
+}
+
+func (h *Handlers) maintenanceModeEnabled(ctx context.Context) bool {
+	if h.deps.Services == nil || h.deps.Services.Settings == nil {
+		return false
+	}
+	return h.deps.Services.Settings.GetBoolOrDefault(ctx, service.SettingKeyMaintenanceMode)
+}
+
+func isMaintenanceAllowedRequest(c fiber.Ctx) bool {
+	method := strings.ToUpper(c.Method())
+	if method == fiber.MethodGet || method == fiber.MethodHead || method == fiber.MethodOptions {
+		return true
+	}
+	return strings.HasPrefix(c.Path(), "/api/v1/admin/")
 }
 
 func (h *Handlers) WebOverview(c fiber.Ctx) error {
@@ -614,6 +647,8 @@ func (h *Handlers) Register(c fiber.Ctx) error {
 		switch err {
 		case service.ErrEmailTaken:
 			return apierrors.New(apierrors.CodeEmailTaken, err.Error())
+		case service.ErrSignupsDisabled:
+			return apierrors.New(apierrors.CodeSignupsDisabled, err.Error())
 		case service.ErrInvalidEmail, service.ErrWeakPassword:
 			return apierrors.NewBadRequest(err.Error())
 		}

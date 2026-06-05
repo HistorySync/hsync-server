@@ -102,9 +102,10 @@ func TestEveryCodeInCatalog(t *testing.T) {
 	// Enforce that every Code constant has a catalog entry.
 	codes := []Code{
 		CodeBadRequest, CodeInternalError, CodeNotImplemented, CodeNotFound,
-		CodeRateLimited,
+		CodeRateLimited, CodeMaintenanceMode,
 		CodeConflict, CodeEmailTaken, CodeInvalidCredentials,
 		CodeInvalidRefreshToken, CodeInvalidResetToken, CodeInvalidVerificationToken,
+		CodeSignupsDisabled,
 		CodeTurnstileFailed, CodeTurnstileRequired, CodeTurnstileUnavailable,
 		CodeQuotaExceeded, CodeReservationDenied,
 		CodeDeviceNotRegistered, CodeDeviceRevoked,

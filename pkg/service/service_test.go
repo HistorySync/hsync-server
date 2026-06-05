@@ -9,6 +9,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
+
+	"github.com/historysync/hsync-server/pkg/model"
 )
 
 func TestPasswordHashRoundTrip(t *testing.T) {
@@ -54,6 +56,32 @@ func TestValidatePassword(t *testing.T) {
 	}
 	if err := validatePassword("1234567890"); err != nil {
 		t.Fatalf("validatePassword() error = %v, want nil", err)
+	}
+}
+
+func TestRegisterRespectsSignupsEnabled(t *testing.T) {
+	ctx := context.Background()
+
+	closed := &AuthService{
+		settings: NewSettingsService(&fakeSettingStore{
+			rows: map[string]model.SystemSetting{
+				SettingKeySignupsEnabled: {Key: SettingKeySignupsEnabled, Value: "false"},
+			},
+		}, defaultSettingDefinitions()),
+	}
+	if _, err := closed.Register(ctx, RegisterInput{Email: "bad"}); err != ErrSignupsDisabled {
+		t.Fatalf("Register(signups disabled) error = %v, want ErrSignupsDisabled", err)
+	}
+
+	open := &AuthService{
+		settings: NewSettingsService(&fakeSettingStore{
+			rows: map[string]model.SystemSetting{
+				SettingKeySignupsEnabled: {Key: SettingKeySignupsEnabled, Value: "true"},
+			},
+		}, defaultSettingDefinitions()),
+	}
+	if _, err := open.Register(ctx, RegisterInput{Email: "bad"}); err != ErrInvalidEmail {
+		t.Fatalf("Register(signups enabled) error = %v, want ErrInvalidEmail", err)
 	}
 }
 

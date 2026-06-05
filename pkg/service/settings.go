@@ -37,14 +37,30 @@ const (
 	SettingTypeFloat  SettingValueType = "float"
 )
 
+const (
+	SettingKeySignupsEnabled  = "signups_enabled"
+	SettingKeyMaintenanceMode = "maintenance_mode"
+	SettingKeyAnnouncement    = "announcement"
+)
+
+const (
+	SettingGroupAuth          = "auth"
+	SettingGroupSecurity      = "security"
+	SettingGroupNotifications = "notifications"
+	SettingGroupOperations    = "operations"
+	SettingGroupStorage       = "storage"
+)
+
 // SettingDefinition declares a whitelisted system setting. The definition is
-// the authoritative source for the value type, default, description, and
-// whether the value is sensitive; the database only stores override values.
+// the authoritative source for the value type, default, description, group, and
+// operational metadata; the database only stores override values.
 type SettingDefinition struct {
-	Key         string
-	Type        SettingValueType
-	Default     string
-	Description string
+	Key             string
+	Type            SettingValueType
+	Default         string
+	Description     string
+	Group           string
+	RequiresRestart bool
 	// Sensitive marks a value that must never be returned in plaintext over the
 	// API. It is masked in List output and not echoed by writes. Internal typed
 	// accessors still return the real value for server-side use.
@@ -55,13 +71,15 @@ type SettingDefinition struct {
 // settings Value is blanked and IsSet reports whether an override exists, so a
 // secret value is never exposed while operators can still see that one is set.
 type SettingView struct {
-	Key         string     `json:"key"`
-	Value       string     `json:"value"`
-	ValueType   string     `json:"value_type"`
-	Description string     `json:"description"`
-	Sensitive   bool       `json:"sensitive"`
-	IsSet       bool       `json:"is_set"`
-	UpdatedAt   *time.Time `json:"updated_at,omitempty"`
+	Key             string     `json:"key"`
+	Value           string     `json:"value"`
+	ValueType       string     `json:"value_type"`
+	Description     string     `json:"description"`
+	Group           string     `json:"group"`
+	Sensitive       bool       `json:"sensitive"`
+	RequiresRestart bool       `json:"requires_restart"`
+	IsSet           bool       `json:"is_set"`
+	UpdatedAt       *time.Time `json:"updated_at,omitempty"`
 }
 
 // settingStore is the persistence surface the settings service needs.
@@ -125,6 +143,25 @@ func (s *SettingsService) GetBool(ctx context.Context, key string) (bool, error)
 	return strconv.ParseBool(strings.TrimSpace(v))
 }
 
+// GetBoolOrDefault returns a bool setting, falling back to the declared default
+// when the backing store is unavailable. Runtime feature gates use this so a
+// transient settings-store failure does not become a hard service dependency.
+func (s *SettingsService) GetBoolOrDefault(ctx context.Context, key string) bool {
+	if s == nil {
+		return false
+	}
+	def, ok := s.defs[key]
+	if !ok {
+		return false
+	}
+	fallback, _ := strconv.ParseBool(strings.TrimSpace(def.Default))
+	v, err := s.GetBool(ctx, key)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
 // GetInt returns the effective value of an int setting.
 func (s *SettingsService) GetInt(ctx context.Context, key string) (int64, error) {
 	v, err := s.Get(ctx, key)
@@ -186,11 +223,13 @@ func (s *SettingsService) List(ctx context.Context) ([]SettingView, error) {
 	for _, k := range keys {
 		def := s.defs[k]
 		view := SettingView{
-			Key:         def.Key,
-			Value:       def.Default,
-			ValueType:   string(def.Type),
-			Description: def.Description,
-			Sensitive:   def.Sensitive,
+			Key:             def.Key,
+			Value:           def.Default,
+			ValueType:       string(def.Type),
+			Description:     def.Description,
+			Group:           def.Group,
+			Sensitive:       def.Sensitive,
+			RequiresRestart: def.RequiresRestart,
 		}
 		if s.store != nil {
 			row, err := s.store.Get(ctx, k)
@@ -246,22 +285,25 @@ func validateSettingValue(t SettingValueType, value string) error {
 func defaultSettingDefinitions() []SettingDefinition {
 	return []SettingDefinition{
 		{
-			Key:         "signups_enabled",
+			Key:         SettingKeySignupsEnabled,
 			Type:        SettingTypeBool,
 			Default:     "true",
-			Description: "Whether new account self-registration is allowed (declared; not yet enforced).",
+			Description: "Whether new account self-registration is allowed.",
+			Group:       SettingGroupAuth,
 		},
 		{
-			Key:         "maintenance_mode",
+			Key:         SettingKeyMaintenanceMode,
 			Type:        SettingTypeBool,
 			Default:     "false",
-			Description: "When true, the server advertises maintenance mode to clients (declared; not yet enforced).",
+			Description: "When true, readiness fails and ordinary API write requests are rejected while health and admin routes remain available.",
+			Group:       SettingGroupOperations,
 		},
 		{
-			Key:         "announcement",
+			Key:         SettingKeyAnnouncement,
 			Type:        SettingTypeString,
 			Default:     "",
 			Description: "Operator broadcast message surfaced to clients.",
+			Group:       SettingGroupNotifications,
 		},
 	}
 }

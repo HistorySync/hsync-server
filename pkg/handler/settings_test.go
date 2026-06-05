@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/service"
+	"github.com/historysync/hsync-server/pkg/storage"
 )
 
 // handlerSettingStore is an in-memory settingStore for handler tests. Its
@@ -50,6 +52,15 @@ func newSettingsTestApp(store *handlerSettingStore) *fiber.App {
 	h.RegisterRoutes(app)
 	return app
 }
+
+type handlerBlobStore struct{}
+
+func (handlerBlobStore) Put(context.Context, string, io.Reader, int64, string) error { return nil }
+func (handlerBlobStore) Get(context.Context, string) (io.ReadCloser, error)          { return nil, nil }
+func (handlerBlobStore) Delete(context.Context, string) error                        { return nil }
+func (handlerBlobStore) Exists(context.Context, string) (bool, error)                { return false, nil }
+func (handlerBlobStore) Size(context.Context, string) (int64, bool, error)           { return 0, false, nil }
+func (handlerBlobStore) List(context.Context, string) ([]storage.ObjectInfo, error)  { return nil, nil }
 
 func TestAdminSetAndListSettings(t *testing.T) {
 	store := &handlerSettingStore{}
@@ -96,6 +107,81 @@ func TestAdminSetAndListSettings(t *testing.T) {
 	}
 	if feature := byKey["feature_enabled"]; feature.Value != "false" || feature.IsSet {
 		t.Fatalf("feature_enabled view = %+v, want default false, IsSet false", feature)
+	}
+}
+
+func TestMaintenanceModeBlocksNormalWritesAndKeepsOpsEntrypoints(t *testing.T) {
+	store := &handlerSettingStore{rows: map[string]model.SystemSetting{
+		service.SettingKeyMaintenanceMode: {Key: service.SettingKeyMaintenanceMode, Value: "true"},
+	}}
+	h := New(Deps{
+		Services: &service.Services{
+			Settings: service.NewSettingsService(store, []service.SettingDefinition{
+				{
+					Key:         service.SettingKeyMaintenanceMode,
+					Type:        service.SettingTypeBool,
+					Default:     "false",
+					Description: "maintenance",
+					Group:       service.SettingGroupOperations,
+				},
+			}),
+		},
+		AdminKey:  "secret",
+		BlobStore: handlerBlobStore{},
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	login := httptest.NewRequest("POST", "/api/v1/auth/login", strings.NewReader(`{"email":"u@example.com","password":"password"}`))
+	login.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(login)
+	if err != nil {
+		t.Fatalf("app.Test(login): %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("login status = %d, want %d", resp.StatusCode, fiber.StatusServiceUnavailable)
+	}
+	if code := decodeErrorCode(t, resp.Body); code != "MAINTENANCE_MODE" {
+		t.Fatalf("login error code = %q, want MAINTENANCE_MODE", code)
+	}
+
+	health := httptest.NewRequest("GET", "/healthz", nil)
+	resp, err = app.Test(health)
+	if err != nil {
+		t.Fatalf("app.Test(healthz): %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("healthz status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+
+	ready := httptest.NewRequest("GET", "/readyz", nil)
+	resp, err = app.Test(ready)
+	if err != nil {
+		t.Fatalf("app.Test(readyz): %v", err)
+	}
+	if resp.StatusCode != fiber.StatusServiceUnavailable {
+		t.Fatalf("readyz status = %d, want %d", resp.StatusCode, fiber.StatusServiceUnavailable)
+	}
+	var readyBody struct {
+		Status string            `json:"status"`
+		Checks map[string]string `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&readyBody); err != nil {
+		t.Fatalf("decode readyz: %v", err)
+	}
+	if readyBody.Status != "unhealthy" || readyBody.Checks["maintenance_mode"] != "enabled" {
+		t.Fatalf("readyz body = %+v, want unhealthy maintenance_mode enabled", readyBody)
+	}
+
+	put := httptest.NewRequest("PUT", "/admin/settings/maintenance_mode", strings.NewReader(`{"value":"false"}`))
+	put.Header.Set("X-Admin-Key", "secret")
+	put.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(put)
+	if err != nil {
+		t.Fatalf("app.Test(admin setting): %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("admin setting status = %d, want %d", resp.StatusCode, fiber.StatusOK)
 	}
 }
 

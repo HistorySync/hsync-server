@@ -2,8 +2,16 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"io"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/historysync/hsync-server/pkg/apierrors"
 )
 
 func TestMemoryLimiterAllowsUpToLimit(t *testing.T) {
@@ -99,5 +107,89 @@ func TestDecideBoundary(t *testing.T) {
 	}
 	if r.RetryAfter != 60*time.Second { // resetAt = (2+1)*60 = 180; 180-120 = 60
 		t.Fatalf("retryAfter = %v, want 60s", r.RetryAfter)
+	}
+}
+
+func TestAuthEmailRateDecisionForValueNormalizesEmail(t *testing.T) {
+	d := AuthEmailRateDecisionForValue("auth:login:email", 5, " User@Example.COM ")
+	if d.Key != "auth:login:email:user@example.com" {
+		t.Fatalf("key = %q", d.Key)
+	}
+	if d.Limit != 5 {
+		t.Fatalf("limit = %d, want 5", d.Limit)
+	}
+	if d.Skip {
+		t.Fatal("Skip = true, want false")
+	}
+}
+
+func TestAuthTokenRateDecisionForValueHashesToken(t *testing.T) {
+	const token = "reset-token-secret"
+	sum := sha256.Sum256([]byte(token))
+	expectedKey := "auth:reset:token:" + hex.EncodeToString(sum[:])
+
+	d := AuthTokenRateDecisionForValue("auth:reset:token", 5, token)
+	if d.Key != expectedKey {
+		t.Fatalf("key = %q, want %q", d.Key, expectedKey)
+	}
+	if d.Limit != 5 {
+		t.Fatalf("limit = %d, want 5", d.Limit)
+	}
+}
+
+func TestRateLimitExhaustionSetsHeadersAndErrorCode(t *testing.T) {
+	cur := time.Unix(1_000_000, 0)
+	limiter := NewMemoryLimiter()
+	limiter.now = func() time.Time { return cur }
+	calls := 0
+
+	app := fiber.New()
+	app.Post("/", func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	}, RateLimit(RateLimitConfig{
+		Limiter: limiter,
+		Window:  time.Minute,
+		Classify: func(fiber.Ctx) RateDecision {
+			return RateDecision{Key: "auth:login:email:user@example.com", Limit: 1}
+		},
+	}))
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(fiber.MethodPost, "/", nil)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("app.Test() request %d error = %v", i+1, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if i == 0 && resp.StatusCode != fiber.StatusNoContent {
+			t.Fatalf("first status = %d, want %d", resp.StatusCode, fiber.StatusNoContent)
+		}
+		if i == 1 {
+			if resp.StatusCode != fiber.StatusTooManyRequests {
+				t.Fatalf("second status = %d, want %d", resp.StatusCode, fiber.StatusTooManyRequests)
+			}
+			if got := resp.Header.Get("Retry-After"); got == "" {
+				t.Fatal("Retry-After header is empty")
+			}
+			if got := resp.Header.Get("X-RateLimit-Limit"); got != "1" {
+				t.Fatalf("X-RateLimit-Limit = %q, want 1", got)
+			}
+			if got := resp.Header.Get("X-RateLimit-Remaining"); got != "0" {
+				t.Fatalf("X-RateLimit-Remaining = %q, want 0", got)
+			}
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("ReadAll() error = %v", err)
+			}
+			if !strings.Contains(string(body), string(apierrors.CodeRateLimited)) {
+				t.Fatalf("body = %s, want %s", body, apierrors.CodeRateLimited)
+			}
+		}
+	}
+
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
 	}
 }

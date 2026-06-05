@@ -41,6 +41,7 @@ const (
 	CodeInternalError  Code = "INTERNAL_ERROR"
 	CodeNotImplemented Code = "NOT_IMPLEMENTED"
 	CodeNotFound       Code = "NOT_FOUND"
+	CodeRateLimited    Code = "RATE_LIMITED"
 
 	// Auth
 	CodeConflict                 Code = "CONFLICT"
@@ -92,6 +93,7 @@ var catalog = map[Code]Entry{
 	CodeInternalError:            {CodeInternalError, http.StatusInternalServerError, "internal server error"},
 	CodeNotImplemented:           {CodeNotImplemented, http.StatusNotImplemented, "not implemented"},
 	CodeNotFound:                 {CodeNotFound, http.StatusNotFound, "not found"},
+	CodeRateLimited:              {CodeRateLimited, http.StatusTooManyRequests, "rate limit exceeded, retry later"},
 	CodeConflict:                 {CodeConflict, http.StatusConflict, "conflict"},
 	CodeEmailTaken:               {CodeEmailTaken, http.StatusConflict, "email already registered"},
 	CodeInvalidCredentials:       {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},

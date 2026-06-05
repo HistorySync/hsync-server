@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/historysync/hsync-server/pkg/apierrors"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
@@ -192,34 +193,45 @@ func RateLimit(cfg RateLimitConfig) fiber.Handler {
 			return c.Next()
 		}
 		d := cfg.Classify(c)
-		if d.Skip || d.Limit <= 0 || d.Key == "" {
-			return c.Next()
-		}
-
-		res, err := cfg.Limiter.Allow(c.Context(), d.Key, d.Limit, cfg.Window)
-		if err != nil {
-			log.Warn().Err(err).Str("key", d.Key).Msg("rate limiter error, allowing request")
-			return c.Next()
-		}
-
-		c.Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
-		c.Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
-
-		if !res.Allowed {
-			retry := int(res.RetryAfter.Seconds())
-			if retry < 1 {
-				retry = 1
-			}
-			c.Set("Retry-After", strconv.Itoa(retry))
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-				"request_id": GetRequestID(c),
-				"error": fiber.Map{
-					"code":    "RATE_LIMITED",
-					"message": "rate limit exceeded, retry later",
-				},
-			})
+		allowed, err := EnforceRateLimit(c, cfg.Limiter, cfg.Window, d)
+		if err != nil || !allowed {
+			return err
 		}
 
 		return c.Next()
 	}
+}
+
+// EnforceRateLimit applies one concrete rate-limit decision and writes the
+// standard 429 response when the limit is exhausted.
+func EnforceRateLimit(c fiber.Ctx, limiter Limiter, window time.Duration, d RateDecision) (bool, error) {
+	if limiter == nil || d.Skip || d.Limit <= 0 || d.Key == "" {
+		return true, nil
+	}
+
+	res, err := limiter.Allow(c.Context(), d.Key, d.Limit, window)
+	if err != nil {
+		log.Warn().Err(err).Str("key", d.Key).Msg("rate limiter error, allowing request")
+		return true, nil
+	}
+
+	c.Set("X-RateLimit-Limit", strconv.Itoa(res.Limit))
+	c.Set("X-RateLimit-Remaining", strconv.Itoa(res.Remaining))
+
+	if res.Allowed {
+		return true, nil
+	}
+
+	retry := int(res.RetryAfter.Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	c.Set("Retry-After", strconv.Itoa(retry))
+	return false, c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+		"request_id": GetRequestID(c),
+		"error": fiber.Map{
+			"code":    string(apierrors.CodeRateLimited),
+			"message": "rate limit exceeded, retry later",
+		},
+	})
 }

@@ -57,6 +57,17 @@ const (
 	rateLimitWindow = time.Minute
 	// publicAuthRPM caps unauthenticated auth requests per client IP per minute.
 	publicAuthRPM = 30
+
+	authLoginIPLimit       = 10
+	authLoginEmailLimit    = 5
+	authRegisterIPLimit    = 5
+	authRecoveryIPLimit    = 5
+	authRecoveryEmailLimit = 3
+	authResetIPLimit       = 10
+	authResetTokenLimit    = 5
+
+	authRecoveryWindow = 15 * time.Minute
+	authRegisterWindow = time.Hour
 )
 
 // perUserRateDecision limits authenticated routes by user ID using the tier's
@@ -78,6 +89,18 @@ func perIPRateDecision(limit int) func(fiber.Ctx) middleware.RateDecision {
 	}
 }
 
+func authRateLimit(limiter middleware.Limiter, window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
+	return middleware.RateLimit(middleware.RateLimitConfig{
+		Limiter:  limiter,
+		Window:   window,
+		Classify: classify,
+	})
+}
+
+func (h *Handlers) enforceAuthRateLimit(c fiber.Ctx, window time.Duration, decision middleware.RateDecision) (bool, error) {
+	return middleware.EnforceRateLimit(c, h.deps.RateLimiter, window, decision)
+}
+
 // RegisterRoutes mounts all API routes onto the Fiber app.
 func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// ── Health (no auth) ─────────────────────────────────
@@ -87,8 +110,9 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// ── API v1 ───────────────────────────────────────────
 	v1 := app.Group("/api/v1")
 
-	// Rate limiting: per-user (tier MaxRPM) on authenticated groups, per-IP on
-	// public auth endpoints. A nil RateLimiter makes these middlewares no-op.
+	// Rate limiting: per-user (tier MaxRPM) on authenticated groups, and
+	// endpoint-specific controls on public auth endpoints. A nil RateLimiter
+	// makes these middlewares no-op.
 	perUserRL := middleware.RateLimit(middleware.RateLimitConfig{
 		Limiter:  h.deps.RateLimiter,
 		Window:   rateLimitWindow,
@@ -99,17 +123,31 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		Window:   rateLimitWindow,
 		Classify: perIPRateDecision(publicAuthRPM),
 	})
+	authRL := func(window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
+		return authRateLimit(h.deps.RateLimiter, window, classify)
+	}
 
-	// Auth (public; throttled per-IP to blunt credential-stuffing/abuse)
-	authGroup := v1.Group("/auth", publicAuthRL)
-	authGroup.Post("/register", h.Register)
-	authGroup.Post("/login", h.Login)
-	authGroup.Post("/refresh", h.RefreshToken)
-	authGroup.Post("/logout", h.Logout)
-	authGroup.Post("/resend-verification", h.ResendEmailVerification)
-	authGroup.Post("/verify-email", h.VerifyEmail)
-	authGroup.Post("/forgot-password", h.ForgotPassword)
-	authGroup.Post("/reset-password", h.ResetPassword)
+	// Auth (public; endpoint-specific throttles blunt credential-stuffing and
+	// email workflow abuse without applying one coarse limit to every route).
+	authGroup := v1.Group("/auth")
+	authGroup.Post("/register",
+		h.Register,
+		authRL(authRegisterWindow, middleware.AuthIPRateDecision("auth:register:ip", authRegisterIPLimit)))
+	authGroup.Post("/login",
+		h.Login,
+		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:ip", authLoginIPLimit)))
+	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
+	authGroup.Post("/logout", h.Logout, publicAuthRL)
+	authGroup.Post("/resend-verification",
+		h.ResendEmailVerification,
+		authRL(authRecoveryWindow, middleware.AuthIPRateDecision("auth:resend:ip", authRecoveryIPLimit)))
+	authGroup.Post("/verify-email", h.VerifyEmail, publicAuthRL)
+	authGroup.Post("/forgot-password",
+		h.ForgotPassword,
+		authRL(authRecoveryWindow, middleware.AuthIPRateDecision("auth:forgot:ip", authRecoveryIPLimit)))
+	authGroup.Post("/reset-password",
+		h.ResetPassword,
+		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:reset:ip", authResetIPLimit)))
 
 	// Bundles (JWT-protected)
 	bundles := v1.Group("/bundles", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -433,6 +471,10 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
 	}
+	if ok, err := h.enforceAuthRateLimit(c, rateLimitWindow,
+		middleware.AuthEmailRateDecisionForValue("auth:login:email", authLoginEmailLimit, req.Email)); err != nil || !ok {
+		return err
+	}
 
 	result, err := h.deps.Services.Auth.Login(c.Context(), service.LoginInput{
 		Email:    req.Email,
@@ -509,6 +551,10 @@ func (h *Handlers) ResendEmailVerification(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
 	}
+	if ok, err := h.enforceAuthRateLimit(c, authRecoveryWindow,
+		middleware.AuthEmailRateDecisionForValue("auth:resend:email", authRecoveryEmailLimit, req.Email)); err != nil || !ok {
+		return err
+	}
 	if req.Email == "" {
 		return apierrors.NewBadRequest("email is required")
 	}
@@ -550,6 +596,10 @@ func (h *Handlers) ForgotPassword(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
 	}
+	if ok, err := h.enforceAuthRateLimit(c, authRecoveryWindow,
+		middleware.AuthEmailRateDecisionForValue("auth:forgot:email", authRecoveryEmailLimit, req.Email)); err != nil || !ok {
+		return err
+	}
 	if req.Email == "" {
 		return apierrors.NewBadRequest("email is required")
 	}
@@ -570,6 +620,10 @@ func (h *Handlers) ResetPassword(c fiber.Ctx) error {
 	var req resetPasswordRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
+	}
+	if ok, err := h.enforceAuthRateLimit(c, rateLimitWindow,
+		middleware.AuthTokenRateDecisionForValue("auth:reset:token", authResetTokenLimit, req.Token)); err != nil || !ok {
+		return err
 	}
 
 	if err := h.deps.Services.Auth.ResetPassword(c.Context(), service.ResetPasswordInput{

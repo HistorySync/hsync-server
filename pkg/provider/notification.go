@@ -24,6 +24,25 @@ type Notifier interface {
 	SendQuotaWarning(ctx context.Context, params QuotaWarningParams) error
 	SendQuotaExhausted(ctx context.Context, params QuotaExhaustedParams) error
 	SendQuotaRestored(ctx context.Context, params QuotaRestoredParams) error
+	SendNotification(ctx context.Context, params NotificationParams) error
+}
+
+// WebhookProvider sends sanitized notification payloads to user-configured
+// webhook endpoints.
+type WebhookProvider interface {
+	DeliveryEnabled() bool
+	Send(ctx context.Context, webhookURL string, notification WebhookNotification) error
+}
+
+// WebhookNotification is the payload shape posted to user webhooks. Callers
+// should only place sanitized, non-secret values in Data.
+type WebhookNotification struct {
+	Type      string         `json:"type"`
+	Category  string         `json:"category"`
+	Subject   string         `json:"subject"`
+	Message   string         `json:"message"`
+	Data      map[string]any `json:"data,omitempty"`
+	Timestamp time.Time      `json:"timestamp"`
 }
 
 type WelcomeParams struct {
@@ -85,4 +104,15 @@ type QuotaRestoredParams struct {
 	UsagePercent  int
 	BundleCount   int64
 	SnapshotCount int64
+}
+
+type NotificationParams struct {
+	UserID      string
+	Email       string
+	DisplayName string
+	AppName     string
+	Category    string
+	Type        string
+	Subject     string
+	Message     string
 }

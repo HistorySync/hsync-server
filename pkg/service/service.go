@@ -85,6 +85,7 @@ type Deps struct {
 	StripeDisabled bool
 	Reservation    UsageReservationHook
 	Notifier       provider.Notifier
+	Webhook        provider.WebhookProvider
 	Notification   NotificationConfig
 	SecuritySecret string
 }
@@ -175,7 +176,16 @@ func New(deps Deps) *Services {
 	if deps.Notifier == nil {
 		deps.Notifier = provider.Registry().Notifier
 	}
-	notifSvc := NewNotificationService(deps.Repos, deps.Notifier, deps.Notification)
+	if deps.Webhook == nil {
+		deps.Webhook = provider.Registry().Webhook
+	}
+	var notifUsers NotificationUserStore
+	var notifPrefs NotificationPreferenceStore
+	if deps.Repos != nil {
+		notifUsers = deps.Repos.Users
+		notifPrefs = deps.Repos.NotificationPrefs
+	}
+	notifSvc := NewNotificationServiceWithStores(notifUsers, notifPrefs, deps.Notifier, deps.Webhook, deps.Notification)
 	authSvc := &AuthService{
 		repos:         deps.Repos,
 		tokenManager:  deps.TokenManager,

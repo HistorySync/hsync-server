@@ -224,6 +224,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Post("/2fa/enable", h.EnableTwoFactor)
 	me.Post("/2fa/disable", h.DisableTwoFactor)
 	me.Post("/2fa/backup-codes/regenerate", h.RegenerateTwoFactorBackupCodes)
+	me.Get("/notification-preferences", h.GetNotificationPreferences)
+	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
 	// Quota (JWT-protected)
 	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
@@ -1201,6 +1203,51 @@ func (h *Handlers) ListRevocations(c fiber.Ctx) error {
 }
 
 // Account security.
+
+type notificationPreferencesRequest struct {
+	SecurityEmail   *bool   `json:"security_email"`
+	SecurityWebhook *bool   `json:"security_webhook"`
+	BillingEmail    *bool   `json:"billing_email"`
+	BillingWebhook  *bool   `json:"billing_webhook"`
+	WebhookURL      *string `json:"webhook_url"`
+}
+
+func (h *Handlers) GetNotificationPreferences(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Notification == nil {
+		return apierrors.NewInternal("notification service is not configured")
+	}
+	prefs, err := h.deps.Services.Notification.GetPreferences(c.Context(), auth.UserID(c))
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(prefs)
+}
+
+func (h *Handlers) UpdateNotificationPreferences(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Notification == nil {
+		return apierrors.NewInternal("notification service is not configured")
+	}
+	var req notificationPreferencesRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return apierrors.NewBadRequest("invalid request body")
+	}
+	prefs, err := h.deps.Services.Notification.UpdatePreferences(c.Context(), auth.UserID(c), service.NotificationPreferenceUpdate{
+		SecurityEmail:   req.SecurityEmail,
+		SecurityWebhook: req.SecurityWebhook,
+		BillingEmail:    req.BillingEmail,
+		BillingWebhook:  req.BillingWebhook,
+		WebhookURL:      req.WebhookURL,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrWebhookURLRequired), errors.Is(err, service.ErrInvalidWebhookURL):
+			return apierrors.NewBadRequest(err.Error())
+		default:
+			return apierrors.NewInternal(err.Error())
+		}
+	}
+	return c.JSON(prefs)
+}
 
 // TwoFactorStatus returns the authenticated user's 2FA state.
 func (h *Handlers) TwoFactorStatus(c fiber.Ctx) error {

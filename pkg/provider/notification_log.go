@@ -75,6 +75,16 @@ func (n *LogNotifier) SendQuotaRestored(_ context.Context, p QuotaRestoredParams
 	return nil
 }
 
+func (n *LogNotifier) SendNotification(_ context.Context, p NotificationParams) error {
+	log.Info().
+		Str("user_id", p.UserID).
+		Str("email", maskEmail(p.Email)).
+		Str("category", p.Category).
+		Str("type", p.Type).
+		Msg("notification skipped: no delivery provider configured")
+	return nil
+}
+
 func maskEmail(email string) string {
 	for i := 0; i < len(email); i++ {
 		if email[i] == '@' {

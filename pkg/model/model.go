@@ -46,6 +46,30 @@ type User struct {
 	DeletedAt        *time.Time `json:"-"                 db:"deleted_at"`
 }
 
+// NotificationPreferences stores per-user opt-ins for notification categories
+// and delivery channels. Webhook URLs may contain provider-side secrets and
+// should not be written to logs.
+type NotificationPreferences struct {
+	UserID          uuid.UUID `json:"user_id"          db:"user_id"`
+	SecurityEmail   bool      `json:"security_email"   db:"security_email"`
+	SecurityWebhook bool      `json:"security_webhook" db:"security_webhook"`
+	BillingEmail    bool      `json:"billing_email"    db:"billing_email"`
+	BillingWebhook  bool      `json:"billing_webhook"  db:"billing_webhook"`
+	WebhookURL      string    `json:"webhook_url"      db:"webhook_url"`
+	CreatedAt       time.Time `json:"created_at"       db:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"       db:"updated_at"`
+}
+
+// DefaultNotificationPreferences returns the defaults for users without an
+// explicit row yet.
+func DefaultNotificationPreferences(userID uuid.UUID) NotificationPreferences {
+	return NotificationPreferences{
+		UserID:        userID,
+		SecurityEmail: true,
+		BillingEmail:  true,
+	}
+}
+
 // ── Device ───────────────────────────────────────────────────
 
 // Device represents a registered client device.

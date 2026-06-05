@@ -131,6 +131,20 @@ func (n *SMTPNotifier) SendQuotaRestored(ctx context.Context, p QuotaRestoredPar
 	return n.send(ctx, p.Email, fallback(p.AppName, "HistorySync Cloud")+" quota restored", body)
 }
 
+func (n *SMTPNotifier) SendNotification(ctx context.Context, p NotificationParams) error {
+	body, err := renderEmailTemplate(genericNotificationTemplate, map[string]any{
+		"AppName":     fallback(p.AppName, "HistorySync Cloud"),
+		"DisplayName": fallback(p.DisplayName, p.Email),
+		"Subject":     fallback(p.Subject, fallback(p.AppName, "HistorySync Cloud")+" notification"),
+		"Message":     p.Message,
+	})
+	if err != nil {
+		return err
+	}
+	subject := fallback(p.Subject, fallback(p.AppName, "HistorySync Cloud")+" notification")
+	return n.send(ctx, p.Email, subject, body)
+}
+
 func (n *SMTPNotifier) send(ctx context.Context, to, subject, htmlBody string) error {
 	if n == nil {
 		return ErrNotificationNotConfigured
@@ -348,4 +362,12 @@ const quotaTemplate = `<!doctype html>
 <p><strong>{{.Title}}</strong></p>
 <p>Your {{.AppName}} storage usage is {{.UsagePercent}}% ({{.Usage}} of {{.Limit}}).</p>
 <p>Bundles: {{.BundleCount}}<br>Snapshots: {{.SnapshotCount}}</p>
+</body></html>`
+
+const genericNotificationTemplate = `<!doctype html>
+<html><body>
+<p>Hello {{.DisplayName}},</p>
+<p><strong>{{.Subject}}</strong></p>
+<p>{{.Message}}</p>
+<p>{{.AppName}}</p>
 </body></html>`

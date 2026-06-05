@@ -143,6 +143,7 @@ type ProviderRegistry struct {
 	Quota     QuotaProvider
 	Readiness ReadinessProvider
 	Notifier  Notifier
+	Webhook   WebhookProvider
 }
 
 var (
@@ -152,6 +153,7 @@ var (
 		Quota:     defaultQuotaProvider,
 		Readiness: defaultReadinessProvider,
 		Notifier:  NewLogNotifier(),
+		Webhook:   NewWebhookNotifier(WebhookConfig{}),
 	}
 	regMu sync.RWMutex
 )
@@ -196,4 +198,11 @@ func RegisterNotifier(p Notifier) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.Notifier = p
+}
+
+// RegisterWebhook replaces the current webhook notification provider.
+func RegisterWebhook(p WebhookProvider) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.Webhook = p
 }

@@ -1,233 +1,607 @@
-﻿package web
+package web
 
 import (
-"encoding/json"
-"fmt"
-"strings"
+	"encoding/json"
+	"fmt"
+	"strings"
 
-"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Options configures the lightweight web surface mounted on top of the API.
 type Options struct {
-Enabled      bool
-AppName      string
-ConsolePath  string
-SupportEmail string
-Edition      string
-APIPrefix    string
-AdminPath    string
-OverviewPath string
+	Enabled           bool
+	AppName           string
+	ConsolePath       string
+	SupportEmail      string
+	Edition           string
+	APIPrefix         string
+	AdminPath         string
+	OverviewPath      string
+	ExtraNavHTML      string
+	ExtraSectionsHTML string
+	ExtraScript       string
 }
 
 // Register mounts a minimal HTML landing page and console placeholder.
 // This gives CE and EE one shared web entrypoint that can later be upgraded
 // to serve compiled assets without changing route ownership again.
 func Register(app *fiber.App, opts Options) {
-if !opts.Enabled {
-return
-}
+	if !opts.Enabled {
+		return
+	}
 
-opts = normalizeOptions(opts)
-page := landingPage(opts)
-meta := metaPayload(opts)
+	opts = normalizeOptions(opts)
+	page := landingPage(opts)
+	meta := metaPayload(opts)
 
-app.Get("/", func(c fiber.Ctx) error {
-c.Type("html", "utf-8")
-return c.SendString(page)
-})
+	app.Get("/", func(c fiber.Ctx) error {
+		c.Type("html", "utf-8")
+		return c.SendString(page)
+	})
 
-app.Get(opts.ConsolePath, func(c fiber.Ctx) error {
-c.Type("html", "utf-8")
-return c.SendString(page)
-})
+	app.Get(opts.ConsolePath, func(c fiber.Ctx) error {
+		c.Type("html", "utf-8")
+		return c.SendString(page)
+	})
 
-app.Get("/api/meta/web", func(c fiber.Ctx) error {
-return c.JSON(meta)
-})
+	app.Get("/api/meta/web", func(c fiber.Ctx) error {
+		return c.JSON(meta)
+	})
 }
 
 func normalizeOptions(opts Options) Options {
-if strings.TrimSpace(opts.AppName) == "" {
-opts.AppName = "HistorySync"
-}
-if strings.TrimSpace(opts.ConsolePath) == "" {
-opts.ConsolePath = "/console"
-}
-if strings.TrimSpace(opts.SupportEmail) == "" {
-opts.SupportEmail = "support@historysync.app"
-}
-if strings.TrimSpace(opts.Edition) == "" {
-opts.Edition = "community"
-}
-if strings.TrimSpace(opts.APIPrefix) == "" {
-opts.APIPrefix = "/api/v1"
-}
-if strings.TrimSpace(opts.AdminPath) == "" {
-opts.AdminPath = "/admin"
-}
-if strings.TrimSpace(opts.OverviewPath) == "" {
-if strings.EqualFold(strings.TrimSpace(opts.Edition), "enterprise") {
-opts.OverviewPath = "/api/v1/meta/overview/enterprise"
-} else {
-opts.OverviewPath = "/api/meta/overview"
-}
-}
-return opts
+	if strings.TrimSpace(opts.AppName) == "" {
+		opts.AppName = "HistorySync"
+	}
+	if strings.TrimSpace(opts.ConsolePath) == "" {
+		opts.ConsolePath = "/console"
+	}
+	if strings.TrimSpace(opts.SupportEmail) == "" {
+		opts.SupportEmail = "support@historysync.app"
+	}
+	if strings.TrimSpace(opts.Edition) == "" {
+		opts.Edition = "community"
+	}
+	if strings.TrimSpace(opts.APIPrefix) == "" {
+		opts.APIPrefix = "/api/v1"
+	}
+	if strings.TrimSpace(opts.AdminPath) == "" {
+		opts.AdminPath = "/admin"
+	}
+	if strings.TrimSpace(opts.OverviewPath) == "" {
+		if strings.EqualFold(strings.TrimSpace(opts.Edition), "enterprise") {
+			opts.OverviewPath = "/api/v1/meta/overview/enterprise"
+		} else {
+			opts.OverviewPath = "/api/meta/overview"
+		}
+	}
+	return opts
 }
 
 func landingPage(opts Options) string {
-metaJSON, _ := json.Marshal(metaPayload(opts))
-var builder strings.Builder
-builder.WriteString(pageHead(opts))
-builder.WriteString(pageHero(opts, metaJSON))
-builder.WriteString(pageOverviewCards(opts))
-builder.WriteString(pageConsoleLayout(opts))
-builder.WriteString(pageFooter(opts))
-builder.WriteString("<script>")
-builder.WriteString(consoleScript(opts))
-builder.WriteString("</script></body></html>")
-return builder.String()
+	metaJSON, _ := json.Marshal(metaPayload(opts))
+	var builder strings.Builder
+	builder.WriteString(pageHead(opts))
+	builder.WriteString(pageHero(opts, metaJSON))
+	builder.WriteString(pageOverviewCards(opts))
+	builder.WriteString(pageConsoleLayout(opts))
+	builder.WriteString(pageFooter(opts))
+	builder.WriteString("<script>")
+	builder.WriteString(consoleScript(opts))
+	builder.WriteString("</script></body></html>")
+	return builder.String()
 }
 
 func metaPayload(opts Options) fiber.Map {
-return fiber.Map{
-"app_name":      opts.AppName,
-"edition":       opts.Edition,
-"console_path":  opts.ConsolePath,
-"api_prefix":    opts.APIPrefix,
-"admin_path":    opts.AdminPath,
-"overview_path": opts.OverviewPath,
-"support_email": opts.SupportEmail,
-}
+	return fiber.Map{
+		"app_name":      opts.AppName,
+		"edition":       opts.Edition,
+		"console_path":  opts.ConsolePath,
+		"api_prefix":    opts.APIPrefix,
+		"admin_path":    opts.AdminPath,
+		"overview_path": opts.OverviewPath,
+		"support_email": opts.SupportEmail,
+	}
 }
 
 func jsStringLiteral(input string) string {
-escaped := strings.NewReplacer(
-`\\`, `\\\\`,
-`"`, `\\"`,
-"\n", `\\n`,
-"\r", `\\r`,
-"\t", `\\t`,
-).Replace(input)
-return fmt.Sprintf(`"%s"`, escaped)
+	encoded, _ := json.Marshal(input)
+	return string(encoded)
 }
 
 func consoleScript(opts Options) string {
-return fmt.Sprintf(`(function(){
+	return fmt.Sprintf(`(function(){
 const apiPrefix=%s;
 const adminPath=%s;
+const overviewPath=%s;
+const adminKeyInput=document.getElementById("admin-key");
+const statusText=document.getElementById("console-status");
 const banner=document.getElementById("status-banner");
-const healthMetric=document.getElementById("metric-health");
-const adminMetric=document.getElementById("metric-admin");
-const usersMetric=document.getElementById("metric-users");
-const storageMetric=document.getElementById("metric-storage");
-const activeUsersMetric=document.getElementById("metric-active-users");
-const costMetric=document.getElementById("metric-cost");
 
-function setCheck(name,state,text){
-const node=document.querySelector('[data-check="'+name+'"]');
-if(!node){return;}
-const dot=node.querySelector('.dot');
-node.lastChild.textContent=' '+text;
-dot.className='dot '+state;
+function text(id,value){
+const node=document.getElementById(id);
+if(node){node.textContent=value;}
 }
 
-function setBanner(message){
-if(!message){
-banner.textContent='';
-banner.className='';
+function setStatus(message){
+if(statusText){statusText.textContent=message;}
+}
+
+function setBanner(message,tone){
+if(!banner){return;}
+banner.textContent=message||"";
+banner.className=message?("banner show "+(tone||"")):"banner";
+}
+
+function adminHeaders(){
+const headers={Accept:"application/json"};
+const key=(adminKeyInput&&adminKeyInput.value||"").trim();
+if(key){headers["X-Admin-Key"]=key;}
+return headers;
+}
+
+function writeJSON(node,value){
+node.textContent=JSON.stringify(value||{},null,2);
+}
+
+async function requestJSON(url,options){
+const response=await fetch(url,Object.assign({headers:{Accept:"application/json"}},options||{}));
+const raw=await response.text();
+let body={};
+if(raw){
+try{body=JSON.parse(raw);}catch(_err){body={raw:raw};}
+}
+if(!response.ok){
+const message=(body.error&&body.error.message)||body.message||("HTTP "+response.status);
+const error=new Error(message);
+error.status=response.status;
+error.body=body;
+throw error;
+}
+return {status:response.status,body:body,headers:response.headers};
+}
+
+async function requestAdmin(url,options){
+const headers=adminHeaders();
+if(options&&options.headers){Object.assign(headers,options.headers);}
+return requestJSON(url,Object.assign({},options||{},{headers:headers}));
+}
+
+function numberValue(value){
+if(value===null||value===undefined||value===""){return "n/a";}
+if(typeof value==="number"){return value.toLocaleString();}
+return String(value);
+}
+
+function bytesValue(value){
+if(typeof value!=="number"){return numberValue(value);}
+const units=["B","KB","MB","GB","TB"];
+let size=value;
+let index=0;
+while(size>=1024&&index<units.length-1){size=size/1024;index++;}
+return (index===0?String(size):size.toFixed(1))+" "+units[index];
+}
+
+function dateValue(value){
+if(!value){return "n/a";}
+const date=new Date(value);
+if(Number.isNaN(date.getTime())){return String(value);}
+return date.toLocaleString();
+}
+
+function shortID(value){
+if(!value){return "n/a";}
+const text=String(value);
+return text.length>18?text.slice(0,8)+"..."+text.slice(-6):text;
+}
+
+function makeCell(value,className){
+const td=document.createElement("td");
+if(className){td.className=className;}
+td.textContent=value===null||value===undefined||value===""?"n/a":String(value);
+return td;
+}
+
+function emptyRow(tbody,columns,message){
+tbody.textContent="";
+const tr=document.createElement("tr");
+const td=document.createElement("td");
+td.colSpan=columns;
+td.className="muted";
+td.textContent=message;
+tr.appendChild(td);
+tbody.appendChild(tr);
+}
+
+function renderKeyValues(container,obj){
+container.textContent="";
+const entries=Object.entries(obj||{});
+if(entries.length===0){
+container.textContent="none";
 return;
 }
-banner.textContent=message;
-banner.className='show';
+for(const entry of entries){
+const pill=document.createElement("span");
+pill.className="pill";
+pill.textContent=entry[0]+": "+numberValue(entry[1]);
+container.appendChild(pill);
+container.appendChild(document.createTextNode(" "));
+}
 }
 
-function healthLabel(status){
-if(!status){return 'unknown';}
-return status;
+async function loadOverview(){
+const stats=await requestAdmin(adminPath+"/stats");
+const body=stats.body||{};
+text("metric-total-users",numberValue(body.users&&body.users.total));
+text("metric-active-devices",numberValue(body.devices&&body.devices.active));
+text("metric-bundles",numberValue(body.bundles&&body.bundles.total));
+text("metric-snapshots",numberValue(body.snapshots&&body.snapshots.total));
+text("metric-storage",bytesValue(body.storage&&body.storage.total_bytes));
+const websocket=body.websocket||{};
+text("metric-websocket",numberValue(websocket.active_connections)+" connections");
+renderKeyValues(document.getElementById("users-status-breakdown"),body.users&&body.users.by_status);
+
+try{
+const users=await requestAdmin(adminPath+"/users?limit=5");
+renderUsers(users.body.users||[]);
+}catch(error){
+emptyRow(document.getElementById("recent-users"),4,error.status===401||error.status===403?"admin key required":error.message);
+}
 }
 
-async function probe(){
-setBanner('');
-const checks=[
-{name:'meta',url:'/api/meta/web',ok:[200]},
-{name:'health',url:'/healthz',ok:[200]},
-{name:'ready',url:'/readyz',ok:[200,503]},
-{name:'overview',url:%s,ok:[200]},
-{name:'admin',url:adminPath+'/stats',ok:[200,401,403]},
+function renderUsers(users){
+const tbody=document.getElementById("recent-users");
+if(!tbody){return;}
+tbody.textContent="";
+if(!users.length){
+emptyRow(tbody,4,"no users");
+return;
+}
+for(const user of users){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(user.email||user.id));
+tr.appendChild(makeCell(user.tier));
+tr.appendChild(makeCell(user.status));
+tr.appendChild(makeCell(dateValue(user.created_at)));
+tbody.appendChild(tr);
+}
+}
+
+async function loadSettings(){
+const response=await requestAdmin(adminPath+"/settings");
+renderSettings(response.body.settings||[]);
+}
+
+function renderSettings(settings){
+const root=document.getElementById("settings-groups");
+root.textContent="";
+if(!settings.length){
+root.appendChild(document.createTextNode("no settings"));
+return;
+}
+const groups={};
+for(const setting of settings){
+const group=setting.group||"other";
+if(!groups[group]){groups[group]=[];}
+groups[group].push(setting);
+}
+for(const groupName of Object.keys(groups).sort()){
+const group=document.createElement("div");
+group.className="settings-group";
+const heading=document.createElement("h3");
+heading.textContent=groupName;
+group.appendChild(heading);
+for(const setting of groups[groupName]){
+group.appendChild(settingRow(setting));
+}
+root.appendChild(group);
+}
+}
+
+function settingRow(setting){
+const row=document.createElement("div");
+row.className="setting-row";
+
+const summary=document.createElement("div");
+const key=document.createElement("div");
+key.className="setting-key mono";
+key.textContent=setting.key;
+summary.appendChild(key);
+const description=document.createElement("p");
+description.textContent=setting.description||"";
+summary.appendChild(description);
+const meta=document.createElement("div");
+meta.className="setting-meta";
+for(const label of [setting.value_type,setting.is_set?"override":"default",setting.requires_restart?"restart required":"live",setting.sensitive?"sensitive":"visible"]){
+const pill=document.createElement("span");
+pill.className="pill"+(label==="sensitive"?" warn":"");
+pill.textContent=label;
+meta.appendChild(pill);
+}
+summary.appendChild(meta);
+
+const current=document.createElement("div");
+const currentLabel=document.createElement("label");
+currentLabel.textContent="Current value";
+current.appendChild(currentLabel);
+const currentValue=document.createElement("div");
+currentValue.className="value-mask";
+if(setting.sensitive){
+currentValue.textContent=setting.is_set?"masked override":"not set";
+}else if(setting.value===""){
+currentValue.textContent="empty";
+currentValue.className+=" muted";
+}else{
+currentValue.textContent=String(setting.value);
+}
+current.appendChild(currentValue);
+
+const editor=document.createElement("form");
+editor.className="setting-editor";
+editor.dataset.key=setting.key;
+let input;
+if(setting.value_type==="bool"){
+input=document.createElement("select");
+for(const value of ["true","false"]){
+const option=document.createElement("option");
+option.value=value;
+option.textContent=value;
+input.appendChild(option);
+}
+input.value=String(setting.value||"false").toLowerCase()==="true"?"true":"false";
+}else if(setting.value_type==="string"){
+input=document.createElement(setting.sensitive?"input":"textarea");
+if(setting.sensitive){input.type="password";}
+input.value=setting.sensitive?"":String(setting.value||"");
+input.placeholder=setting.sensitive?"Enter replacement value":"";
+}else{
+input=document.createElement("input");
+input.value=String(setting.value||"");
+	input.disabled=true;
+}
+input.name="value";
+input.setAttribute("aria-label","Setting value for "+setting.key);
+const save=document.createElement("button");
+save.className="button";
+save.type="submit";
+save.textContent="Save";
+save.setAttribute("aria-label","Save "+setting.key);
+if(setting.value_type!=="bool"&&setting.value_type!=="string"){save.disabled=true;}
+editor.appendChild(input);
+editor.appendChild(save);
+if(setting.value_type!=="bool"&&setting.value_type!=="string"){
+const note=document.createElement("span");
+note.className="field-note";
+note.textContent="Read-only";
+editor.appendChild(note);
+}
+editor.addEventListener("submit",async function(event){
+event.preventDefault();
+await saveSetting(setting.key,input.value,save);
+});
+
+row.appendChild(summary);
+row.appendChild(current);
+row.appendChild(editor);
+return row;
+}
+
+async function saveSetting(key,value,button){
+button.disabled=true;
+try{
+await requestAdmin(adminPath+"/settings/"+encodeURIComponent(key),{
+method:"PUT",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify({value:value})
+});
+setBanner("Updated setting "+key,"");
+await loadSettings();
+}catch(error){
+setBanner("Setting update failed: "+error.message,"err");
+}finally{
+button.disabled=false;
+}
+}
+
+async function loadAuditLogs(){
+const params=new URLSearchParams({limit:"50"});
+for(const field of ["event_type","actor_user_id","target_type","target_id"]){
+const input=document.querySelector('#audit-filter [name="'+field+'"]');
+const value=input&&input.value.trim();
+if(value){params.set(field,value);}
+}
+const response=await requestAdmin(adminPath+"/audit-logs?"+params.toString());
+renderAuditLogs(response.body.audit_logs||[]);
+}
+
+function renderAuditLogs(logs){
+const tbody=document.getElementById("audit-log-rows");
+tbody.textContent="";
+	if(!logs.length){
+emptyRow(tbody,6,"no audit logs");
+return;
+}
+for(const item of logs){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(dateValue(item.created_at)));
+tr.appendChild(makeCell(item.event_type,"mono"));
+tr.appendChild(makeCell(shortID(item.actor_user_id),"mono"));
+tr.appendChild(makeCell((item.target_type||"n/a")+" / "+(item.target_id||"n/a"),"mono"));
+tr.appendChild(makeCell(item.ip||"n/a","mono"));
+tr.appendChild(makeCell(JSON.stringify(item.metadata||{}), "mono json-cell"));
+tbody.appendChild(tr);
+}
+}
+
+async function loadSecurity(){
+const response=await requestAdmin(apiPrefix+"/admin/security/stats");
+renderSecurity(response.body||{});
+}
+
+function renderSecurity(stats){
+const root=document.getElementById("security-summary");
+root.textContent="";
+const last24=stats.last_24h||{};
+const last7=stats.last_7d||{};
+const twoFactor=stats.two_factor||{};
+const cards=[
+["Login success 24h",last24.login_success],
+["Login failures 24h",last24.login_failure],
+["2FA failures 24h",last24.two_factor_challenge_failure],
+["Login failures 7d",last7.login_failure],
+["2FA enabled users",numberValue(twoFactor.enabled_users)+" / "+numberValue(twoFactor.total_users)],
+["2FA enabled ratio",typeof twoFactor.enabled_ratio==="number"?(Math.round(twoFactor.enabled_ratio*100)+"%%"):"n/a"],
 ];
+for(const card of cards){
+const node=document.createElement("div");
+node.className="stat";
+const label=document.createElement("span");
+label.textContent=card[0];
+const strong=document.createElement("strong");
+strong.textContent=numberValue(card[1]);
+node.appendChild(label);
+node.appendChild(strong);
+root.appendChild(node);
+}
+const tbody=document.getElementById("security-events");
+tbody.textContent="";
+const events=stats.events_by_type||[];
+if(!events.length){
+emptyRow(tbody,2,"no security events");
+return;
+}
+for(const event of events){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(event.event_type,"mono"));
+tr.appendChild(makeCell(numberValue(event.count)));
+tbody.appendChild(tr);
+}
+}
 
-for(const check of checks){
+async function loadNotifications(){
+const response=await requestAdmin(adminPath+"/notifications/failures?limit=50");
+renderNotifications(response.body.notifications||[]);
+}
+
+function renderNotifications(items){
+const tbody=document.getElementById("notification-failure-rows");
+tbody.textContent="";
+if(!items.length){
+emptyRow(tbody,8,"no failed notifications");
+return;
+}
+for(const item of items){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(dateValue(item.created_at)));
+tr.appendChild(makeCell(shortID(item.user_id),"mono"));
+tr.appendChild(makeCell(item.channel));
+tr.appendChild(makeCell(item.category));
+tr.appendChild(makeCell(item.type));
+tr.appendChild(makeCell(numberValue(item.attempt_count)));
+tr.appendChild(makeCell(item.error_summary||"n/a"));
+const action=document.createElement("td");
+const button=document.createElement("button");
+button.type="button";
+button.className="button secondary";
+button.disabled=true;
+button.textContent="Redrive";
+action.appendChild(button);
+tr.appendChild(action);
+tbody.appendChild(tr);
+}
+}
+
+async function loadHealth(){
+await loadProbe("/healthz","health-probe",[200]);
+await loadProbe("/readyz","ready-probe",[200,503]);
+}
+
+async function loadProbe(url,id,expected){
+const node=document.getElementById(id);
+const pill=node.querySelector(".pill");
+const pre=node.querySelector("pre");
 try{
-const response=await fetch(check.url,{headers:{Accept:'application/json'}});
-const allowed=check.ok.includes(response.status);
-setCheck(check.name,allowed?'ok':'warn',allowed?('HTTP '+response.status):('unexpected HTTP '+response.status));
-
-if(check.name==='health'){
-let label='HTTP '+response.status;
-try{
-const body=await response.clone().json();
-label=healthLabel(body.status);
-}catch(_err){}
-healthMetric.textContent=label;
-}
-
-if(check.name==='admin'){
-const label=response.status===200?'reachable':(response.status===401||response.status===403?'protected':'HTTP '+response.status);
-adminMetric.textContent=label;
-}
-
-if(check.name==='overview'){
-try{
-const body=await response.clone().json();
-const summary=body.summary||{};
-usersMetric.textContent=String(summary.total_users??'n/a');
-storageMetric.textContent=String(summary.total_storage_bytes??'n/a');
-activeUsersMetric.textContent=String(summary.monthly_active_users??summary.active_devices??'n/a');
-costMetric.textContent=String(summary.estimated_cost_usd??'n/a');
-}catch(_err){
-usersMetric.textContent='unavailable';
-storageMetric.textContent='unavailable';
-activeUsersMetric.textContent='unavailable';
-costMetric.textContent='unavailable';
-}
-}
-
-if(check.name==='ready'&&response.status===503){
-setBanner('Readiness probe reports degraded or unhealthy dependencies. Review database, redis, or blob storage connectivity.');
+const response=await fetch(url,{headers:{Accept:"application/json"}});
+const raw=await response.text();
+let body={};
+if(raw){try{body=JSON.parse(raw);}catch(_err){body={raw:raw};}}
+const ok=expected.includes(response.status);
+pill.className="pill "+(ok?(response.status===503?"warn":"ok"):"err");
+pill.textContent="HTTP "+response.status;
+writeJSON(pre,body);
+if(url==="/readyz"&&response.status===503){
+setBanner("Readiness reports unhealthy dependencies. Check database, redis, storage, or maintenance mode.","warn");
 }
 }catch(error){
-setCheck(check.name,'err','request failed');
-if(check.name==='health'){
-healthMetric.textContent='offline';
-}
-if(check.name==='admin'){
-adminMetric.textContent='unreachable';
-}
-if(check.name==='overview'){
-usersMetric.textContent='offline';
-storageMetric.textContent='offline';
-activeUsersMetric.textContent='offline';
-costMetric.textContent='offline';
-}
-setBanner('At least one runtime probe failed. Inspect server logs and infrastructure dependencies.');
-}
+pill.className="pill err";
+pill.textContent="request failed";
+writeJSON(pre,{error:error.message});
+setBanner("A runtime probe failed. Check server logs and dependencies.","err");
 }
 }
 
-document.getElementById('refresh-checks').addEventListener('click',probe);
-probe();
-})();`, jsStringLiteral(opts.APIPrefix), jsStringLiteral(opts.AdminPath), jsStringLiteral(opts.OverviewPath))
+function appendExtraConsoleTasks(_tasks){}
+function bindExtraConsoleEvents(){}
+%s
+
+async function loadAll(){
+setStatus("Loading");
+setBanner("","");
+const tasks=[
+["overview",loadOverview],
+["settings",loadSettings],
+["audit logs",loadAuditLogs],
+["security stats",loadSecurity],
+["notification failures",loadNotifications],
+["health",loadHealth],
+];
+appendExtraConsoleTasks(tasks);
+const failures=[];
+for(const task of tasks){
+try{
+await task[1]();
+}catch(error){
+failures.push(task[0]+": "+error.message);
+if(error.status===401||error.status===403){
+setBanner("Enter a valid admin key to load protected admin panels.","warn");
+}
+}
+}
+setStatus(failures.length?("Loaded with "+failures.length+" issue(s)"):"Loaded");
+if(failures.length&&!(banner&&banner.className.includes("show"))){
+setBanner(failures.join("; "),"warn");
+}
+}
+
+document.getElementById("refresh-all").addEventListener("click",loadAll);
+document.getElementById("refresh-overview").addEventListener("click",function(){loadOverview().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("refresh-settings").addEventListener("click",function(){loadSettings().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("refresh-notifications").addEventListener("click",function(){loadNotifications().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("refresh-health").addEventListener("click",function(){loadHealth().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("audit-filter").addEventListener("submit",function(event){event.preventDefault();loadAuditLogs().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("clear-audit-filter").addEventListener("click",function(){
+for(const input of document.querySelectorAll("#audit-filter input")){input.value="";}
+loadAuditLogs().catch(function(error){setBanner(error.message,"err");});
+});
+adminKeyInput.addEventListener("keydown",function(event){
+if(event.key==="Enter"){event.preventDefault();loadAll();}
+});
+
+bindExtraConsoleEvents();
+loadHealth();
+setBanner("Enter an admin key and refresh to load protected admin panels.","warn");
+})();`, jsStringLiteral(opts.APIPrefix), jsStringLiteral(opts.AdminPath), jsStringLiteral(opts.OverviewPath), opts.ExtraScript)
 }
 
 func htmlEscape(input string) string {
-replacer := strings.NewReplacer(
-"&", "&amp;",
-"<", "&lt;",
-">", "&gt;",
-`"`, "&quot;",
-"'", "&#39;",
-)
-return replacer.Replace(input)
+	replacer := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	)
+	return replacer.Replace(input)
 }

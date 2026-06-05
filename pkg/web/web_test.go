@@ -1,6 +1,7 @@
 package web
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -13,6 +14,20 @@ func TestRegisterMountsLandingPage(t *testing.T) {
 	Register(app, Options{Enabled: true, AppName: "HistorySync CE", ConsolePath: "/console"})
 
 	req := httptest.NewRequest("GET", "/", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+}
+
+func TestRegisterMountsConsoleRoute(t *testing.T) {
+	app := fiber.New()
+	Register(app, Options{Enabled: true, AppName: "HistorySync CE", ConsolePath: "/console"})
+
+	req := httptest.NewRequest("GET", "/console", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)
@@ -51,6 +66,36 @@ func TestLandingPageEscapesConfiguredValues(t *testing.T) {
 	}
 	if !strings.Contains(body, "A&quot;pp") {
 		t.Fatal("landing page did not escape app name")
+	}
+}
+
+func TestLandingPageEmbedsParseableSafeWebMeta(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		AppName:      `A"pp<script>`,
+		ConsolePath:  "/console",
+		SupportEmail: "ops@example.com<script>",
+	}))
+
+	const marker = `<script type="application/json" id="web-meta">`
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatal("landing page missing web meta script")
+	}
+	start += len(marker)
+	end := strings.Index(body[start:], "</script>")
+	if end < 0 {
+		t.Fatal("landing page missing web meta script close tag")
+	}
+	raw := body[start : start+end]
+	if strings.Contains(raw, "<script>") {
+		t.Fatalf("web meta JSON contains raw script tag: %s", raw)
+	}
+	var meta map[string]any
+	if err := json.Unmarshal([]byte(raw), &meta); err != nil {
+		t.Fatalf("web meta JSON is not parseable: %v", err)
+	}
+	if meta["app_name"] != `A"pp<script>` {
+		t.Fatalf("app_name = %q, want original value", meta["app_name"])
 	}
 }
 
@@ -103,17 +148,26 @@ func TestLandingPageIncludesRuntimeShell(t *testing.T) {
 		AdminPath:   "/admin",
 	}))
 
-	if !strings.Contains(body, "Refresh probes") {
-		t.Fatal("landing page missing refresh action")
+	if !strings.Contains(body, "Refresh overview") {
+		t.Fatal("landing page missing overview refresh action")
 	}
 	if !strings.Contains(body, "/admin/stats") {
 		t.Fatal("landing page missing admin stats reference")
 	}
-	if !strings.Contains(body, "runtime-checks") {
-		t.Fatal("landing page missing runtime checks list")
+	if !strings.Contains(body, "settings-groups") {
+		t.Fatal("landing page missing settings panel")
 	}
-	if !strings.Contains(body, "/api/meta/overview") {
-		t.Fatal("landing page missing overview api reference")
+	if !strings.Contains(body, "audit-filter") {
+		t.Fatal("landing page missing audit filter form")
+	}
+	if !strings.Contains(body, "/api/v1/admin/security/stats") {
+		t.Fatal("landing page missing security stats endpoint")
+	}
+	if !strings.Contains(body, "/admin/notifications/failures") {
+		t.Fatal("landing page missing notification failures endpoint")
+	}
+	if !strings.Contains(body, "/readyz") {
+		t.Fatal("landing page missing readiness probe")
 	}
 }
 
@@ -127,5 +181,71 @@ func TestLandingPageIncludesEnterpriseOverviewRoute(t *testing.T) {
 
 	if !strings.Contains(body, "/api/v1/meta/overview/enterprise") {
 		t.Fatal("landing page missing enterprise overview route")
+	}
+}
+
+func TestLandingPageIncludesExtensionHooks(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:           true,
+		AppName:           "HistorySync Enterprise",
+		ConsolePath:       "/console",
+		Edition:           "enterprise",
+		APIPrefix:         "/api/v1",
+		AdminPath:         "/admin",
+		ExtraNavHTML:      `<a href="#extra-panel">Extra panel</a>`,
+		ExtraSectionsHTML: `<section id="extra-panel">Extra section</section>`,
+		ExtraScript:       `function appendExtraConsoleTasks(tasks){tasks.push(["extra",function(){}]);}`,
+	}))
+
+	checks := []string{
+		`href="#extra-panel"`,
+		`<section id="extra-panel">Extra section</section>`,
+		`function appendExtraConsoleTasks(tasks){tasks.push(["extra",function(){}]);}`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing %q", check)
+		}
+	}
+}
+
+func TestLandingPageIncludesAdminConsoleInteractions(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`id="admin-key"`,
+		`name="event_type"`,
+		`name="actor_user_id"`,
+		`name="target_type"`,
+		`name="target_id"`,
+		`method:"PUT"`,
+		`adminPath+"/settings/`,
+		`masked override`,
+		`Redrive`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing %q", check)
+		}
+	}
+	if strings.Contains(body, "localStorage") {
+		t.Fatal("landing page should not persist admin key in localStorage")
+	}
+}
+
+func TestJSStringLiteralEscapesScriptBreakout(t *testing.T) {
+	got := jsStringLiteral(`</script><script>alert("x")</script>`)
+	if strings.Contains(got, "</script>") {
+		t.Fatalf("jsStringLiteral() = %s, contains raw script close tag", got)
+	}
+	if !strings.Contains(got, `\u003c/script\u003e`) {
+		t.Fatalf("jsStringLiteral() = %s, want JSON/HTML-safe escaping", got)
 	}
 }

@@ -3,98 +3,131 @@ package web
 import "strings"
 
 func pageHead(opts Options) string {
-	return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>" + htmlEscape(opts.AppName) + " Console</title><style>" + pageStyles() + "</style></head><body><main><section>"
+	return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>" + htmlEscape(opts.AppName) + " Admin Console</title><style>" + pageStyles() + "</style></head><body><main class=\"console-shell\">"
 }
 
 func pageStyles() string {
 	return strings.Join([]string{
-		":root{--ink:#14213d;--muted:#415a77;--paper:rgba(255,255,255,.78);--line:rgba(20,33,61,.08);--accent:#1f6f78;--accent-soft:#d7efe8;--danger:#b42318;--success:#027a48;}",
+		":root{--bg:#f6f7f9;--surface:#fff;--surface-alt:#f0f5f4;--ink:#1c2430;--muted:#667085;--line:#d6dde5;--accent:#23645a;--accent-ink:#fff;--warn:#b54708;--danger:#b42318;--success:#027a48;--code:#182230;}",
 		"*{box-sizing:border-box}",
-		"body{margin:0;font-family:Segoe UI,Helvetica,Arial,sans-serif;background:radial-gradient(circle at top left,#f7efe2 0%,transparent 34%),linear-gradient(135deg,#f4efe6 0%,#dce9f2 100%);color:var(--ink);}",
-		"main{max-width:1180px;margin:0 auto;padding:48px 24px 72px;}",
-		"section{background:var(--paper);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:28px;padding:32px;box-shadow:0 24px 80px rgba(20,33,61,.12);}",
-		"header{display:flex;justify-content:space-between;gap:24px;align-items:flex-start;margin-bottom:24px;flex-wrap:wrap}",
-		".eyebrow{display:inline-flex;padding:8px 12px;border-radius:999px;background:var(--accent-soft);color:var(--accent);font-size:.8rem;font-weight:700;letter-spacing:.04em;text-transform:uppercase}",
-		"h1{font-size:clamp(2.4rem,5vw,4.8rem);line-height:1.02;margin:14px 0 16px;}",
-		"p{font-size:1.05rem;line-height:1.7;max-width:720px;}",
-		"ul{padding-left:20px;line-height:1.9;}",
-		".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin:28px 0}",
-		".card,.panel{padding:18px;border-radius:18px;background:rgba(255,255,255,.7);border:1px solid var(--line)}",
-		".card{min-height:104px}",
-		".label{font-size:.8rem;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}",
-		".value{font-size:1.05rem;font-weight:700}",
+		"body{margin:0;font-family:Segoe UI,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);}",
+		"button,input,select,textarea{font:inherit}",
+		"button{border:0;cursor:pointer}",
+		"main{max-width:1320px;margin:0 auto;padding:24px 20px 48px;}",
+		".topbar{display:grid;grid-template-columns:minmax(0,1fr) minmax(320px,460px);gap:18px;align-items:end;margin-bottom:18px}",
+		".eyebrow{display:inline-flex;align-items:center;padding:4px 8px;border-radius:6px;background:var(--surface-alt);color:var(--accent);font-size:.78rem;font-weight:700;text-transform:uppercase}",
+		"h1{font-size:2rem;line-height:1.15;margin:8px 0 4px;letter-spacing:0}",
+		"h2{font-size:1.05rem;margin:0;letter-spacing:0}",
+		"h3{font-size:.98rem;margin:0 0 8px;letter-spacing:0}",
+		"p{line-height:1.55;margin:0;color:var(--muted)}",
+		"a{color:var(--accent)}",
+		".auth-panel{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;align-items:end;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:12px}",
+		"label{display:block;font-size:.78rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:5px}",
+		"input,select,textarea{width:100%;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);padding:9px 10px;min-height:38px}",
+		"textarea{min-height:76px;resize:vertical}",
+		"input:focus,select:focus,textarea:focus{outline:2px solid rgba(35,100,90,.22);border-color:var(--accent)}",
+		".button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:38px;padding:9px 13px;border-radius:6px;background:var(--accent);color:var(--accent-ink);font-weight:700;text-decoration:none;white-space:nowrap}",
+		".button.secondary{background:#fff;color:var(--ink);border:1px solid var(--line)}",
+		".button.ghost{background:transparent;color:var(--accent);border:1px solid transparent}",
+		".button.danger{background:var(--danger);color:#fff}",
+		".button.warn{background:var(--warn);color:#fff}",
+		".button[disabled]{opacity:.5;cursor:not-allowed}",
+		".nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 18px}",
+		".nav a{display:inline-flex;padding:8px 10px;border-radius:6px;background:var(--surface);border:1px solid var(--line);text-decoration:none;color:var(--ink);font-weight:600}",
+		".banner{display:none;margin:0 0 14px;padding:11px 12px;border-radius:8px;border:1px solid var(--line);background:var(--surface);color:var(--ink)}",
+		".banner.show{display:block}",
+		".banner.warn{border-color:#fed7aa;background:#fff7ed;color:#9a3412}",
+		".banner.err{border-color:#fecaca;background:#fef2f2;color:#991b1b}",
+		".section{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:16px;margin-bottom:16px}",
+		".section-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}",
+		".subgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}",
+		".stat{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff;min-height:78px}",
+		".stat span,.field-note{display:block;color:var(--muted);font-size:.82rem}",
+		".stat strong{display:block;font-size:1.3rem;line-height:1.25;margin-top:6px;overflow-wrap:anywhere}",
+		".two-col{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:14px}",
+		".panel{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff}",
+		".split-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,.6fr);gap:12px}",
+		".detail-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}",
+		".detail-item{border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff;min-height:66px}",
+		".detail-item span{display:block;color:var(--muted);font-size:.78rem;font-weight:700;text-transform:uppercase;margin-bottom:5px}",
+		".detail-item strong{display:block;overflow-wrap:anywhere}",
+		".action-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}",
+		".compact-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;align-items:end}",
+		".toolbar{display:flex;gap:10px;align-items:end;flex-wrap:wrap}",
+		".toolbar .field{min-width:170px;flex:1}",
+		".table-wrap{overflow:auto;border:1px solid var(--line);border-radius:8px;background:#fff}",
+		"table{width:100%;border-collapse:collapse;min-width:720px}",
+		"th,td{padding:10px 11px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:.92rem}",
+		"th{font-size:.76rem;text-transform:uppercase;color:var(--muted);background:#f8fafc;white-space:nowrap}",
+		"tr:last-child td{border-bottom:0}",
+		".mono{font-family:Consolas,Menlo,monospace;font-size:.86rem;overflow-wrap:anywhere}",
 		".muted{color:var(--muted)}",
-		".stack{display:grid;gap:16px}",
-		".layout{display:grid;grid-template-columns:1.3fr .9fr;gap:18px;margin-top:18px}",
-		".actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:24px}",
-		"a.button,button.button{display:inline-block;padding:14px 22px;border-radius:999px;background:var(--ink);color:#fff;text-decoration:none;font-weight:600;border:none;cursor:pointer;}",
-		"a.subtle,button.subtle{background:transparent;color:var(--ink);border:1px solid var(--line)}",
-		"pre{margin:0;padding:18px;border-radius:20px;background:#101828;color:#d0d5dd;overflow:auto;font-size:.92rem;line-height:1.5}",
-		".endpoint-list{display:grid;gap:10px;margin:0;padding:0;list-style:none}",
-		".endpoint-list li{display:flex;justify-content:space-between;gap:16px;padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.62);border:1px solid var(--line);align-items:center}",
-		".status{display:inline-flex;align-items:center;gap:8px;font-weight:600}",
-		".dot{width:10px;height:10px;border-radius:50%;background:#98a2b3}",
-		".dot.ok{background:var(--success)}",
-		".dot.warn{background:#f79009}",
-		".dot.err{background:var(--danger)}",
-		"#status-banner{margin-top:14px;padding:14px 16px;border-radius:16px;background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;display:none}",
-		"#status-banner.show{display:block}",
-		".metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}",
-		".metric{padding:14px;border-radius:16px;background:#fff;border:1px solid var(--line)}",
-		".metric strong{display:block;font-size:1.35rem;margin-top:4px}",
-		"code.inline{font-family:Consolas,monospace;padding:2px 6px;border-radius:999px;background:#eef2f6}",
-		"small{display:block;margin-top:28px;color:var(--muted);}",
-		"@media (max-width:920px){.layout{grid-template-columns:1fr}}",
-		"@media (max-width:720px){main{padding:28px 16px 48px;}section{padding:22px;border-radius:20px;}.metric-grid{grid-template-columns:1fr}}",
+		".pill{display:inline-flex;align-items:center;border:1px solid var(--line);border-radius:6px;padding:3px 7px;background:#fff;color:var(--muted);font-size:.78rem;font-weight:700}",
+		".pill.ok{border-color:#abefc6;background:#ecfdf3;color:var(--success)}",
+		".pill.warn{border-color:#fed7aa;background:#fff7ed;color:var(--warn)}",
+		".pill.err{border-color:#fecaca;background:#fef2f2;color:var(--danger)}",
+		".settings-groups{display:grid;gap:12px}",
+		".settings-group{border:1px solid var(--line);border-radius:8px;background:#fff;padding:12px}",
+		".setting-row{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(240px,1fr) minmax(240px,1fr);gap:12px;align-items:start;border-top:1px solid var(--line);padding:12px 0}",
+		".setting-row:first-of-type{border-top:0}",
+		".setting-key{font-weight:700;overflow-wrap:anywhere}",
+		".setting-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}",
+		".setting-editor{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}",
+		".value-mask{font-family:Consolas,Menlo,monospace;letter-spacing:0}",
+		".json-cell{max-width:360px;white-space:pre-wrap}",
+		".probe-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}",
+		".probe{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff}",
+		".probe pre{margin:10px 0 0;max-height:220px;overflow:auto;background:var(--code);color:#e4e7ec;border-radius:6px;padding:10px;font-size:.84rem}",
+		"small{display:block;color:var(--muted);margin-top:12px}",
+		"@media (max-width:980px){.topbar,.two-col,.split-panel{grid-template-columns:1fr}.setting-row{grid-template-columns:1fr}.auth-panel{grid-template-columns:1fr}.button{width:100%}}",
+		"@media (max-width:640px){main{padding:16px 12px 36px}.section{padding:12px}h1{font-size:1.55rem}.toolbar{display:grid;grid-template-columns:1fr}.toolbar .field{min-width:0}table{min-width:620px}}",
 	}, "")
 }
 
 func pageHero(opts Options, metaJSON []byte) string {
-	return "<header><div><span class=\"eyebrow\">" + htmlEscape(strings.ToUpper(opts.Edition)) + " edition</span><h1>" + htmlEscape(opts.AppName) + " console shell</h1><p>This server already exposes the HistorySync API. This shared console shell now probes runtime endpoints directly, so CE and EE can evolve one backend-owned web surface before a dedicated front-end build replaces it.</p></div><pre>" + htmlEscape(string(metaJSON)) + "</pre></header>"
+	return "<header class=\"topbar\"><div><span class=\"eyebrow\">" + htmlEscape(strings.ToUpper(opts.Edition)) + " edition</span><h1>" + htmlEscape(opts.AppName) + " admin console</h1><p id=\"console-status\">Ready</p></div><div class=\"auth-panel\"><div><label for=\"admin-key\">Admin key</label><input id=\"admin-key\" name=\"admin-key\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"X-Admin-Key\"></div><button class=\"button\" id=\"refresh-all\" type=\"button\">Refresh</button></div><script type=\"application/json\" id=\"web-meta\">" + string(metaJSON) + "</script></header>"
 }
 
 func pageOverviewCards(opts Options) string {
-	return "<div class=\"grid\">" +
-		"<div class=\"card\"><div class=\"label\">Health</div><div class=\"value\">/healthz and /readyz</div></div>" +
-		"<div class=\"card\"><div class=\"label\">API prefix</div><div class=\"value\">" + htmlEscape(opts.APIPrefix) + "</div></div>" +
-		"<div class=\"card\"><div class=\"label\">Console route</div><div class=\"value\">" + htmlEscape(opts.ConsolePath) + "</div></div>" +
-		"<div class=\"card\"><div class=\"label\">Admin route</div><div class=\"value\">" + htmlEscape(opts.AdminPath) + "</div></div>" +
-		"<div class=\"card\"><div class=\"label\">Overview route</div><div class=\"value\">" + htmlEscape(opts.OverviewPath) + "</div></div>" +
-		"</div>"
+	return "<nav class=\"nav\" aria-label=\"Console sections\">" +
+		"<a href=\"#overview\">Overview</a>" +
+		opts.ExtraNavHTML +
+		"<a href=\"#settings\">Settings</a>" +
+		"<a href=\"#audit-logs\">Audit logs</a>" +
+		"<a href=\"#security-stats\">Security stats</a>" +
+		"<a href=\"#notification-failures\">Notification failures</a>" +
+		"<a href=\"#health-readiness\">Health</a>" +
+		"</nav><div id=\"status-banner\" class=\"banner\"></div>" +
+		"<section class=\"section\" id=\"overview\"><div class=\"section-header\"><h2>Overview</h2><button class=\"button secondary\" id=\"refresh-overview\" type=\"button\">Refresh overview</button></div>" +
+		"<div class=\"subgrid\">" +
+		"<div class=\"stat\"><span>Total users</span><strong id=\"metric-total-users\">pending</strong></div>" +
+		"<div class=\"stat\"><span>Active devices</span><strong id=\"metric-active-devices\">pending</strong></div>" +
+		"<div class=\"stat\"><span>Bundles</span><strong id=\"metric-bundles\">pending</strong></div>" +
+		"<div class=\"stat\"><span>Snapshots</span><strong id=\"metric-snapshots\">pending</strong></div>" +
+		"<div class=\"stat\"><span>Storage</span><strong id=\"metric-storage\">pending</strong></div>" +
+		"<div class=\"stat\"><span>WebSocket</span><strong id=\"metric-websocket\">pending</strong></div>" +
+		"</div><div class=\"two-col\" style=\"margin-top:14px\">" +
+		"<div class=\"panel\"><h3>Users by status</h3><div id=\"users-status-breakdown\" class=\"muted\">pending</div></div>" +
+		"<div class=\"panel\"><h3>Recent users</h3><div class=\"table-wrap\"><table><thead><tr><th>Email</th><th>Tier</th><th>Status</th><th>Created</th></tr></thead><tbody id=\"recent-users\"><tr><td colspan=\"4\" class=\"muted\">pending</td></tr></tbody></table></div></div>" +
+		"</div></section>"
 }
 
 func pageConsoleLayout(opts Options) string {
-	return "<div id=\"status-banner\"></div>" +
-		"<div class=\"layout\">" +
-		"<div class=\"stack\">" +
-		"<div class=\"panel\"><div class=\"label\">Runtime checks</div><ul class=\"endpoint-list\" id=\"runtime-checks\">" +
-		"<li><span>Web metadata</span><span class=\"status\" data-check=\"meta\"><span class=\"dot\"></span>pending</span></li>" +
-		"<li><span>Health probe</span><span class=\"status\" data-check=\"health\"><span class=\"dot\"></span>pending</span></li>" +
-		"<li><span>Readiness probe</span><span class=\"status\" data-check=\"ready\"><span class=\"dot\"></span>pending</span></li>" +
-		"<li><span>Overview API</span><span class=\"status\" data-check=\"overview\"><span class=\"dot\"></span>pending</span></li>" +
-		"<li><span>Admin surface</span><span class=\"status\" data-check=\"admin\"><span class=\"dot\"></span>pending</span></li>" +
-		"</ul><div class=\"actions\"><button class=\"button\" id=\"refresh-checks\" type=\"button\">Refresh probes</button><a class=\"button subtle\" href=\"" + htmlEscape(opts.ConsolePath) + "\">Reload console route</a></div></div>" +
-		"<div class=\"panel\"><div class=\"label\">Platform contract</div><ul><li>Public web mount stays separate from product APIs</li><li>Future SPA assets can be served here without moving backend routes</li><li>Both CE and EE read the same meta contract from <code class=\"inline\">/api/meta/web</code></li></ul></div>" +
-		"</div>" +
-		"<div class=\"stack\">" +
-		"<div class=\"panel\"><div class=\"label\">Quick metrics</div><div class=\"metric-grid\">" +
-		"<div class=\"metric\"><span class=\"muted\">Edition</span><strong id=\"metric-edition\">" + htmlEscape(opts.Edition) + "</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">API prefix</span><strong id=\"metric-prefix\">" + htmlEscape(opts.APIPrefix) + "</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Health status</span><strong id=\"metric-health\">pending</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Admin status</span><strong id=\"metric-admin\">pending</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Overview users</span><strong id=\"metric-users\">pending</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Overview storage</span><strong id=\"metric-storage\">pending</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Overview active users</span><strong id=\"metric-active-users\">pending</strong></div>" +
-		"<div class=\"metric\"><span class=\"muted\">Overview cost</span><strong id=\"metric-cost\">pending</strong></div>" +
-		"</div></div>" +
-		"<div class=\"panel\"><div class=\"label\">Priority routes</div><ul class=\"endpoint-list\">" +
-		"<li><span>Quota API</span><span>" + htmlEscape(opts.APIPrefix) + "/quota</span></li>" +
-		"<li><span>Billing extension seam</span><span>" + htmlEscape(opts.APIPrefix) + "/billing/*</span></li>" +
-		"<li><span>Admin overview</span><span>" + htmlEscape(opts.AdminPath) + "/stats</span></li>" +
-		"</ul></div>" +
-		"</div></div>"
+	return opts.ExtraSectionsHTML +
+		"<section class=\"section\" id=\"settings\"><div class=\"section-header\"><h2>Settings</h2><button class=\"button secondary\" id=\"refresh-settings\" type=\"button\">Refresh settings</button></div><div id=\"settings-groups\" class=\"settings-groups\"><p>pending</p></div></section>" +
+		"<section class=\"section\" id=\"audit-logs\"><div class=\"section-header\"><h2>Audit logs</h2></div><form class=\"toolbar\" id=\"audit-filter\">" +
+		"<div class=\"field\"><label for=\"audit-event-type\">Event type</label><input id=\"audit-event-type\" name=\"event_type\" autocomplete=\"off\"></div>" +
+		"<div class=\"field\"><label for=\"audit-actor-user-id\">Actor user ID</label><input id=\"audit-actor-user-id\" name=\"actor_user_id\" autocomplete=\"off\"></div>" +
+		"<div class=\"field\"><label for=\"audit-target-type\">Target type</label><input id=\"audit-target-type\" name=\"target_type\" autocomplete=\"off\"></div>" +
+		"<div class=\"field\"><label for=\"audit-target-id\">Target ID</label><input id=\"audit-target-id\" name=\"target_id\" autocomplete=\"off\"></div>" +
+		"<button class=\"button\" type=\"submit\">Apply</button><button class=\"button secondary\" id=\"clear-audit-filter\" type=\"button\">Clear</button></form>" +
+		"<div class=\"table-wrap\" style=\"margin-top:12px\"><table><thead><tr><th>Created</th><th>Event</th><th>Actor</th><th>Target</th><th>IP</th><th>Metadata</th></tr></thead><tbody id=\"audit-log-rows\"><tr><td colspan=\"6\" class=\"muted\">pending</td></tr></tbody></table></div></section>" +
+		"<section class=\"section\" id=\"security-stats\"><div class=\"section-header\"><h2>Security stats</h2><button class=\"button secondary\" id=\"refresh-security\" type=\"button\">Refresh security</button></div><div class=\"subgrid\" id=\"security-summary\"><div class=\"stat\"><span>Login success 24h</span><strong>pending</strong></div></div><div class=\"table-wrap\" style=\"margin-top:12px\"><table><thead><tr><th>Event type</th><th>Count</th></tr></thead><tbody id=\"security-events\"><tr><td colspan=\"2\" class=\"muted\">pending</td></tr></tbody></table></div></section>" +
+		"<section class=\"section\" id=\"notification-failures\"><div class=\"section-header\"><h2>Notification failures</h2><button class=\"button secondary\" id=\"refresh-notifications\" type=\"button\">Refresh notifications</button></div><div class=\"table-wrap\"><table><thead><tr><th>Created</th><th>User</th><th>Channel</th><th>Category</th><th>Type</th><th>Attempts</th><th>Error</th><th>Action</th></tr></thead><tbody id=\"notification-failure-rows\"><tr><td colspan=\"8\" class=\"muted\">pending</td></tr></tbody></table></div></section>" +
+		"<section class=\"section\" id=\"health-readiness\"><div class=\"section-header\"><h2>Health/readiness</h2><button class=\"button secondary\" id=\"refresh-health\" type=\"button\">Refresh health</button></div><div class=\"probe-list\"><div class=\"probe\" id=\"health-probe\"><h3>/healthz</h3><span class=\"pill\">pending</span><pre>{}</pre></div><div class=\"probe\" id=\"ready-probe\"><h3>/readyz</h3><span class=\"pill\">pending</span><pre>{}</pre></div></div></section>" +
+		"<div class=\"section\"><div class=\"subgrid\"><div class=\"stat\"><span>API prefix</span><strong class=\"mono\">" + htmlEscape(opts.APIPrefix) + "</strong></div><div class=\"stat\"><span>Admin stats</span><strong class=\"mono\">" + htmlEscape(opts.AdminPath) + "/stats</strong></div><div class=\"stat\"><span>Admin settings</span><strong class=\"mono\">" + htmlEscape(opts.AdminPath) + "/settings</strong></div><div class=\"stat\"><span>Security stats</span><strong class=\"mono\">" + htmlEscape(opts.APIPrefix) + "/admin/security/stats</strong></div><div class=\"stat\"><span>Notification failures</span><strong class=\"mono\">" + htmlEscape(opts.AdminPath) + "/notifications/failures</strong></div><div class=\"stat\"><span>Console route</span><strong class=\"mono\">" + htmlEscape(opts.ConsolePath) + "</strong></div><div class=\"stat\"><span>Overview route</span><strong class=\"mono\">" + htmlEscape(opts.OverviewPath) + "</strong></div></div></div>"
 }
 
 func pageFooter(opts Options) string {
-	return "<div class=\"actions\"><a class=\"button\" href=\"" + htmlEscape(opts.APIPrefix) + "/quota\">Inspect protected API route</a><a class=\"button subtle\" href=\"/api/meta/web\">Read web metadata</a></div><small>Support contact: " + htmlEscape(opts.SupportEmail) + "</small></section></main>"
+	return "<footer><small>Support contact: " + htmlEscape(opts.SupportEmail) + " - <a href=\"/api/meta/web\">Web metadata</a> - <a href=\"" + htmlEscape(opts.ConsolePath) + "\">Console route</a></small></footer></main>"
 }

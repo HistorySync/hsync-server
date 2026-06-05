@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"testing"
@@ -615,6 +616,74 @@ func TestCloudExpiryPreservesMaxEntitlement(t *testing.T) {
 	}
 	if ent.CloudSyncEnabled {
 		t.Fatal("cloud sync still enabled after expiry")
+	}
+}
+
+func TestEntitlementGuardCloudSyncRequiresActiveCloud(t *testing.T) {
+	svc, _, clock := newTestEntitlement()
+	uid := uuid.New()
+
+	if err := svc.RequireCloudSync(ctx(), uid); !errors.Is(err, ErrFeatureNotEnabled) {
+		t.Fatalf("RequireCloudSync(free) error = %v, want ErrFeatureNotEnabled", err)
+	}
+
+	if _, err := svc.GrantPlanToUser(ctx(), uid, model.PlanCodeCloud, GrantOptions{BillingPeriod: model.BillingPeriodMonthly}); err != nil {
+		t.Fatalf("grant cloud: %v", err)
+	}
+	if err := svc.RequireCloudSync(ctx(), uid); err != nil {
+		t.Fatalf("RequireCloudSync(active cloud) error = %v, want nil", err)
+	}
+
+	clock.t = clock.t.AddDate(0, 2, 0)
+	if err := svc.RequireCloudSync(ctx(), uid); !errors.Is(err, ErrFeatureNotEnabled) {
+		t.Fatalf("RequireCloudSync(expired cloud) error = %v, want ErrFeatureNotEnabled", err)
+	}
+}
+
+func TestEntitlementGuardMinimumTierProAndMax(t *testing.T) {
+	svc, _, _ := newTestEntitlement()
+	uid := uuid.New()
+
+	if err := svc.RequireMinimumTier(ctx(), uid, model.EntitlementTierPro); !errors.Is(err, ErrEntitlementRequired) {
+		t.Fatalf("RequireMinimumTier(free, pro) error = %v, want ErrEntitlementRequired", err)
+	}
+	if _, err := svc.GrantPlanToUser(ctx(), uid, model.PlanCodePro, GrantOptions{}); err != nil {
+		t.Fatalf("grant pro: %v", err)
+	}
+	if err := svc.RequireMinimumTier(ctx(), uid, model.EntitlementTierPro); err != nil {
+		t.Fatalf("RequireMinimumTier(pro, pro) error = %v, want nil", err)
+	}
+	if err := svc.RequireMinimumTier(ctx(), uid, model.EntitlementTierMax); !errors.Is(err, ErrEntitlementRequired) {
+		t.Fatalf("RequireMinimumTier(pro, max) error = %v, want ErrEntitlementRequired", err)
+	}
+	if _, err := svc.GrantPlanToUser(ctx(), uid, model.PlanCodeMax, GrantOptions{}); err != nil {
+		t.Fatalf("grant max: %v", err)
+	}
+	if err := svc.RequireMinimumTier(ctx(), uid, model.EntitlementTierMax); err != nil {
+		t.Fatalf("RequireMinimumTier(max, max) error = %v, want nil", err)
+	}
+}
+
+func TestEntitlementGuardMaxLifetimeFeaturesSurviveCloudExpiry(t *testing.T) {
+	svc, _, clock := newTestEntitlement()
+	uid := uuid.New()
+
+	if _, err := svc.GrantPlanToUser(ctx(), uid, model.PlanCodeMaxCloud1Y, GrantOptions{}); err != nil {
+		t.Fatalf("grant bundle: %v", err)
+	}
+	clock.t = clock.t.AddDate(0, 13, 0)
+	if _, err := svc.RefreshExpiredSubscriptions(ctx()); err != nil {
+		t.Fatalf("RefreshExpiredSubscriptions() error = %v", err)
+	}
+
+	if err := svc.RequireCloudSync(ctx(), uid); !errors.Is(err, ErrFeatureNotEnabled) {
+		t.Fatalf("RequireCloudSync(expired bundle cloud) error = %v, want ErrFeatureNotEnabled", err)
+	}
+	if err := svc.RequireWriteback(ctx(), uid); err != nil {
+		t.Fatalf("RequireWriteback(max lifetime) error = %v, want nil", err)
+	}
+	if err := svc.RequireMinimumTier(ctx(), uid, model.EntitlementTierMax); err != nil {
+		t.Fatalf("RequireMinimumTier(max lifetime) error = %v, want nil", err)
 	}
 }
 

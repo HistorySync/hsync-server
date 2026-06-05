@@ -81,6 +81,18 @@ func (h *Handlers) GetMyCreditLedger(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ledger": entries, "limit": limit})
 }
 
+func (h *Handlers) requireEntitlement(req service.EntitlementRequirement) fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if h.deps.Services == nil || h.deps.Services.Entitlement == nil {
+			return apierrors.NewInternal("entitlement service is not configured")
+		}
+		if err := h.deps.Services.Entitlement.Require(c.Context(), auth.UserID(c), req); err != nil {
+			return mapEntitlementError(err)
+		}
+		return c.Next()
+	}
+}
+
 // ── Admin entry points (replace real webhooks in CE) ─────────
 
 type adminGrantPlanRequest struct {
@@ -341,6 +353,10 @@ func mapEntitlementError(err error) error {
 		return apierrors.New(apierrors.CodeInvalidCreditAmount, err.Error())
 	case errors.Is(err, service.ErrSubscriptionNotFound):
 		return apierrors.New(apierrors.CodeSubscriptionNotFound, err.Error())
+	case errors.Is(err, service.ErrFeatureNotEnabled):
+		return apierrors.New(apierrors.CodeFeatureNotEnabled, err.Error())
+	case errors.Is(err, service.ErrEntitlementRequired):
+		return apierrors.New(apierrors.CodeEntitlementRequired, err.Error())
 	default:
 		return apierrors.NewInternal(err.Error())
 	}
@@ -360,7 +376,8 @@ func mapPaymentWebhookError(err error) error {
 		errors.Is(err, service.ErrInsufficientCredits), errors.Is(err, service.ErrIdempotencyKeyRequired),
 		errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyInProgress),
 		errors.Is(err, service.ErrIdempotencyStoreUnavailable), errors.Is(err, service.ErrInvalidCreditAmount),
-		errors.Is(err, service.ErrSubscriptionNotFound):
+		errors.Is(err, service.ErrSubscriptionNotFound), errors.Is(err, service.ErrFeatureNotEnabled),
+		errors.Is(err, service.ErrEntitlementRequired):
 		return mapEntitlementError(err)
 	default:
 		return apierrors.NewInternal(err.Error())

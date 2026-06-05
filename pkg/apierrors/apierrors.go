@@ -75,6 +75,8 @@ const (
 	CodeBillingDisabled Code = "BILLING_DISABLED"
 
 	// Plans / entitlements / AI credits
+	CodeEntitlementRequired   Code = "ENTITLEMENT_REQUIRED"
+	CodeFeatureNotEnabled     Code = "FEATURE_NOT_ENABLED"
 	CodePlanNotFound          Code = "PLAN_NOT_FOUND"
 	CodePlanUnavailable       Code = "PLAN_UNAVAILABLE"
 	CodeInsufficientCredits   Code = "INSUFFICIENT_CREDITS"
@@ -141,6 +143,8 @@ var catalog = map[Code]Entry{
 	CodeDeviceNotRegistered:       {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
 	CodeDeviceRevoked:             {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
 	CodeBillingDisabled:           {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
+	CodeEntitlementRequired:       {CodeEntitlementRequired, http.StatusPaymentRequired, "entitlement required"},
+	CodeFeatureNotEnabled:         {CodeFeatureNotEnabled, http.StatusForbidden, "feature is not enabled"},
 	CodePlanNotFound:              {CodePlanNotFound, http.StatusNotFound, "plan not found"},
 	CodePlanUnavailable:           {CodePlanUnavailable, http.StatusBadRequest, "plan is not available"},
 	CodeInsufficientCredits:       {CodeInsufficientCredits, http.StatusPaymentRequired, "insufficient ai credits"},

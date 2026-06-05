@@ -20,6 +20,8 @@ var (
 	ErrIdempotencyKeyRequired = errors.New("idempotency key is required")
 	ErrInvalidCreditAmount    = errors.New("credit amount must be non-zero")
 	ErrSubscriptionNotFound   = errors.New("subscription not found")
+	ErrFeatureNotEnabled      = errors.New("feature is not enabled")
+	ErrEntitlementRequired    = errors.New("entitlement required")
 )
 
 // ── Store interfaces ─────────────────────────────────────────
@@ -421,6 +423,71 @@ func (s *EntitlementService) GetUserEntitlements(ctx context.Context, userID uui
 	return &EntitlementView{Entitlement: *ent, Subscriptions: views}, nil
 }
 
+// EntitlementFeature is a feature flag controlled by the user's effective
+// billing entitlement.
+type EntitlementFeature string
+
+const (
+	FeatureCloudSync EntitlementFeature = "cloud_sync_enabled"
+	FeatureWriteback EntitlementFeature = "writeback_enabled"
+)
+
+// EntitlementRequirement describes a reusable access check. It can require a
+// concrete feature flag, a minimum lifetime tier, or both.
+type EntitlementRequirement struct {
+	Feature     EntitlementFeature
+	MinimumTier model.EntitlementTier
+}
+
+// RequireCloudSync enforces access to cloud sync APIs.
+func (s *EntitlementService) RequireCloudSync(ctx context.Context, userID uuid.UUID) error {
+	return s.Require(ctx, userID, EntitlementRequirement{Feature: FeatureCloudSync})
+}
+
+// RequireWriteback enforces access to future write-back APIs.
+func (s *EntitlementService) RequireWriteback(ctx context.Context, userID uuid.UUID) error {
+	return s.Require(ctx, userID, EntitlementRequirement{Feature: FeatureWriteback})
+}
+
+// RequireMinimumTier enforces access to a lifetime-tier gated capability.
+func (s *EntitlementService) RequireMinimumTier(ctx context.Context, userID uuid.UUID, tier model.EntitlementTier) error {
+	return s.Require(ctx, userID, EntitlementRequirement{MinimumTier: tier})
+}
+
+// Require verifies that the user's effective entitlement satisfies req. Missing
+// entitlement rows are treated as the implicit free tier.
+func (s *EntitlementService) Require(ctx context.Context, userID uuid.UUID, req EntitlementRequirement) error {
+	ent, err := s.effectiveEntitlement(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if req.MinimumTier != "" && ent.Tier.Rank() < req.MinimumTier.Rank() {
+		return ErrEntitlementRequired
+	}
+	switch req.Feature {
+	case "":
+		return nil
+	case FeatureCloudSync:
+		if !ent.CloudSyncEnabled {
+			return ErrFeatureNotEnabled
+		}
+		active, err := s.hasActiveCloudSubscription(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if !active {
+			return ErrFeatureNotEnabled
+		}
+	case FeatureWriteback:
+		if !ent.WritebackEnabled {
+			return ErrFeatureNotEnabled
+		}
+	default:
+		return ErrFeatureNotEnabled
+	}
+	return nil
+}
+
 // GetAICreditBalance returns the user's live (non-expired) AI credit balance.
 func (s *EntitlementService) GetAICreditBalance(ctx context.Context, userID uuid.UUID) (int64, error) {
 	return s.credits.Balance(ctx, userID)
@@ -716,6 +783,32 @@ func (s *EntitlementService) loadEnabledPlan(ctx context.Context, code string) (
 		return nil, ErrPlanDisabled
 	}
 	return plan, nil
+}
+
+func (s *EntitlementService) effectiveEntitlement(ctx context.Context, userID uuid.UUID) (*model.UserEntitlement, error) {
+	ent, err := s.entitlements.Get(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("get entitlement: %w", err)
+	}
+	if ent == nil {
+		def := model.DefaultEntitlement(userID)
+		ent = &def
+	}
+	return ent, nil
+}
+
+func (s *EntitlementService) hasActiveCloudSubscription(ctx context.Context, userID uuid.UUID) (bool, error) {
+	subs, err := s.subscriptions.ListActiveByUser(ctx, userID)
+	if err != nil {
+		return false, fmt.Errorf("list subscriptions: %w", err)
+	}
+	now := s.now()
+	for _, sub := range subs {
+		if sub.Status == model.SubscriptionStatusActive && sub.ActiveUntil.After(now) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // alreadyFulfilled reports whether an order with this provider+external id has

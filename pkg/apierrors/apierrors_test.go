@@ -109,8 +109,12 @@ func TestEveryCodeInCatalog(t *testing.T) {
 		CodeQuotaExceeded, CodeReservationDenied,
 		CodeDeviceNotRegistered, CodeDeviceRevoked,
 		CodeBillingDisabled,
+		CodeEntitlementRequired, CodeFeatureNotEnabled,
+		CodePlanNotFound, CodePlanUnavailable, CodeInsufficientCredits,
+		CodeIdempotencyKeyMissing, CodeInvalidCreditAmount, CodeSubscriptionNotFound,
 		CodeInvalidUserID, CodeUserNotFound,
 		CodeInvalidJSON, CodeMissingKey, CodeOptionsDisabled,
+		CodeInvalidSettingValue, CodeUnknownSetting,
 	}
 	for _, c := range codes {
 		if _, ok := catalog[c]; !ok {

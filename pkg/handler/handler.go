@@ -1893,11 +1893,25 @@ func (h *Handlers) AdminSetSetting(c fiber.Ctx) error {
 		EventType:  model.AuditEventAdminConfigChange,
 		TargetType: "system_setting",
 		TargetID:   key,
-		Metadata: map[string]any{
-			"key": key,
-		},
+		Metadata:   settingAuditMetadata(h.deps.Services.Settings, key),
 	})
 	return c.JSON(fiber.Map{"key": key, "status": "updated"})
+}
+
+func settingAuditMetadata(settings *service.SettingsService, key string) map[string]any {
+	metadata := map[string]any{
+		"key": key,
+	}
+	if settings == nil {
+		return metadata
+	}
+	if def, ok := settings.Definition(key); ok {
+		metadata["group"] = def.Group
+		metadata["sensitive"] = def.Sensitive
+		metadata["requires_restart"] = def.RequiresRestart
+		metadata["value_type"] = string(def.Type)
+	}
+	return metadata
 }
 
 // AdminListAuditLogs returns recent structured audit events for operators.

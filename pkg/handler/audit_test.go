@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,11 +16,15 @@ import (
 )
 
 type handlerAuditStore struct {
-	filter model.AuditListFilter
-	logs   []model.AuditLog
+	filter  model.AuditListFilter
+	logs    []model.AuditLog
+	created []model.AuditLog
 }
 
-func (s *handlerAuditStore) Create(_ context.Context, _ *model.AuditLog) error {
+func (s *handlerAuditStore) Create(_ context.Context, event *model.AuditLog) error {
+	if event != nil {
+		s.created = append(s.created, *event)
+	}
 	return nil
 }
 
@@ -85,5 +90,64 @@ func TestAdminListAuditLogsParsesFilters(t *testing.T) {
 	}
 	if body.Limit != 25 || body.Offset != 10 {
 		t.Fatalf("response pagination = %d/%d, want 25/10", body.Limit, body.Offset)
+	}
+}
+
+func TestAdminSetSettingRecordsAuditEvent(t *testing.T) {
+	auditStore := &handlerAuditStore{}
+	settingStore := &handlerSettingStore{}
+	settings := service.NewSettingsService(settingStore, []service.SettingDefinition{
+		{
+			Key:         "api_token",
+			Type:        service.SettingTypeString,
+			Default:     "",
+			Description: "a secret",
+			Group:       service.SettingGroupSecurity,
+			Sensitive:   true,
+		},
+	})
+	h := New(Deps{
+		Services: &service.Services{
+			Settings: settings,
+			Audit:    service.NewAuditService(auditStore),
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("PUT", "/admin/settings/api_token", strings.NewReader(`{"value":"shh"}`))
+	req.Header.Set("X-Admin-Key", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	if len(auditStore.created) != 1 {
+		t.Fatalf("created audit count = %d, want 1", len(auditStore.created))
+	}
+	event := auditStore.created[0]
+	if event.EventType != model.AuditEventAdminConfigChange {
+		t.Fatalf("event type = %q, want %q", event.EventType, model.AuditEventAdminConfigChange)
+	}
+	if event.TargetType != "system_setting" || event.TargetID != "api_token" {
+		t.Fatalf("target = %q/%q, want system_setting/api_token", event.TargetType, event.TargetID)
+	}
+	if event.Metadata["key"] != "api_token" || event.Metadata["group"] != service.SettingGroupSecurity {
+		t.Fatalf("metadata = %+v, want key and group", event.Metadata)
+	}
+	if event.Metadata["sensitive"] != true {
+		t.Fatalf("metadata sensitive = %v, want true", event.Metadata["sensitive"])
+	}
+	if _, ok := event.Metadata["value"]; ok {
+		t.Fatalf("metadata leaked value: %+v", event.Metadata)
+	}
+	for _, value := range event.Metadata {
+		if value == "shh" {
+			t.Fatalf("metadata leaked sensitive plaintext: %+v", event.Metadata)
+		}
 	}
 }

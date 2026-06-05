@@ -145,16 +145,14 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────
 	svcs := service.New(service.Deps{
-		Repos:                repos,
-		TokenManager:         tokenManager,
-		BlobStore:            blobStore,
-		StripeKey:            cfg.StripeSecretKey,
-		StripeWebhook:        cfg.StripeWebhookSecret,
-		StripeDisabled:       cfg.StripeDisabled,
-		GumroadWebhookSecret: cfg.GumroadWebhookSecret,
-		AfdianWebhookToken:   cfg.AfdianWebhookToken,
-		SecuritySecret:       cfg.SecuritySecret,
-		Notifier:             notifier,
+		Repos:          repos,
+		TokenManager:   tokenManager,
+		BlobStore:      blobStore,
+		StripeKey:      cfg.StripeSecretKey,
+		StripeWebhook:  cfg.StripeWebhookSecret,
+		StripeDisabled: cfg.StripeDisabled,
+		SecuritySecret: cfg.SecuritySecret,
+		Notifier:       notifier,
 		Notification: service.NotificationConfig{
 			Enabled:            cfg.NotificationsEnabled,
 			AppName:            cfg.WebAppName,
@@ -241,34 +239,6 @@ func main() {
 						Int64("failed_snapshots", snapReport.Failed).
 						Time("older_than", bundleReport.Before).
 						Msg("retention cleanup: purged expired data")
-					return nil
-				},
-			},
-			scheduler.Task{
-				Name:     "billing-maintenance",
-				LockKey:  scheduler.LockBillingMaintenance,
-				Interval: cfg.BillingMaintenanceInterval,
-				Run: func(ctx context.Context) error {
-					if svcs.Entitlement == nil {
-						return nil
-					}
-					expiredSubs, err := svcs.Entitlement.RefreshExpiredSubscriptions(ctx)
-					if err != nil {
-						return err
-					}
-					periodGrants, err := svcs.Entitlement.GrantDuePeriodCredits(ctx)
-					if err != nil {
-						return err
-					}
-					expiredCredits, err := svcs.Entitlement.ExpireAICredits(ctx)
-					if err != nil {
-						return err
-					}
-					log.Info().
-						Int64("expired_subscriptions", expiredSubs).
-						Int("period_grants", periodGrants).
-						Int64("expired_credit_lots", expiredCredits).
-						Msg("billing maintenance completed")
 					return nil
 				},
 			},

@@ -83,8 +83,6 @@ type Deps struct {
 	StripeKey            string
 	StripeWebhook        string
 	StripeDisabled       bool
-	GumroadWebhookSecret string
-	AfdianWebhookToken   string
 	Reservation          UsageReservationHook
 	Notifier             provider.Notifier
 	Webhook              provider.WebhookProvider
@@ -173,9 +171,7 @@ type Services struct {
 	Audit          *AuditService
 	SecurityStats  *SecurityStatsService
 	Settings       *SettingsService
-	Entitlement    *EntitlementService
 	Idempotency    *IdempotencyService
-	PaymentWebhook *PaymentWebhookService
 }
 
 // New creates all service instances with their dependencies.
@@ -243,35 +239,9 @@ func New(deps Deps) *Services {
 	}
 	settingsSvc := NewSettingsService(settingStoreImpl, defaultSettingDefinitions())
 
-	// Entitlement service: paid plans, cloud subscriptions, and AI credits. It
-	// is built only when repositories are available; a nil service is handled by
-	// the handlers (like Settings/Audit).
-	var entitlementSvc *EntitlementService
-	if deps.Repos != nil {
-		entitlementSvc = NewEntitlementService(
-			deps.Repos.Plans,
-			deps.Repos.Entitlements,
-			deps.Repos.Subscriptions,
-			deps.Repos.CreditLedger,
-			deps.Repos.PaymentOrders,
-		)
-	}
 	var idempotencySvc *IdempotencyService
 	if deps.Repos != nil {
 		idempotencySvc = NewIdempotencyService(deps.Repos.Idempotency)
-	}
-	var paymentWebhookSvc *PaymentWebhookService
-	if deps.Repos != nil {
-		paymentWebhookSvc = NewPaymentWebhookService(PaymentWebhookDeps{
-			Orders:      deps.Repos.PaymentOrders,
-			Entitlement: entitlementSvc,
-			Audit:       auditSvc,
-			Idempotency: idempotencySvc,
-			Config: provider.PaymentWebhookConfig{
-				GumroadSecret: deps.GumroadWebhookSecret,
-				AfdianToken:   deps.AfdianWebhookToken,
-			},
-		})
 	}
 
 	return &Services{
@@ -287,9 +257,7 @@ func New(deps Deps) *Services {
 		Audit:          auditSvc,
 		SecurityStats:  securityStatsSvc,
 		Settings:       settingsSvc,
-		Entitlement:    entitlementSvc,
 		Idempotency:    idempotencySvc,
-		PaymentWebhook: paymentWebhookSvc,
 	}
 }
 

@@ -43,11 +43,9 @@ type Config struct {
 	SecuritySecret string `mapstructure:"security_secret"` // 32-byte AES-GCM key, raw or base64
 
 	// Stripe (optional)
-	StripeSecretKey      string `mapstructure:"stripe_secret_key"`
-	StripeWebhookSecret  string `mapstructure:"stripe_webhook_secret"`
-	StripeDisabled       bool   `mapstructure:"stripe_disabled"`
-	GumroadWebhookSecret string `mapstructure:"gumroad_webhook_secret"`
-	AfdianWebhookToken   string `mapstructure:"afdian_webhook_token"`
+	StripeSecretKey     string `mapstructure:"stripe_secret_key"`
+	StripeWebhookSecret string `mapstructure:"stripe_webhook_secret"`
+	StripeDisabled      bool   `mapstructure:"stripe_disabled"`
 
 	// Admin
 	AdminKey string `mapstructure:"admin_key"`
@@ -73,10 +71,6 @@ type Config struct {
 	RetentionCleanupInterval time.Duration `mapstructure:"retention_cleanup_interval"`
 	RetentionGracePeriod     time.Duration `mapstructure:"retention_grace_period"`
 	RetentionDryRun          bool          `mapstructure:"retention_dry_run"`
-	// BillingMaintenanceInterval drives the periodic billing task: expiring due
-	// subscriptions, granting rolled-over cloud period credits, and recording
-	// expired AI credit lots. Non-destructive; set to 0 to disable.
-	BillingMaintenanceInterval time.Duration `mapstructure:"billing_maintenance_interval"`
 
 	// Runtime options
 	OptionsFile string `mapstructure:"options_file"`
@@ -119,23 +113,22 @@ func DefaultConfig() *Config {
 		OIDCScopes:       "openid profile email",
 		TurnstileTimeout: 3 * time.Second,
 
-		BackgroundTasksEnabled:     true,
-		QuotaReconcileInterval:     24 * time.Hour,
-		RetentionCleanupInterval:   0,
-		RetentionGracePeriod:       30 * 24 * time.Hour,
-		RetentionDryRun:            true,
-		BillingMaintenanceInterval: time.Hour,
-		OptionsFile:                "",
-		PublicURL:                  "http://localhost:8080",
-		NotificationsEnabled:       false,
-		QuotaWarningThreshold:      80,
-		QuotaExhaustedThreshold:    100,
-		EmailVerificationPath:      "/verify-email",
-		PasswordResetPath:          "/reset-password",
-		SMTPEnabled:                false,
-		SMTPPort:                   587,
-		SMTPFromName:               "HistorySync Cloud",
-		SMTPTLSMode:                "starttls",
+		BackgroundTasksEnabled:   true,
+		QuotaReconcileInterval:   24 * time.Hour,
+		RetentionCleanupInterval: 0,
+		RetentionGracePeriod:     30 * 24 * time.Hour,
+		RetentionDryRun:          true,
+		OptionsFile:              "",
+		PublicURL:                "http://localhost:8080",
+		NotificationsEnabled:     false,
+		QuotaWarningThreshold:    80,
+		QuotaExhaustedThreshold:  100,
+		EmailVerificationPath:    "/verify-email",
+		PasswordResetPath:        "/reset-password",
+		SMTPEnabled:              false,
+		SMTPPort:                 587,
+		SMTPFromName:             "HistorySync Cloud",
+		SMTPTLSMode:              "starttls",
 	}
 }
 
@@ -196,8 +189,6 @@ func load() (*Config, error) {
 	v.SetDefault("s3_use_ssl", cfg.S3UseSSL)
 	v.SetDefault("security_secret", cfg.SecuritySecret)
 	v.SetDefault("stripe_disabled", cfg.StripeDisabled)
-	v.SetDefault("gumroad_webhook_secret", cfg.GumroadWebhookSecret)
-	v.SetDefault("afdian_webhook_token", cfg.AfdianWebhookToken)
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
 	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
 	v.SetDefault("oidc_scopes", cfg.OIDCScopes)
@@ -210,7 +201,6 @@ func load() (*Config, error) {
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
-	v.SetDefault("billing_maintenance_interval", cfg.BillingMaintenanceInterval)
 	v.SetDefault("options_file", cfg.OptionsFile)
 	v.SetDefault("public_url", cfg.PublicURL)
 	v.SetDefault("notifications_enabled", cfg.NotificationsEnabled)

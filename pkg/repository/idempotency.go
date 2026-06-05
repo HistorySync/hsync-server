@@ -130,6 +130,13 @@ func (r *IdempotencyRepo) MarkFailed(ctx context.Context, id uuid.UUID, reason s
 	return nil
 }
 
+func trimFailureReason(reason string) string {
+	if len(reason) <= 500 {
+		return reason
+	}
+	return reason[:500]
+}
+
 func insertProcessingIdempotency(ctx context.Context, tx pgx.Tx, p IdempotencyClaimParams) (*model.IdempotencyRecord, error) {
 	const q = `
 		INSERT INTO idempotency_records (

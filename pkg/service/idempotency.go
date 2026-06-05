@@ -18,6 +18,7 @@ import (
 var (
 	ErrIdempotencyConflict         = errors.New("idempotency key reused with a different request")
 	ErrIdempotencyInProgress       = errors.New("idempotent request is already processing")
+	ErrIdempotencyKeyRequired      = errors.New("idempotency key is required")
 	ErrIdempotencyStoreUnavailable = errors.New("idempotency store unavailable")
 )
 

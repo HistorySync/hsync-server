@@ -52,13 +52,6 @@ var allTables = []string{
 	"user_two_factor_backup_codes",
 	"audit_logs",
 	"user_notification_preferences",
-	// Billing: entitlements, subscriptions, ledger, and orders are reset between
-	// tests. plans/plan_prices are intentionally excluded so the migration-seeded
-	// catalog survives (like schema_migrations).
-	"user_entitlements",
-	"user_subscriptions",
-	"ai_credit_ledger",
-	"payment_orders",
 }
 
 func TestMain(m *testing.M) {

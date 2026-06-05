@@ -9,21 +9,13 @@ import (
 type AuditEventType string
 
 const (
-	AuditEventLoginSuccess                  AuditEventType = "auth.login.success"
-	AuditEventLoginFailure                  AuditEventType = "auth.login.failure"
-	AuditEventTwoFactorChallengeSuccess     AuditEventType = "auth.2fa.challenge.success"
-	AuditEventTwoFactorChallengeFailure     AuditEventType = "auth.2fa.challenge.failure"
-	AuditEventTwoFactorEnable               AuditEventType = "auth.2fa.enable"
-	AuditEventTwoFactorDisable              AuditEventType = "auth.2fa.disable"
-	AuditEventAdminConfigChange             AuditEventType = "admin.config.change"
-	AuditEventAdminPlanGrant                AuditEventType = "admin.billing.plan_grant"
-	AuditEventAdminCreditAdjust             AuditEventType = "admin.billing.credit_adjust"
-	AuditEventBillingWebhookReceived        AuditEventType = "billing.webhook.received"
-	AuditEventBillingWebhookRejected        AuditEventType = "billing.webhook.rejected"
-	AuditEventBillingOrderPaid              AuditEventType = "billing.order.paid"
-	AuditEventBillingOrderFulfillmentFailed AuditEventType = "billing.order.fulfillment_failed"
-	AuditEventBillingOrderCompleted         AuditEventType = "billing.order.completed"
-	AuditEventBillingOrderRetry             AuditEventType = "billing.order.retry"
+	AuditEventLoginSuccess              AuditEventType = "auth.login.success"
+	AuditEventLoginFailure              AuditEventType = "auth.login.failure"
+	AuditEventTwoFactorChallengeSuccess AuditEventType = "auth.2fa.challenge.success"
+	AuditEventTwoFactorChallengeFailure AuditEventType = "auth.2fa.challenge.failure"
+	AuditEventTwoFactorEnable           AuditEventType = "auth.2fa.enable"
+	AuditEventTwoFactorDisable          AuditEventType = "auth.2fa.disable"
+	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
 )
 
 type AuditLog struct {

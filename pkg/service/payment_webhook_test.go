@@ -114,9 +114,12 @@ func (f fakePaymentOrderLifecycle) MarkFailed(_ context.Context, id uuid.UUID, f
 func newTestPaymentWebhook() (*PaymentWebhookService, *EntitlementService, *fakeBilling, *testClock) {
 	ent, fb, clock := newTestEntitlement()
 	store := fakePaymentOrderLifecycle{fakeBilling: fb}
+	idempotency, _ := newFakeIdempotencyService()
+	idempotency.now = clock.now
 	svc := NewPaymentWebhookService(PaymentWebhookDeps{
 		Orders:      store,
 		Entitlement: ent,
+		Idempotency: idempotency,
 		Config: provider.PaymentWebhookConfig{
 			GumroadSecret: "gum-secret",
 			AfdianToken:   "afdian-token",
@@ -190,6 +193,42 @@ func TestGumroadWebhookReplayIsIdempotent(t *testing.T) {
 	}
 	if subs, _ := fb.ListActiveByUser(ctx(), uid); len(subs) != 0 {
 		t.Fatalf("subscriptions = %d, want none for pro", len(subs))
+	}
+}
+
+func TestWebhookReplayWithDifferentPayloadIsRejected(t *testing.T) {
+	svc, _, fb, _ := newTestPaymentWebhook()
+	uid := uuid.New()
+	first := PaymentWebhookInput{
+		Provider: model.PaymentProviderGumroad,
+		Body: gumroadBody(map[string]string{
+			"resource_name": "sale",
+			"sale_id":       "sale-conflict",
+			"product_id":    "pro",
+			"hsync_user_id": uid.String(),
+			"hsync_secret":  "gum-secret",
+		}),
+	}
+	conflict := PaymentWebhookInput{
+		Provider: model.PaymentProviderGumroad,
+		Body: gumroadBody(map[string]string{
+			"resource_name": "sale",
+			"sale_id":       "sale-conflict",
+			"product_id":    "max",
+			"hsync_user_id": uid.String(),
+			"hsync_secret":  "gum-secret",
+		}),
+	}
+
+	if _, err := svc.Handle(ctx(), first); err != nil {
+		t.Fatalf("first Handle(): %v", err)
+	}
+	_, err := svc.Handle(ctx(), conflict)
+	if !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflict Handle() error = %v, want ErrIdempotencyConflict", err)
+	}
+	if bal := fb.liveBalance(uid); bal != 200 {
+		t.Fatalf("balance = %d after conflict, want 200", bal)
 	}
 }
 

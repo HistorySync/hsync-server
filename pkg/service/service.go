@@ -174,6 +174,7 @@ type Services struct {
 	SecurityStats  *SecurityStatsService
 	Settings       *SettingsService
 	Entitlement    *EntitlementService
+	Idempotency    *IdempotencyService
 	PaymentWebhook *PaymentWebhookService
 }
 
@@ -255,12 +256,17 @@ func New(deps Deps) *Services {
 			deps.Repos.PaymentOrders,
 		)
 	}
+	var idempotencySvc *IdempotencyService
+	if deps.Repos != nil {
+		idempotencySvc = NewIdempotencyService(deps.Repos.Idempotency)
+	}
 	var paymentWebhookSvc *PaymentWebhookService
 	if deps.Repos != nil {
 		paymentWebhookSvc = NewPaymentWebhookService(PaymentWebhookDeps{
 			Orders:      deps.Repos.PaymentOrders,
 			Entitlement: entitlementSvc,
 			Audit:       auditSvc,
+			Idempotency: idempotencySvc,
 			Config: provider.PaymentWebhookConfig{
 				GumroadSecret: deps.GumroadWebhookSecret,
 				AfdianToken:   deps.AfdianWebhookToken,
@@ -282,6 +288,7 @@ func New(deps Deps) *Services {
 		SecurityStats:  securityStatsSvc,
 		Settings:       settingsSvc,
 		Entitlement:    entitlementSvc,
+		Idempotency:    idempotencySvc,
 		PaymentWebhook: paymentWebhookSvc,
 	}
 }

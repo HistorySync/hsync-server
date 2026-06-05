@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -88,6 +89,7 @@ type adminGrantPlanRequest struct {
 	ExternalOrderID string `json:"external_order_id"`
 	Region          string `json:"region"`
 	BillingPeriod   string `json:"billing_period"`
+	IdempotencyKey  string `json:"idempotency_key"`
 }
 
 // AdminGrantPlan grants a plan (or bundle) to a user. This is the internal
@@ -121,26 +123,47 @@ func (h *Handlers) AdminGrantPlan(c fiber.Ctx) error {
 		return err
 	}
 
-	outcome, err := h.deps.Services.Entitlement.GrantPlanToUser(c.Context(), userID, req.PlanCode, service.GrantOptions{
-		Provider:        provider,
-		ExternalOrderID: strings.TrimSpace(req.ExternalOrderID),
-		Region:          region,
-		BillingPeriod:   period,
+	idempotencyKey := requestIdempotencyKey(c, req.IdempotencyKey)
+	execution, err := service.ExecuteIdempotent[service.GrantOutcome](c.Context(), h.deps.Services.Idempotency, service.IdempotencyOptions{
+		Scope:          "admin.billing.grant_plan",
+		IdempotencyKey: idempotencyKey,
+		Payload: map[string]any{
+			"user_id":           userID.String(),
+			"plan_code":         strings.TrimSpace(req.PlanCode),
+			"provider":          string(provider),
+			"external_order_id": strings.TrimSpace(req.ExternalOrderID),
+			"region":            string(region),
+			"billing_period":    string(period),
+		},
+		RequireKey: true,
+	}, func(ctx context.Context) (*service.GrantOutcome, int, error) {
+		outcome, err := h.deps.Services.Entitlement.GrantPlanToUser(ctx, userID, req.PlanCode, service.GrantOptions{
+			Provider:        provider,
+			ExternalOrderID: strings.TrimSpace(req.ExternalOrderID),
+			Region:          region,
+			BillingPeriod:   period,
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventAdminPlanGrant,
+			TargetType: "user",
+			TargetID:   userID.String(),
+			Metadata: map[string]any{
+				"plan_code": req.PlanCode,
+				"provider":  string(provider),
+			},
+		})
+		return outcome, fiber.StatusOK, nil
 	})
 	if err != nil {
 		return mapEntitlementError(err)
 	}
-
-	h.recordAudit(c, service.AuditEventInput{
-		EventType:  model.AuditEventAdminPlanGrant,
-		TargetType: "user",
-		TargetID:   userID.String(),
-		Metadata: map[string]any{
-			"plan_code": req.PlanCode,
-			"provider":  string(provider),
-		},
-	})
-	return c.JSON(outcome)
+	if execution.Replayed {
+		c.Set("X-Idempotency-Replayed", "true")
+	}
+	return c.Status(execution.ResponseStatus).JSON(execution.Data)
 }
 
 type adminAdjustCreditsRequest struct {
@@ -165,25 +188,43 @@ func (h *Handlers) AdminAdjustCredits(c fiber.Ctx) error {
 		return apierrors.New(apierrors.CodeInvalidJSON, "invalid request body")
 	}
 
-	result, err := h.deps.Services.Entitlement.AdjustAICredits(c.Context(), service.AdjustCreditsInput{
-		UserID:         userID,
-		Amount:         req.Amount,
-		Reason:         req.Reason,
-		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey),
+	idempotencyKey := requestIdempotencyKey(c, req.IdempotencyKey)
+	execution, err := service.ExecuteIdempotent[service.ConsumeAICreditsResult](c.Context(), h.deps.Services.Idempotency, service.IdempotencyOptions{
+		Scope:          "admin.billing.adjust_credits",
+		IdempotencyKey: idempotencyKey,
+		Payload: map[string]any{
+			"user_id": userID.String(),
+			"amount":  req.Amount,
+			"reason":  strings.TrimSpace(req.Reason),
+		},
+		RequireKey: true,
+	}, func(ctx context.Context) (*service.ConsumeAICreditsResult, int, error) {
+		result, err := h.deps.Services.Entitlement.AdjustAICredits(ctx, service.AdjustCreditsInput{
+			UserID:         userID,
+			Amount:         req.Amount,
+			Reason:         req.Reason,
+			IdempotencyKey: "admin_adjust:" + service.HashIdempotencyKey(idempotencyKey),
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventAdminCreditAdjust,
+			TargetType: "user",
+			TargetID:   userID.String(),
+			Metadata: map[string]any{
+				"amount": req.Amount,
+			},
+		})
+		return result, fiber.StatusOK, nil
 	})
 	if err != nil {
 		return mapEntitlementError(err)
 	}
-
-	h.recordAudit(c, service.AuditEventInput{
-		EventType:  model.AuditEventAdminCreditAdjust,
-		TargetType: "user",
-		TargetID:   userID.String(),
-		Metadata: map[string]any{
-			"amount": req.Amount,
-		},
-	})
-	return c.JSON(result)
+	if execution.Replayed {
+		c.Set("X-Idempotency-Replayed", "true")
+	}
+	return c.Status(execution.ResponseStatus).JSON(execution.Data)
 }
 
 // AdminRefreshSubscriptions expires due subscriptions and recomputes cloud sync.
@@ -292,6 +333,10 @@ func mapEntitlementError(err error) error {
 		return apierrors.New(apierrors.CodeInsufficientCredits, err.Error())
 	case errors.Is(err, service.ErrIdempotencyKeyRequired):
 		return apierrors.New(apierrors.CodeIdempotencyKeyMissing, err.Error())
+	case errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyInProgress):
+		return apierrors.New(apierrors.CodeConflict, err.Error())
+	case errors.Is(err, service.ErrIdempotencyStoreUnavailable):
+		return apierrors.NewInternal(err.Error())
 	case errors.Is(err, service.ErrInvalidCreditAmount):
 		return apierrors.New(apierrors.CodeInvalidCreditAmount, err.Error())
 	case errors.Is(err, service.ErrSubscriptionNotFound):
@@ -313,11 +358,20 @@ func mapPaymentWebhookError(err error) error {
 		return apierrors.New(apierrors.CodeConflict, err.Error())
 	case errors.Is(err, service.ErrPlanNotFound), errors.Is(err, service.ErrPlanDisabled),
 		errors.Is(err, service.ErrInsufficientCredits), errors.Is(err, service.ErrIdempotencyKeyRequired),
-		errors.Is(err, service.ErrInvalidCreditAmount), errors.Is(err, service.ErrSubscriptionNotFound):
+		errors.Is(err, service.ErrIdempotencyConflict), errors.Is(err, service.ErrIdempotencyInProgress),
+		errors.Is(err, service.ErrIdempotencyStoreUnavailable), errors.Is(err, service.ErrInvalidCreditAmount),
+		errors.Is(err, service.ErrSubscriptionNotFound):
 		return mapEntitlementError(err)
 	default:
 		return apierrors.NewInternal(err.Error())
 	}
+}
+
+func requestIdempotencyKey(c fiber.Ctx, fallback string) string {
+	if key := strings.TrimSpace(c.Get("Idempotency-Key")); key != "" {
+		return key
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func parseRegion(raw string) (model.BillingRegion, error) {

@@ -40,6 +40,7 @@ type PaymentWebhookService struct {
 	orders      paymentOrderLifecycleStore
 	entitlement *EntitlementService
 	audit       *AuditService
+	idempotency *IdempotencyService
 	adapters    map[model.PaymentProvider]provider.PaymentWebhookAdapter
 	now         func() time.Time
 }
@@ -48,6 +49,7 @@ type PaymentWebhookDeps struct {
 	Orders      paymentOrderLifecycleStore
 	Entitlement *EntitlementService
 	Audit       *AuditService
+	Idempotency *IdempotencyService
 	Config      provider.PaymentWebhookConfig
 }
 
@@ -77,6 +79,7 @@ func NewPaymentWebhookService(deps PaymentWebhookDeps) *PaymentWebhookService {
 		orders:      deps.Orders,
 		entitlement: deps.Entitlement,
 		audit:       deps.Audit,
+		idempotency: deps.Idempotency,
 		adapters: map[model.PaymentProvider]provider.PaymentWebhookAdapter{
 			model.PaymentProviderGumroad: provider.NewPaymentWebhookAdapter(model.PaymentProviderGumroad, deps.Config),
 			model.PaymentProviderAfdian:  provider.NewPaymentWebhookAdapter(model.PaymentProviderAfdian, deps.Config),
@@ -106,6 +109,26 @@ func (s *PaymentWebhookService) Handle(ctx context.Context, in PaymentWebhookInp
 	}
 	s.auditPayment(ctx, model.AuditEventBillingWebhookReceived, event.ExternalOrderID, event.UserID, in, event.RawMetadata)
 
+	execution, err := ExecuteIdempotent[PaymentWebhookResult](ctx, s.idempotency, IdempotencyOptions{
+		Scope:          "payment.webhook." + string(event.Provider),
+		IdempotencyKey: paymentWebhookIdempotencyKey(event),
+		Payload:        paymentWebhookFingerprintPayload(event),
+		RequireKey:     true,
+		TTL:            DefaultWebhookIdempotencyTTL(),
+	}, func(execCtx context.Context) (*PaymentWebhookResult, int, error) {
+		result, err := s.handleVerifiedEvent(execCtx, event)
+		return result, 200, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if execution.Replayed && execution.Data != nil {
+		execution.Data.Fulfilled = false
+	}
+	return execution.Data, nil
+}
+
+func (s *PaymentWebhookService) handleVerifiedEvent(ctx context.Context, event provider.NormalizedPaymentEvent) (*PaymentWebhookResult, error) {
 	planCode, ok := mapPaymentPlan(event)
 	if !ok {
 		order := s.orderFromEvent(event, "")
@@ -336,4 +359,22 @@ func auditActorPtr(id uuid.UUID) *uuid.UUID {
 
 func timePtr(t time.Time) *time.Time {
 	return &t
+}
+
+func paymentWebhookIdempotencyKey(event provider.NormalizedPaymentEvent) string {
+	return string(event.Provider) + ":" + event.ExternalOrderID
+}
+
+func paymentWebhookFingerprintPayload(event provider.NormalizedPaymentEvent) map[string]any {
+	return map[string]any{
+		"provider":          event.Provider,
+		"external_order_id": event.ExternalOrderID,
+		"user_id":           event.UserID.String(),
+		"product_id":        event.ProductID,
+		"variant_id":        event.VariantID,
+		"plan_source":       event.PlanSource,
+		"currency":          event.Currency,
+		"amount":            event.Amount,
+		"paid_at":           event.PaidAt.UTC(),
+	}
 }

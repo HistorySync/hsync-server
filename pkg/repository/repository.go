@@ -37,6 +37,7 @@ type Repos struct {
 	Subscriptions      *SubscriptionRepo
 	CreditLedger       *CreditLedgerRepo
 	PaymentOrders      *PaymentOrderRepo
+	Idempotency        *IdempotencyRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -60,6 +61,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		Subscriptions:      &SubscriptionRepo{pool: pgPool},
 		CreditLedger:       &CreditLedgerRepo{pool: pgPool},
 		PaymentOrders:      &PaymentOrderRepo{pool: pgPool},
+		Idempotency:        &IdempotencyRepo{pool: pgPool},
 	}
 }
 

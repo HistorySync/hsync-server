@@ -6,7 +6,8 @@ web_app_name: "HistorySync Cloud Server"
 web_console_path: "/console"
 s3_use_ssl: true
 stripe_disabled: false
-# database_url, s3_*, jwt_private_key, security_secret, stripe_* should come from HSYNC_* env vars
+# database_url, s3_*, jwt_private_key, security_secret, stripe_*,
+# gumroad_webhook_secret, and afdian_webhook_token should come from HSYNC_* env vars
 
 # Background maintenance runs by default (leader-elected). Retention purge is
 # opt-in and destructive; enable it only after reviewing the dry-run logs:

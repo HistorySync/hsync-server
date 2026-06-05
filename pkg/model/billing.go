@@ -111,10 +111,13 @@ const (
 type PaymentOrderStatus string
 
 const (
-	PaymentOrderStatusPending  PaymentOrderStatus = "pending"
-	PaymentOrderStatusPaid     PaymentOrderStatus = "paid"
-	PaymentOrderStatusRefunded PaymentOrderStatus = "refunded"
-	PaymentOrderStatusCanceled PaymentOrderStatus = "canceled"
+	PaymentOrderStatusPending   PaymentOrderStatus = "pending"
+	PaymentOrderStatusPaid      PaymentOrderStatus = "paid"
+	PaymentOrderStatusCompleted PaymentOrderStatus = "completed"
+	PaymentOrderStatusFailed    PaymentOrderStatus = "failed"
+	PaymentOrderStatusCanceled  PaymentOrderStatus = "canceled"
+	PaymentOrderStatusExpired   PaymentOrderStatus = "expired"
+	PaymentOrderStatusRefunded  PaymentOrderStatus = "refunded"
 )
 
 // Catalog plan codes seeded by migration 009.
@@ -265,6 +268,19 @@ type PaymentOrder struct {
 	Amount          int64              `json:"amount"            db:"amount"`
 	Status          PaymentOrderStatus `json:"status"            db:"status"`
 	RawMetadata     map[string]any     `json:"-"                 db:"raw_metadata"`
+	PaidAt          *time.Time         `json:"paid_at,omitempty" db:"paid_at"`
+	CompletedAt     *time.Time         `json:"completed_at,omitempty" db:"completed_at"`
+	FailedAt        *time.Time         `json:"failed_at,omitempty" db:"failed_at"`
+	FailedReason    string             `json:"failed_reason,omitempty" db:"failed_reason"`
 	CreatedAt       time.Time          `json:"created_at"        db:"created_at"`
 	UpdatedAt       time.Time          `json:"updated_at"        db:"updated_at"`
+}
+
+// PaymentOrderListFilter narrows admin order listing.
+type PaymentOrderListFilter struct {
+	Provider        PaymentProvider
+	Status          PaymentOrderStatus
+	ExternalOrderID string
+	Limit           int32
+	Offset          int32
 }

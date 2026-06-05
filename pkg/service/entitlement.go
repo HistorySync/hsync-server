@@ -60,6 +60,7 @@ type creditLedgerStore interface {
 type paymentOrderStore interface {
 	Upsert(ctx context.Context, o *model.PaymentOrder) error
 	Get(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error)
+	MarkCompleted(ctx context.Context, id uuid.UUID, completedAt time.Time) error
 }
 
 // EntitlementService owns paid-plan grants, cloud subscriptions, and the AI
@@ -223,6 +224,9 @@ func (s *EntitlementService) GrantPlanToUser(ctx context.Context, userID uuid.UU
 		return nil, fmt.Errorf("unsupported plan kind %q", plan.Kind)
 	}
 
+	if err := s.markOrderCompleted(ctx, opts.Provider, opts.ExternalOrderID); err != nil {
+		return nil, err
+	}
 	return s.finalizeOutcome(ctx, userID, outcome)
 }
 
@@ -288,6 +292,9 @@ func (s *EntitlementService) GrantBundleToUser(ctx context.Context, userID uuid.
 		}
 	}
 
+	if err := s.markOrderCompleted(ctx, opts.Provider, opts.ExternalOrderID); err != nil {
+		return nil, err
+	}
 	return s.finalizeOutcome(ctx, userID, outcome)
 }
 
@@ -711,9 +718,8 @@ func (s *EntitlementService) loadEnabledPlan(ctx context.Context, code string) (
 	return plan, nil
 }
 
-// alreadyFulfilled reports whether an order with this provider+external id was
-// already recorded, so a replay (e.g. a webhook retry) is a no-op rather than a
-// second grant. Orders without an external id are never treated as replays.
+// alreadyFulfilled reports whether an order with this provider+external id has
+// already completed fulfillment. Paid/failed orders remain retryable.
 func (s *EntitlementService) alreadyFulfilled(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (bool, error) {
 	if externalOrderID == "" {
 		return false, nil
@@ -725,7 +731,7 @@ func (s *EntitlementService) alreadyFulfilled(ctx context.Context, provider mode
 	if err != nil {
 		return false, fmt.Errorf("check existing order: %w", err)
 	}
-	return existing != nil, nil
+	return existing != nil && existing.Status == model.PaymentOrderStatusCompleted, nil
 }
 
 // recordOrder persists a payment order for the purchase. raw_metadata is
@@ -747,10 +753,29 @@ func (s *EntitlementService) recordOrder(ctx context.Context, userID uuid.UUID, 
 		Status:          model.PaymentOrderStatusPaid,
 		RawMetadata:     sanitizeAuditMetadata(opts.RawMetadata),
 	}
+	now := s.now()
+	order.PaidAt = &now
 	if err := s.orders.Upsert(ctx, order); err != nil {
 		return fmt.Errorf("record payment order: %w", err)
 	}
 	return nil
+}
+
+func (s *EntitlementService) markOrderCompleted(ctx context.Context, provider model.PaymentProvider, externalOrderID string) error {
+	if externalOrderID == "" {
+		return nil
+	}
+	if provider == "" {
+		provider = model.PaymentProviderManual
+	}
+	order, err := s.orders.Get(ctx, provider, externalOrderID)
+	if err != nil {
+		return fmt.Errorf("load payment order: %w", err)
+	}
+	if order == nil || order.Status == model.PaymentOrderStatusCompleted {
+		return nil
+	}
+	return s.orders.MarkCompleted(ctx, order.ID, s.now())
 }
 
 // resolveOrderAmount looks up the price for an order's region/period. It is

@@ -77,17 +77,19 @@ var (
 
 // Deps holds all dependencies needed by the service layer.
 type Deps struct {
-	Repos          *repository.Repos
-	TokenManager   *auth.TokenManager
-	BlobStore      storage.BlobStorage
-	StripeKey      string
-	StripeWebhook  string
-	StripeDisabled bool
-	Reservation    UsageReservationHook
-	Notifier       provider.Notifier
-	Webhook        provider.WebhookProvider
-	Notification   NotificationConfig
-	SecuritySecret string
+	Repos                *repository.Repos
+	TokenManager         *auth.TokenManager
+	BlobStore            storage.BlobStorage
+	StripeKey            string
+	StripeWebhook        string
+	StripeDisabled       bool
+	GumroadWebhookSecret string
+	AfdianWebhookToken   string
+	Reservation          UsageReservationHook
+	Notifier             provider.Notifier
+	Webhook              provider.WebhookProvider
+	Notification         NotificationConfig
+	SecuritySecret       string
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -159,19 +161,20 @@ func (g *reservationGuard) release(ctx context.Context) {
 
 // Services aggregates all business service instances.
 type Services struct {
-	Repos         *repository.Repos
-	Auth          *AuthService
-	Bundle        *BundleService
-	Snapshot      *SnapshotService
-	Quota         *QuotaService
-	Billing       *BillingService
-	Notification  *NotificationService
-	Retention     *RetentionService
-	TwoFactor     *TwoFactorService
-	Audit         *AuditService
-	SecurityStats *SecurityStatsService
-	Settings      *SettingsService
-	Entitlement   *EntitlementService
+	Repos          *repository.Repos
+	Auth           *AuthService
+	Bundle         *BundleService
+	Snapshot       *SnapshotService
+	Quota          *QuotaService
+	Billing        *BillingService
+	Notification   *NotificationService
+	Retention      *RetentionService
+	TwoFactor      *TwoFactorService
+	Audit          *AuditService
+	SecurityStats  *SecurityStatsService
+	Settings       *SettingsService
+	Entitlement    *EntitlementService
+	PaymentWebhook *PaymentWebhookService
 }
 
 // New creates all service instances with their dependencies.
@@ -252,21 +255,34 @@ func New(deps Deps) *Services {
 			deps.Repos.PaymentOrders,
 		)
 	}
+	var paymentWebhookSvc *PaymentWebhookService
+	if deps.Repos != nil {
+		paymentWebhookSvc = NewPaymentWebhookService(PaymentWebhookDeps{
+			Orders:      deps.Repos.PaymentOrders,
+			Entitlement: entitlementSvc,
+			Audit:       auditSvc,
+			Config: provider.PaymentWebhookConfig{
+				GumroadSecret: deps.GumroadWebhookSecret,
+				AfdianToken:   deps.AfdianWebhookToken,
+			},
+		})
+	}
 
 	return &Services{
-		Repos:         deps.Repos,
-		Auth:          authSvc,
-		Bundle:        bundleSvc,
-		Snapshot:      snapshotSvc,
-		Quota:         quotaSvc,
-		Billing:       billingSvc,
-		Notification:  notifSvc,
-		Retention:     retentionSvc,
-		TwoFactor:     twoFactorSvc,
-		Audit:         auditSvc,
-		SecurityStats: securityStatsSvc,
-		Settings:      settingsSvc,
-		Entitlement:   entitlementSvc,
+		Repos:          deps.Repos,
+		Auth:           authSvc,
+		Bundle:         bundleSvc,
+		Snapshot:       snapshotSvc,
+		Quota:          quotaSvc,
+		Billing:        billingSvc,
+		Notification:   notifSvc,
+		Retention:      retentionSvc,
+		TwoFactor:      twoFactorSvc,
+		Audit:          auditSvc,
+		SecurityStats:  securityStatsSvc,
+		Settings:       settingsSvc,
+		Entitlement:    entitlementSvc,
+		PaymentWebhook: paymentWebhookSvc,
 	}
 }
 

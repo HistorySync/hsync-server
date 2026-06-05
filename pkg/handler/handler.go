@@ -248,6 +248,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	billing.Get("/invoices", h.ListInvoices)
 	// Stripe webhook has its own signature verification
 	v1.Post("/billing/webhook", h.StripeWebhook)
+	v1.Post("/billing/webhooks/:provider", h.PaymentWebhook)
 
 	// ── WebSocket ────────────────────────────────────────
 	app.Get("/ws/push", h.WebSocketUpgrade)
@@ -261,6 +262,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/users/:id/grant-plan", h.AdminGrantPlan)
 	admin.Post("/users/:id/credits", h.AdminAdjustCredits)
 	admin.Post("/subscriptions/refresh", h.AdminRefreshSubscriptions)
+	admin.Get("/payment-orders", h.AdminListPaymentOrders)
+	admin.Post("/payment-orders/:id/retry", h.AdminRetryPaymentOrder)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)
 	admin.Get("/settings", h.AdminListSettings)

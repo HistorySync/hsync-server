@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -198,6 +199,87 @@ func (h *Handlers) AdminRefreshSubscriptions(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"expired": expired})
 }
 
+// PaymentWebhook accepts verified-provider payment notifications and fulfills
+// paid plans through the entitlement service.
+func (h *Handlers) PaymentWebhook(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.PaymentWebhook == nil {
+		return apierrors.New(apierrors.CodeBillingDisabled, "payment webhooks are not configured")
+	}
+	providerName := c.Params("provider")
+	provider, err := parseProvider(providerName)
+	if err != nil || provider == model.PaymentProviderManual || provider == "" {
+		return apierrors.NewBadRequest("provider must be 'gumroad' or 'afdian'")
+	}
+	query, _ := url.ParseQuery(string(c.Request().URI().QueryString()))
+	result, err := h.deps.Services.PaymentWebhook.Handle(c.Context(), service.PaymentWebhookInput{
+		Provider:  provider,
+		Query:     query,
+		Body:      c.Body(),
+		IP:        c.IP(),
+		UserAgent: c.Get("User-Agent"),
+	})
+	if provider == model.PaymentProviderAfdian {
+		if err != nil {
+			return c.Status(fiber.StatusOK).JSON(fiber.Map{"ec": 400, "em": err.Error()})
+		}
+		return c.JSON(fiber.Map{"ec": 200, "data": result})
+	}
+	if err != nil {
+		return mapPaymentWebhookError(err)
+	}
+	return c.JSON(fiber.Map{"status": "ok", "result": result})
+}
+
+// AdminListPaymentOrders returns recent payment orders for troubleshooting.
+func (h *Handlers) AdminListPaymentOrders(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.PaymentWebhook == nil {
+		return apierrors.NewInternal("payment webhook service is not configured")
+	}
+	limit := int32(50)
+	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
+		limit = int32(l)
+	}
+	offset := int32(0)
+	if o, err := strconv.Atoi(c.Query("offset", "0")); err == nil && o > 0 {
+		offset = int32(o)
+	}
+	provider, err := parseProvider(c.Query("provider"))
+	if err != nil {
+		return err
+	}
+	status, err := parsePaymentOrderStatus(c.Query("status"))
+	if err != nil {
+		return err
+	}
+	orders, err := h.deps.Services.PaymentWebhook.ListOrders(c.Context(), model.PaymentOrderListFilter{
+		Provider:        provider,
+		Status:          status,
+		ExternalOrderID: strings.TrimSpace(c.Query("external_order_id")),
+		Limit:           limit,
+		Offset:          offset,
+	})
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(fiber.Map{"payment_orders": orders, "limit": limit, "offset": offset})
+}
+
+// AdminRetryPaymentOrder retries fulfillment for a paid or failed order.
+func (h *Handlers) AdminRetryPaymentOrder(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.PaymentWebhook == nil {
+		return apierrors.NewInternal("payment webhook service is not configured")
+	}
+	orderID, err := uuid.Parse(c.Params("id"))
+	if err != nil {
+		return apierrors.NewBadRequest("invalid payment order id")
+	}
+	result, err := h.deps.Services.PaymentWebhook.RetryFulfillment(c.Context(), orderID)
+	if err != nil {
+		return mapPaymentWebhookError(err)
+	}
+	return c.JSON(result)
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 func mapEntitlementError(err error) error {
@@ -214,6 +296,25 @@ func mapEntitlementError(err error) error {
 		return apierrors.New(apierrors.CodeInvalidCreditAmount, err.Error())
 	case errors.Is(err, service.ErrSubscriptionNotFound):
 		return apierrors.New(apierrors.CodeSubscriptionNotFound, err.Error())
+	default:
+		return apierrors.NewInternal(err.Error())
+	}
+}
+
+func mapPaymentWebhookError(err error) error {
+	switch {
+	case errors.Is(err, service.ErrPaymentWebhookRejected):
+		return apierrors.NewBadRequest(err.Error())
+	case errors.Is(err, service.ErrPaymentPlanMappingMissing):
+		return apierrors.NewBadRequest(err.Error())
+	case errors.Is(err, service.ErrPaymentOrderNotFound):
+		return apierrors.New(apierrors.CodeNotFound, err.Error())
+	case errors.Is(err, service.ErrPaymentOrderNotRetryable):
+		return apierrors.New(apierrors.CodeConflict, err.Error())
+	case errors.Is(err, service.ErrPlanNotFound), errors.Is(err, service.ErrPlanDisabled),
+		errors.Is(err, service.ErrInsufficientCredits), errors.Is(err, service.ErrIdempotencyKeyRequired),
+		errors.Is(err, service.ErrInvalidCreditAmount), errors.Is(err, service.ErrSubscriptionNotFound):
+		return mapEntitlementError(err)
 	default:
 		return apierrors.NewInternal(err.Error())
 	}
@@ -259,5 +360,28 @@ func parseBillingPeriod(raw string) (model.BillingPeriod, error) {
 		return model.BillingPeriodYearly, nil
 	default:
 		return "", apierrors.NewBadRequest("billing_period must be 'none', 'monthly', or 'yearly'")
+	}
+}
+
+func parsePaymentOrderStatus(raw string) (model.PaymentOrderStatus, error) {
+	switch strings.TrimSpace(raw) {
+	case "":
+		return "", nil
+	case string(model.PaymentOrderStatusPending):
+		return model.PaymentOrderStatusPending, nil
+	case string(model.PaymentOrderStatusPaid):
+		return model.PaymentOrderStatusPaid, nil
+	case string(model.PaymentOrderStatusCompleted):
+		return model.PaymentOrderStatusCompleted, nil
+	case string(model.PaymentOrderStatusFailed):
+		return model.PaymentOrderStatusFailed, nil
+	case string(model.PaymentOrderStatusCanceled):
+		return model.PaymentOrderStatusCanceled, nil
+	case string(model.PaymentOrderStatusExpired):
+		return model.PaymentOrderStatusExpired, nil
+	case string(model.PaymentOrderStatusRefunded):
+		return model.PaymentOrderStatusRefunded, nil
+	default:
+		return "", apierrors.NewBadRequest("status must be a valid payment order status")
 	}
 }

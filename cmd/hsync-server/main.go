@@ -145,14 +145,16 @@ func main() {
 
 	// ── Services ──────────────────────────────────────────────
 	svcs := service.New(service.Deps{
-		Repos:          repos,
-		TokenManager:   tokenManager,
-		BlobStore:      blobStore,
-		StripeKey:      cfg.StripeSecretKey,
-		StripeWebhook:  cfg.StripeWebhookSecret,
-		StripeDisabled: cfg.StripeDisabled,
-		SecuritySecret: cfg.SecuritySecret,
-		Notifier:       notifier,
+		Repos:                repos,
+		TokenManager:         tokenManager,
+		BlobStore:            blobStore,
+		StripeKey:            cfg.StripeSecretKey,
+		StripeWebhook:        cfg.StripeWebhookSecret,
+		StripeDisabled:       cfg.StripeDisabled,
+		GumroadWebhookSecret: cfg.GumroadWebhookSecret,
+		AfdianWebhookToken:   cfg.AfdianWebhookToken,
+		SecuritySecret:       cfg.SecuritySecret,
+		Notifier:             notifier,
 		Notification: service.NotificationConfig{
 			Enabled:            cfg.NotificationsEnabled,
 			AppName:            cfg.WebAppName,

@@ -41,6 +41,12 @@ stripe_disabled: true
 # stripe_secret_key: ""
 # stripe_webhook_secret: ""
 
+# Gumroad / Afdian payment webhooks. Keep these secrets in environment
+# variables in production: HSYNC_GUMROAD_WEBHOOK_SECRET and
+# HSYNC_AFDIAN_WEBHOOK_TOKEN.
+# gumroad_webhook_secret: ""
+# afdian_webhook_token: ""
+
 # Admin API key (set to enable /admin/* endpoints)
 # admin_key: ""
 

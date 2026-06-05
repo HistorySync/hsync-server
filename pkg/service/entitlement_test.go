@@ -64,6 +64,19 @@ func (f fakeOrderStore) Get(ctx context.Context, provider model.PaymentProvider,
 	return f.fakeBilling.GetOrder(ctx, provider, externalOrderID)
 }
 
+func (f fakeOrderStore) MarkCompleted(_ context.Context, id uuid.UUID, completedAt time.Time) error {
+	for _, o := range f.orders {
+		if o.ID == id {
+			o.Status = model.PaymentOrderStatusCompleted
+			o.CompletedAt = &completedAt
+			o.FailedAt = nil
+			o.FailedReason = ""
+			return nil
+		}
+	}
+	return nil
+}
+
 // seedCatalog mirrors the migration-seeded plan effects (and a subset of prices).
 func (f *fakeBilling) seedCatalog() {
 	f.plans = map[string]model.Plan{
@@ -373,6 +386,30 @@ func (f *fakeBilling) ExpireDue(_ context.Context, now time.Time, _ int32) (int6
 
 // paymentOrderStore
 func (f *fakeBilling) Upsert(_ context.Context, o *model.PaymentOrder) error {
+	if o.ExternalOrderID != "" {
+		for _, existing := range f.orders {
+			if existing.Provider == o.Provider && existing.ExternalOrderID == o.ExternalOrderID {
+				existing.UserID = o.UserID
+				existing.PlanCode = o.PlanCode
+				existing.Currency = o.Currency
+				existing.Amount = o.Amount
+				if existing.Status != model.PaymentOrderStatusCompleted {
+					existing.Status = o.Status
+					existing.FailedAt = o.FailedAt
+					existing.FailedReason = o.FailedReason
+				}
+				existing.RawMetadata = o.RawMetadata
+				if existing.PaidAt == nil {
+					existing.PaidAt = o.PaidAt
+				}
+				o.ID = existing.ID
+				o.CreatedAt = existing.CreatedAt
+				o.UpdatedAt = f.now()
+				existing.UpdatedAt = o.UpdatedAt
+				return nil
+			}
+		}
+	}
 	o.ID = uuid.New()
 	o.CreatedAt = f.now()
 	o.UpdatedAt = f.now()

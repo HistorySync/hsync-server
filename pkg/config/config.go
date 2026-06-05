@@ -43,9 +43,11 @@ type Config struct {
 	SecuritySecret string `mapstructure:"security_secret"` // 32-byte AES-GCM key, raw or base64
 
 	// Stripe (optional)
-	StripeSecretKey     string `mapstructure:"stripe_secret_key"`
-	StripeWebhookSecret string `mapstructure:"stripe_webhook_secret"`
-	StripeDisabled      bool   `mapstructure:"stripe_disabled"`
+	StripeSecretKey      string `mapstructure:"stripe_secret_key"`
+	StripeWebhookSecret  string `mapstructure:"stripe_webhook_secret"`
+	StripeDisabled       bool   `mapstructure:"stripe_disabled"`
+	GumroadWebhookSecret string `mapstructure:"gumroad_webhook_secret"`
+	AfdianWebhookToken   string `mapstructure:"afdian_webhook_token"`
 
 	// Admin
 	AdminKey string `mapstructure:"admin_key"`
@@ -194,6 +196,8 @@ func load() (*Config, error) {
 	v.SetDefault("s3_use_ssl", cfg.S3UseSSL)
 	v.SetDefault("security_secret", cfg.SecuritySecret)
 	v.SetDefault("stripe_disabled", cfg.StripeDisabled)
+	v.SetDefault("gumroad_webhook_secret", cfg.GumroadWebhookSecret)
+	v.SetDefault("afdian_webhook_token", cfg.AfdianWebhookToken)
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
 	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
 	v.SetDefault("oidc_scopes", cfg.OIDCScopes)

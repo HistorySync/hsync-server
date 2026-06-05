@@ -194,6 +194,9 @@ func (r *SubscriptionRepo) Create(ctx context.Context, s *model.UserSubscription
 		INSERT INTO user_subscriptions (user_id, plan_code, status, current_period_start,
 		                                current_period_end, active_until, provider, external_order_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (provider, external_order_id, plan_code) WHERE external_order_id <> '' DO UPDATE SET
+			active_until = GREATEST(user_subscriptions.active_until, EXCLUDED.active_until),
+			status = CASE WHEN user_subscriptions.status = 'canceled' THEN user_subscriptions.status ELSE EXCLUDED.status END
 		RETURNING id, created_at, updated_at`
 	return r.pool.QueryRow(ctx, q,
 		s.UserID, s.PlanCode, string(s.Status), s.CurrentPeriodStart,
@@ -725,40 +728,61 @@ func (r *PaymentOrderRepo) Upsert(ctx context.Context, o *model.PaymentOrder) er
 	if o.ExternalOrderID == "" {
 		const q = `
 			INSERT INTO payment_orders (user_id, provider, external_order_id, plan_code,
-			                            currency, amount, status, raw_metadata)
-			VALUES ($1, $2, '', $3, $4, $5, $6, $7)
+			                            currency, amount, status, raw_metadata,
+			                            paid_at, completed_at, failed_at, failed_reason)
+			VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			RETURNING id, created_at, updated_at`
 		return r.pool.QueryRow(ctx, q,
 			o.UserID, string(o.Provider), o.PlanCode, o.Currency, o.Amount, string(o.Status), rawMetadata,
+			o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason,
 		).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
 	}
 	const q = `
 		INSERT INTO payment_orders (user_id, provider, external_order_id, plan_code,
-		                            currency, amount, status, raw_metadata)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		                            currency, amount, status, raw_metadata,
+		                            paid_at, completed_at, failed_at, failed_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (provider, external_order_id) WHERE external_order_id <> '' DO UPDATE SET
+			user_id = EXCLUDED.user_id,
 			plan_code = EXCLUDED.plan_code,
 			currency = EXCLUDED.currency,
 			amount = EXCLUDED.amount,
-			status = EXCLUDED.status,
-			raw_metadata = EXCLUDED.raw_metadata
+			status = CASE
+				WHEN payment_orders.status = 'completed' THEN payment_orders.status
+				ELSE EXCLUDED.status
+			END,
+			raw_metadata = EXCLUDED.raw_metadata,
+			paid_at = COALESCE(payment_orders.paid_at, EXCLUDED.paid_at),
+			completed_at = COALESCE(payment_orders.completed_at, EXCLUDED.completed_at),
+			failed_at = CASE
+				WHEN payment_orders.status = 'completed' THEN payment_orders.failed_at
+				ELSE EXCLUDED.failed_at
+			END,
+			failed_reason = CASE
+				WHEN payment_orders.status = 'completed' THEN payment_orders.failed_reason
+				ELSE EXCLUDED.failed_reason
+			END
 		RETURNING id, created_at, updated_at`
 	return r.pool.QueryRow(ctx, q,
 		o.UserID, string(o.Provider), o.ExternalOrderID, o.PlanCode,
 		o.Currency, o.Amount, string(o.Status), rawMetadata,
+		o.PaidAt, o.CompletedAt, o.FailedAt, o.FailedReason,
 	).Scan(&o.ID, &o.CreatedAt, &o.UpdatedAt)
 }
 
 // Get returns a recorded order by provider + external order id, or nil.
 func (r *PaymentOrderRepo) Get(ctx context.Context, provider model.PaymentProvider, externalOrderID string) (*model.PaymentOrder, error) {
 	const q = `
-		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount, status, raw_metadata, created_at, updated_at
+		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
+		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
+		       created_at, updated_at
 		FROM payment_orders WHERE provider = $1 AND external_order_id = $2`
 	o := &model.PaymentOrder{}
 	var rawMetadata []byte
 	err := r.pool.QueryRow(ctx, q, string(provider), externalOrderID).Scan(
 		&o.ID, &o.UserID, &o.Provider, &o.ExternalOrderID, &o.PlanCode, &o.Currency,
-		&o.Amount, &o.Status, &rawMetadata, &o.CreatedAt, &o.UpdatedAt,
+		&o.Amount, &o.Status, &rawMetadata, &o.PaidAt, &o.CompletedAt, &o.FailedAt,
+		&o.FailedReason, &o.CreatedAt, &o.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -772,4 +796,139 @@ func (r *PaymentOrderRepo) Get(ctx context.Context, provider model.PaymentProvid
 		}
 	}
 	return o, nil
+}
+
+// GetByID returns an order by its internal ID, or nil.
+func (r *PaymentOrderRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.PaymentOrder, error) {
+	const q = `
+		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
+		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
+		       created_at, updated_at
+		FROM payment_orders WHERE id = $1`
+	return r.scanOne(ctx, q, id)
+}
+
+// List returns payment orders for admin troubleshooting.
+func (r *PaymentOrderRepo) List(ctx context.Context, filter model.PaymentOrderListFilter) ([]model.PaymentOrder, error) {
+	if filter.Limit <= 0 || filter.Limit > 200 {
+		filter.Limit = 50
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	where := "WHERE true"
+	args := []any{}
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if filter.Provider != "" {
+		where += " AND provider = " + addArg(string(filter.Provider))
+	}
+	if filter.Status != "" {
+		where += " AND status = " + addArg(string(filter.Status))
+	}
+	if filter.ExternalOrderID != "" {
+		where += " AND external_order_id = " + addArg(filter.ExternalOrderID)
+	}
+	args = append(args, filter.Limit, filter.Offset)
+	q := fmt.Sprintf(`
+		SELECT id, user_id, provider, external_order_id, plan_code, currency, amount,
+		       status, raw_metadata, paid_at, completed_at, failed_at, failed_reason,
+		       created_at, updated_at
+		FROM payment_orders %s
+		ORDER BY created_at DESC, id DESC
+		LIMIT $%d OFFSET $%d`, where, len(args)-1, len(args))
+	rows, err := r.pool.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list payment orders: %w", err)
+	}
+	defer rows.Close()
+	return scanPaymentOrders(rows)
+}
+
+// MarkPaid records a verified successful provider payment.
+func (r *PaymentOrderRepo) MarkPaid(ctx context.Context, id uuid.UUID, paidAt time.Time) error {
+	const q = `
+		UPDATE payment_orders
+		SET status = 'paid', paid_at = COALESCE(paid_at, $2), completed_at = NULL,
+		    failed_at = NULL, failed_reason = ''
+		WHERE id = $1 AND status <> 'completed'`
+	_, err := r.pool.Exec(ctx, q, id, paidAt)
+	if err != nil {
+		return fmt.Errorf("mark order paid: %w", err)
+	}
+	return nil
+}
+
+// MarkCompleted records successful fulfillment. It is safe to call repeatedly.
+func (r *PaymentOrderRepo) MarkCompleted(ctx context.Context, id uuid.UUID, completedAt time.Time) error {
+	const q = `
+		UPDATE payment_orders
+		SET status = 'completed', completed_at = COALESCE(completed_at, $2),
+		    failed_at = NULL, failed_reason = ''
+		WHERE id = $1`
+	_, err := r.pool.Exec(ctx, q, id, completedAt)
+	if err != nil {
+		return fmt.Errorf("mark order completed: %w", err)
+	}
+	return nil
+}
+
+// MarkFailed records a retryable fulfillment failure after payment was verified.
+func (r *PaymentOrderRepo) MarkFailed(ctx context.Context, id uuid.UUID, failedAt time.Time, reason string) error {
+	const q = `
+		UPDATE payment_orders
+		SET status = 'failed', failed_at = $2, failed_reason = $3
+		WHERE id = $1 AND status <> 'completed'`
+	_, err := r.pool.Exec(ctx, q, id, failedAt, trimFailureReason(reason))
+	if err != nil {
+		return fmt.Errorf("mark order failed: %w", err)
+	}
+	return nil
+}
+
+func (r *PaymentOrderRepo) scanOne(ctx context.Context, query string, args ...any) (*model.PaymentOrder, error) {
+	rows, err := r.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query payment order: %w", err)
+	}
+	defer rows.Close()
+	orders, err := scanPaymentOrders(rows)
+	if err != nil {
+		return nil, err
+	}
+	if len(orders) == 0 {
+		return nil, nil
+	}
+	return &orders[0], nil
+}
+
+func scanPaymentOrders(rows pgx.Rows) ([]model.PaymentOrder, error) {
+	var orders []model.PaymentOrder
+	for rows.Next() {
+		var o model.PaymentOrder
+		var rawMetadata []byte
+		if err := rows.Scan(
+			&o.ID, &o.UserID, &o.Provider, &o.ExternalOrderID, &o.PlanCode, &o.Currency,
+			&o.Amount, &o.Status, &rawMetadata, &o.PaidAt, &o.CompletedAt, &o.FailedAt,
+			&o.FailedReason, &o.CreatedAt, &o.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan payment order: %w", err)
+		}
+		if len(rawMetadata) > 0 {
+			if err := json.Unmarshal(rawMetadata, &o.RawMetadata); err != nil {
+				return nil, fmt.Errorf("decode order metadata: %w", err)
+			}
+		}
+		orders = append(orders, o)
+	}
+	return orders, rows.Err()
+}
+
+func trimFailureReason(reason string) string {
+	if len(reason) <= 500 {
+		return reason
+	}
+	return reason[:500]
 }

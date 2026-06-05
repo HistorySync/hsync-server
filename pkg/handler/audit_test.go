@@ -1,0 +1,89 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+
+	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/service"
+)
+
+type handlerAuditStore struct {
+	filter model.AuditListFilter
+	logs   []model.AuditLog
+}
+
+func (s *handlerAuditStore) Create(_ context.Context, _ *model.AuditLog) error {
+	return nil
+}
+
+func (s *handlerAuditStore) List(_ context.Context, filter model.AuditListFilter) ([]model.AuditLog, error) {
+	s.filter = filter
+	return s.logs, nil
+}
+
+func TestAdminListAuditLogsParsesFilters(t *testing.T) {
+	actorID := uuid.New()
+	store := &handlerAuditStore{
+		logs: []model.AuditLog{{
+			ID:          uuid.New(),
+			ActorUserID: &actorID,
+			EventType:   model.AuditEventLoginSuccess,
+			TargetType:  "user",
+			TargetID:    actorID.String(),
+			Metadata:    map[string]any{"method": "password"},
+			CreatedAt:   time.Now(),
+		}},
+	}
+	h := New(Deps{
+		Services: &service.Services{
+			Audit: service.NewAuditService(store),
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("GET", "/admin/audit-logs?limit=25&offset=10&actor_user_id="+actorID.String()+"&event_type=auth.login.success&target_type=user&target_id="+actorID.String(), nil)
+	req.Header.Set("X-Admin-Key", "secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	if store.filter.ActorUserID == nil || *store.filter.ActorUserID != actorID {
+		t.Fatalf("ActorUserID = %v, want %s", store.filter.ActorUserID, actorID)
+	}
+	if store.filter.EventType != model.AuditEventLoginSuccess {
+		t.Fatalf("EventType = %q, want %q", store.filter.EventType, model.AuditEventLoginSuccess)
+	}
+	if store.filter.TargetType != "user" || store.filter.TargetID != actorID.String() {
+		t.Fatalf("target = %q/%q, want user/%s", store.filter.TargetType, store.filter.TargetID, actorID)
+	}
+	if store.filter.Limit != 25 || store.filter.Offset != 10 {
+		t.Fatalf("pagination = %d/%d, want 25/10", store.filter.Limit, store.filter.Offset)
+	}
+
+	var body struct {
+		AuditLogs []model.AuditLog `json:"audit_logs"`
+		Limit     int32            `json:"limit"`
+		Offset    int32            `json:"offset"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.AuditLogs) != 1 {
+		t.Fatalf("audit log count = %d, want 1", len(body.AuditLogs))
+	}
+	if body.Limit != 25 || body.Offset != 10 {
+		t.Fatalf("response pagination = %d/%d, want 25/10", body.Limit, body.Offset)
+	}
+}

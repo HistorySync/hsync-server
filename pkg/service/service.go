@@ -167,6 +167,7 @@ type Services struct {
 	Notification *NotificationService
 	Retention    *RetentionService
 	TwoFactor    *TwoFactorService
+	Audit        *AuditService
 }
 
 // New creates all service instances with their dependencies.
@@ -205,6 +206,7 @@ func New(deps Deps) *Services {
 	}
 	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
 	twoFactorSvc := NewTwoFactorService(deps.Repos, deps.TokenManager, deps.SecuritySecret)
+	auditSvc := NewAuditService(deps.Repos.AuditLogs)
 
 	return &Services{
 		Repos:        deps.Repos,
@@ -216,6 +218,7 @@ func New(deps Deps) *Services {
 		Notification: notifSvc,
 		Retention:    retentionSvc,
 		TwoFactor:    twoFactorSvc,
+		Audit:        auditSvc,
 	}
 }
 

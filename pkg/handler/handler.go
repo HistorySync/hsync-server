@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog/log"
 
 	"github.com/historysync/hsync-server/pkg/auth"
 	"github.com/historysync/hsync-server/pkg/config"
@@ -105,6 +106,43 @@ func (h *Handlers) enforceAuthRateLimit(c fiber.Ctx, window time.Duration, decis
 
 func (h *Handlers) enforceTurnstile(c fiber.Ctx, token string) error {
 	return middleware.EnforceTurnstile(c, h.deps.Turnstile, token)
+}
+
+func (h *Handlers) recordAudit(c fiber.Ctx, input service.AuditEventInput) {
+	if h.deps.Services == nil || h.deps.Services.Audit == nil {
+		return
+	}
+	input.IP = c.IP()
+	input.UserAgent = c.Get("User-Agent")
+	if err := h.deps.Services.Audit.Record(c.Context(), input); err != nil {
+		log.Warn().Err(err).Str("event_type", string(input.EventType)).Msg("record audit event failed")
+	}
+}
+
+func auditActor(userID uuid.UUID) *uuid.UUID {
+	if userID == uuid.Nil {
+		return nil
+	}
+	return &userID
+}
+
+func auditFailureReason(err error) string {
+	switch {
+	case errors.Is(err, service.ErrInvalidCredentials):
+		return "invalid_credentials"
+	case errors.Is(err, service.ErrTwoFactorChallenge):
+		return "invalid_challenge"
+	case errors.Is(err, service.ErrTwoFactorInvalidCode):
+		return "invalid_code"
+	case errors.Is(err, service.ErrTwoFactorLocked):
+		return "locked"
+	case errors.Is(err, service.ErrTwoFactorNotEnabled):
+		return "not_enabled"
+	case errors.Is(err, service.ErrTwoFactorEnabled):
+		return "already_enabled"
+	default:
+		return "internal_error"
+	}
 }
 
 // RegisterRoutes mounts all API routes onto the Fiber app.
@@ -210,6 +248,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)
+	admin.Get("/audit-logs", h.AdminListAuditLogs)
 	admin.Get("/error-codes", h.AdminErrorCodes)
 }
 
@@ -496,6 +535,14 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 		return apierrors.NewBadRequest("invalid request body")
 	}
 	if err := h.enforceTurnstile(c, req.TurnstileToken); err != nil {
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventLoginFailure,
+			TargetType: "user",
+			Metadata: map[string]any{
+				"reason": "turnstile",
+				"email":  strings.ToLower(strings.TrimSpace(req.Email)),
+			},
+		})
 		return err
 	}
 	if ok, err := h.enforceAuthRateLimit(c, rateLimitWindow,
@@ -508,6 +555,14 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 		Password: req.Password,
 	})
 	if err != nil {
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventLoginFailure,
+			TargetType: "user",
+			Metadata: map[string]any{
+				"reason": auditFailureReason(err),
+				"email":  strings.ToLower(strings.TrimSpace(req.Email)),
+			},
+		})
 		if err == service.ErrInvalidCredentials {
 			return apierrors.New(apierrors.CodeInvalidCredentials, err.Error())
 		}
@@ -520,6 +575,16 @@ func (h *Handlers) Login(c fiber.Ctx) error {
 			"expires_in":   result.ExpiresIn,
 		})
 	}
+
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(result.User.ID),
+		EventType:   model.AuditEventLoginSuccess,
+		TargetType:  "user",
+		TargetID:    result.User.ID.String(),
+		Metadata: map[string]any{
+			"method": "password",
+		},
+	})
 
 	return c.JSON(fiber.Map{
 		"user":          result.User,
@@ -580,8 +645,35 @@ func (h *Handlers) LoginTwoFactor(c fiber.Ctx) error {
 		Code:      req.Code,
 	})
 	if err != nil {
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventTwoFactorChallengeFailure,
+			TargetType: "user",
+			Metadata: map[string]any{
+				"flow":   "login",
+				"reason": auditFailureReason(err),
+			},
+		})
 		return mapTwoFactorError(err)
 	}
+
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(result.User.ID),
+		EventType:   model.AuditEventTwoFactorChallengeSuccess,
+		TargetType:  "user",
+		TargetID:    result.User.ID.String(),
+		Metadata: map[string]any{
+			"flow": "login",
+		},
+	})
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(result.User.ID),
+		EventType:   model.AuditEventLoginSuccess,
+		TargetType:  "user",
+		TargetID:    result.User.ID.String(),
+		Metadata: map[string]any{
+			"method": "totp",
+		},
+	})
 
 	return c.JSON(fiber.Map{
 		"user":          result.User,
@@ -609,8 +701,32 @@ func (h *Handlers) VerifyAuth(c fiber.Ctx) error {
 		Code:   req.Code,
 	})
 	if err != nil {
+		userID := auth.UserID(c)
+		h.recordAudit(c, service.AuditEventInput{
+			ActorUserID: auditActor(userID),
+			EventType:   model.AuditEventTwoFactorChallengeFailure,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			Metadata: map[string]any{
+				"flow":   "step_up",
+				"method": method,
+				"reason": auditFailureReason(err),
+			},
+		})
 		return mapTwoFactorError(err)
 	}
+
+	userID := auth.UserID(c)
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(userID),
+		EventType:   model.AuditEventTwoFactorChallengeSuccess,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+		Metadata: map[string]any{
+			"flow":   "step_up",
+			"method": result.Method,
+		},
+	})
 
 	return c.JSON(result)
 }
@@ -1114,8 +1230,26 @@ func (h *Handlers) EnableTwoFactor(c fiber.Ctx) error {
 		return apierrors.NewBadRequest("code is required")
 	}
 	if err := h.deps.Services.TwoFactor.Enable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		userID := auth.UserID(c)
+		h.recordAudit(c, service.AuditEventInput{
+			ActorUserID: auditActor(userID),
+			EventType:   model.AuditEventTwoFactorChallengeFailure,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			Metadata: map[string]any{
+				"flow":   "enable_2fa",
+				"reason": auditFailureReason(err),
+			},
+		})
 		return mapTwoFactorError(err)
 	}
+	userID := auth.UserID(c)
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(userID),
+		EventType:   model.AuditEventTwoFactorEnable,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+	})
 	return c.JSON(fiber.Map{"status": "enabled"})
 }
 
@@ -1129,8 +1263,26 @@ func (h *Handlers) DisableTwoFactor(c fiber.Ctx) error {
 		return apierrors.NewBadRequest("code is required")
 	}
 	if err := h.deps.Services.TwoFactor.Disable(c.Context(), auth.UserID(c), req.Code); err != nil {
+		userID := auth.UserID(c)
+		h.recordAudit(c, service.AuditEventInput{
+			ActorUserID: auditActor(userID),
+			EventType:   model.AuditEventTwoFactorChallengeFailure,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			Metadata: map[string]any{
+				"flow":   "disable_2fa",
+				"reason": auditFailureReason(err),
+			},
+		})
 		return mapTwoFactorError(err)
 	}
+	userID := auth.UserID(c)
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(userID),
+		EventType:   model.AuditEventTwoFactorDisable,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+	})
 	return c.JSON(fiber.Map{"status": "disabled"})
 }
 
@@ -1443,7 +1595,60 @@ func (h *Handlers) AdminSetOption(c fiber.Ctx) error {
 	if err := h.deps.OptionStore.Set(key, req.Value); err != nil {
 		return apierrors.NewInternal(err.Error())
 	}
+	h.recordAudit(c, service.AuditEventInput{
+		EventType:  model.AuditEventAdminConfigChange,
+		TargetType: "config_option",
+		TargetID:   key,
+		Metadata: map[string]any{
+			"key": key,
+		},
+	})
 	return c.JSON(fiber.Map{"key": key, "value": req.Value})
+}
+
+// AdminListAuditLogs returns recent structured audit events for operators.
+func (h *Handlers) AdminListAuditLogs(c fiber.Ctx) error {
+	limit := int32(50)
+	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
+		limit = int32(l)
+	}
+	offset := int32(0)
+	if o, err := strconv.Atoi(c.Query("offset", "0")); err == nil && o > 0 {
+		offset = int32(o)
+	}
+
+	filter := model.AuditListFilter{
+		EventType:  model.AuditEventType(strings.TrimSpace(c.Query("event_type"))),
+		TargetType: strings.TrimSpace(c.Query("target_type")),
+		TargetID:   strings.TrimSpace(c.Query("target_id")),
+		Limit:      limit,
+		Offset:     offset,
+	}
+	if rawActor := strings.TrimSpace(c.Query("actor_user_id")); rawActor != "" {
+		actorID, err := uuid.Parse(rawActor)
+		if err != nil {
+			return apierrors.New(apierrors.CodeInvalidUserID, "invalid actor_user_id")
+		}
+		filter.ActorUserID = &actorID
+	}
+
+	if h.deps.Services == nil || h.deps.Services.Audit == nil {
+		return c.JSON(fiber.Map{
+			"audit_logs": []model.AuditLog{},
+			"limit":      limit,
+			"offset":     offset,
+		})
+	}
+
+	logs, err := h.deps.Services.Audit.List(c.Context(), filter)
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(fiber.Map{
+		"audit_logs": logs,
+		"limit":      limit,
+		"offset":     offset,
+	})
 }
 
 // AdminErrorCodes returns the full catalog of registered API error codes as a

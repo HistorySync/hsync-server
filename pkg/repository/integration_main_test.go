@@ -48,6 +48,9 @@ var allTables = []string{
 	"invoices",
 	"email_verifications",
 	"password_resets",
+	"user_two_factor",
+	"user_two_factor_backup_codes",
+	"audit_logs",
 }
 
 func TestMain(m *testing.M) {

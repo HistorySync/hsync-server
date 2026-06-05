@@ -32,6 +32,11 @@ type Repos struct {
 	AuditLogs          *AuditRepo
 	NotificationPrefs  *NotificationPreferenceRepo
 	SystemSettings     *SystemSettingRepo
+	Plans              *PlanRepo
+	Entitlements       *EntitlementRepo
+	Subscriptions      *SubscriptionRepo
+	CreditLedger       *CreditLedgerRepo
+	PaymentOrders      *PaymentOrderRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -50,6 +55,11 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		AuditLogs:          &AuditRepo{pool: pgPool},
 		NotificationPrefs:  NewNotificationPreferenceRepo(pgPool),
 		SystemSettings:     NewSystemSettingRepo(pgPool),
+		Plans:              &PlanRepo{pool: pgPool},
+		Entitlements:       &EntitlementRepo{pool: pgPool},
+		Subscriptions:      &SubscriptionRepo{pool: pgPool},
+		CreditLedger:       &CreditLedgerRepo{pool: pgPool},
+		PaymentOrders:      &PaymentOrderRepo{pool: pgPool},
 	}
 }
 

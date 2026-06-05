@@ -16,6 +16,8 @@ const (
 	AuditEventTwoFactorEnable           AuditEventType = "auth.2fa.enable"
 	AuditEventTwoFactorDisable          AuditEventType = "auth.2fa.disable"
 	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
+	AuditEventAdminPlanGrant            AuditEventType = "admin.billing.plan_grant"
+	AuditEventAdminCreditAdjust         AuditEventType = "admin.billing.credit_adjust"
 )
 
 type AuditLog struct {

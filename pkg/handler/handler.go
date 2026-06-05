@@ -226,9 +226,15 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Post("/2fa/backup-codes/regenerate", h.RegenerateTwoFactorBackupCodes)
 	me.Get("/notification-preferences", h.GetNotificationPreferences)
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
+	me.Get("/entitlements", h.GetMyEntitlements)
+	me.Get("/credits", h.GetMyCredits)
+	me.Get("/credits/ledger", h.GetMyCreditLedger)
 
 	// Quota (JWT-protected)
 	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
+
+	// Plans catalog (public; pricing is shown before sign-in)
+	v1.Get("/plans", h.ListPlans)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -248,6 +254,9 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/users", h.AdminListUsers)
 	admin.Get("/stats", h.AdminStats)
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
+	admin.Post("/users/:id/grant-plan", h.AdminGrantPlan)
+	admin.Post("/users/:id/credits", h.AdminAdjustCredits)
+	admin.Post("/subscriptions/refresh", h.AdminRefreshSubscriptions)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)
 	admin.Get("/settings", h.AdminListSettings)

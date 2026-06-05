@@ -74,6 +74,14 @@ const (
 	// Billing
 	CodeBillingDisabled Code = "BILLING_DISABLED"
 
+	// Plans / entitlements / AI credits
+	CodePlanNotFound          Code = "PLAN_NOT_FOUND"
+	CodePlanUnavailable       Code = "PLAN_UNAVAILABLE"
+	CodeInsufficientCredits   Code = "INSUFFICIENT_CREDITS"
+	CodeIdempotencyKeyMissing Code = "IDEMPOTENCY_KEY_REQUIRED"
+	CodeInvalidCreditAmount   Code = "INVALID_CREDIT_AMOUNT"
+	CodeSubscriptionNotFound  Code = "SUBSCRIPTION_NOT_FOUND"
+
 	// User admin
 	CodeInvalidUserID Code = "INVALID_USER_ID"
 	CodeUserNotFound  Code = "USER_NOT_FOUND"
@@ -133,6 +141,12 @@ var catalog = map[Code]Entry{
 	CodeDeviceNotRegistered:       {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},
 	CodeDeviceRevoked:             {CodeDeviceRevoked, http.StatusForbidden, "device has been revoked"},
 	CodeBillingDisabled:           {CodeBillingDisabled, http.StatusServiceUnavailable, "billing is not available"},
+	CodePlanNotFound:              {CodePlanNotFound, http.StatusNotFound, "plan not found"},
+	CodePlanUnavailable:           {CodePlanUnavailable, http.StatusBadRequest, "plan is not available"},
+	CodeInsufficientCredits:       {CodeInsufficientCredits, http.StatusPaymentRequired, "insufficient ai credits"},
+	CodeIdempotencyKeyMissing:     {CodeIdempotencyKeyMissing, http.StatusBadRequest, "idempotency key is required"},
+	CodeInvalidCreditAmount:       {CodeInvalidCreditAmount, http.StatusBadRequest, "invalid credit amount"},
+	CodeSubscriptionNotFound:      {CodeSubscriptionNotFound, http.StatusNotFound, "subscription not found"},
 	CodeInvalidUserID:             {CodeInvalidUserID, http.StatusBadRequest, "invalid user id"},
 	CodeUserNotFound:              {CodeUserNotFound, http.StatusNotFound, "user not found"},
 	CodeInvalidJSON:               {CodeInvalidJSON, http.StatusBadRequest, "invalid JSON body"},

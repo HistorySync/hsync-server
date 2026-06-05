@@ -170,6 +170,7 @@ type Services struct {
 	TwoFactor    *TwoFactorService
 	Audit        *AuditService
 	Settings     *SettingsService
+	Entitlement  *EntitlementService
 }
 
 // New creates all service instances with their dependencies.
@@ -228,6 +229,20 @@ func New(deps Deps) *Services {
 	}
 	settingsSvc := NewSettingsService(settingStoreImpl, defaultSettingDefinitions())
 
+	// Entitlement service: paid plans, cloud subscriptions, and AI credits. It
+	// is built only when repositories are available; a nil service is handled by
+	// the handlers (like Settings/Audit).
+	var entitlementSvc *EntitlementService
+	if deps.Repos != nil {
+		entitlementSvc = NewEntitlementService(
+			deps.Repos.Plans,
+			deps.Repos.Entitlements,
+			deps.Repos.Subscriptions,
+			deps.Repos.CreditLedger,
+			deps.Repos.PaymentOrders,
+		)
+	}
+
 	return &Services{
 		Repos:        deps.Repos,
 		Auth:         authSvc,
@@ -240,6 +255,7 @@ func New(deps Deps) *Services {
 		TwoFactor:    twoFactorSvc,
 		Audit:        auditSvc,
 		Settings:     settingsSvc,
+		Entitlement:  entitlementSvc,
 	}
 }
 

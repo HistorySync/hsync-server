@@ -236,6 +236,10 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Plans catalog (public; pricing is shown before sign-in)
 	v1.Get("/plans", h.ListPlans)
 
+	// Admin security stats for the v1 API surface.
+	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
+	v1Admin.Get("/security/stats", h.AdminSecurityStats)
+
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	billing.Post("/checkout", h.CreateCheckout)
@@ -1593,6 +1597,18 @@ func (h *Handlers) AdminStats(c fiber.Ctx) error {
 			"active_connections": h.deps.Hub.ActiveConnectionCount(),
 		},
 	})
+}
+
+func (h *Handlers) AdminSecurityStats(c fiber.Ctx) error {
+	statsSvc := service.NewSecurityStatsService(nil, nil)
+	if h.deps.Services != nil && h.deps.Services.SecurityStats != nil {
+		statsSvc = h.deps.Services.SecurityStats
+	}
+	stats, err := statsSvc.Stats(c.Context())
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(stats)
 }
 
 // AdminRecalculateQuota recomputes a user's storage usage counters from their

@@ -40,3 +40,37 @@ type AuditListFilter struct {
 	Limit       int32
 	Offset      int32
 }
+
+type SecurityStats struct {
+	GeneratedAt  time.Time              `json:"generated_at"`
+	Last24h      SecurityStatsWindow    `json:"last_24h"`
+	Last7d       SecurityStatsWindow    `json:"last_7d"`
+	TwoFactor    SecurityTwoFactorStats `json:"two_factor"`
+	EventsByType []AuditEventTypeCount  `json:"events_by_type"`
+}
+
+type SecurityStatsWindow struct {
+	Since                     time.Time `json:"since"`
+	Until                     time.Time `json:"until"`
+	LoginSuccess              int64     `json:"login_success"`
+	LoginFailure              int64     `json:"login_failure"`
+	TwoFactorChallengeSuccess int64     `json:"two_factor_challenge_success"`
+	TwoFactorChallengeFailure int64     `json:"two_factor_challenge_failure"`
+}
+
+type SecurityTwoFactorStats struct {
+	EnabledUsers int64   `json:"enabled_users"`
+	TotalUsers   int64   `json:"total_users"`
+	EnabledRatio float64 `json:"enabled_ratio"`
+}
+
+type AuditEventTypeCount struct {
+	EventType AuditEventType `json:"event_type"`
+	Count     int64          `json:"count"`
+}
+
+type SecurityEventWindowCount struct {
+	EventType AuditEventType
+	Last24h   int64
+	Last7d    int64
+}

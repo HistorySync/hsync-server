@@ -254,6 +254,21 @@ func (r *UserRepo) CountByStatus(ctx context.Context) (map[model.UserStatus]int6
 	return counts, rows.Err()
 }
 
+func (r *UserRepo) TwoFactorEnabledStats(ctx context.Context) (int64, int64, error) {
+	const q = `
+		SELECT COUNT(u.id),
+		       COUNT(tf.user_id) FILTER (WHERE tf.enabled = true)
+		FROM users u
+		LEFT JOIN user_two_factor tf ON tf.user_id = u.id
+		WHERE u.deleted_at IS NULL`
+	var totalUsers int64
+	var enabledUsers int64
+	if err := r.pool.QueryRow(ctx, q).Scan(&totalUsers, &enabledUsers); err != nil {
+		return 0, 0, fmt.Errorf("count two factor users: %w", err)
+	}
+	return enabledUsers, totalUsers, nil
+}
+
 // ListDeletedBefore returns users soft-deleted before the given time (for cleanup).
 func (r *UserRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.User, error) {
 	const q = `

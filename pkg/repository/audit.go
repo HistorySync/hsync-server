@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -88,6 +89,32 @@ func (r *AuditRepo) List(ctx context.Context, filter model.AuditListFilter) ([]m
 	defer rows.Close()
 
 	return scanAuditLogs(rows)
+}
+
+func (r *AuditRepo) SecurityEventCounts(ctx context.Context, since24h, since7d, until time.Time) ([]model.SecurityEventWindowCount, error) {
+	const q = `
+		SELECT event_type,
+		       COUNT(*) FILTER (WHERE created_at >= $2),
+		       COUNT(*)
+		FROM audit_logs
+		WHERE created_at >= $1 AND created_at < $3
+		GROUP BY event_type
+		ORDER BY event_type`
+	rows, err := r.pool.Query(ctx, q, since7d, since24h, until)
+	if err != nil {
+		return nil, fmt.Errorf("count security audit events: %w", err)
+	}
+	defer rows.Close()
+
+	var counts []model.SecurityEventWindowCount
+	for rows.Next() {
+		var count model.SecurityEventWindowCount
+		if err := rows.Scan(&count.EventType, &count.Last24h, &count.Last7d); err != nil {
+			return nil, fmt.Errorf("scan security audit event count: %w", err)
+		}
+		counts = append(counts, count)
+	}
+	return counts, rows.Err()
 }
 
 func normalizeAuditListFilter(filter model.AuditListFilter) model.AuditListFilter {

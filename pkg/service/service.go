@@ -159,18 +159,19 @@ func (g *reservationGuard) release(ctx context.Context) {
 
 // Services aggregates all business service instances.
 type Services struct {
-	Repos        *repository.Repos
-	Auth         *AuthService
-	Bundle       *BundleService
-	Snapshot     *SnapshotService
-	Quota        *QuotaService
-	Billing      *BillingService
-	Notification *NotificationService
-	Retention    *RetentionService
-	TwoFactor    *TwoFactorService
-	Audit        *AuditService
-	Settings     *SettingsService
-	Entitlement  *EntitlementService
+	Repos         *repository.Repos
+	Auth          *AuthService
+	Bundle        *BundleService
+	Snapshot      *SnapshotService
+	Quota         *QuotaService
+	Billing       *BillingService
+	Notification  *NotificationService
+	Retention     *RetentionService
+	TwoFactor     *TwoFactorService
+	Audit         *AuditService
+	SecurityStats *SecurityStatsService
+	Settings      *SettingsService
+	Entitlement   *EntitlementService
 }
 
 // New creates all service instances with their dependencies.
@@ -218,7 +219,16 @@ func New(deps Deps) *Services {
 	}
 	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
 	twoFactorSvc := NewTwoFactorService(deps.Repos, deps.TokenManager, deps.SecuritySecret)
-	auditSvc := NewAuditService(deps.Repos.AuditLogs)
+	var auditStore auditEventStore
+	var securityAuditStore securityAuditStore
+	var securityUserStore securityUserStore
+	if deps.Repos != nil {
+		auditStore = deps.Repos.AuditLogs
+		securityAuditStore = deps.Repos.AuditLogs
+		securityUserStore = deps.Repos.Users
+	}
+	auditSvc := NewAuditService(auditStore)
+	securityStatsSvc := NewSecurityStatsService(securityAuditStore, securityUserStore)
 
 	// Dynamic system settings: a database-backed, whitelisted, typed override
 	// layer over code-declared defaults. A nil store (no repos) keeps reads
@@ -244,18 +254,19 @@ func New(deps Deps) *Services {
 	}
 
 	return &Services{
-		Repos:        deps.Repos,
-		Auth:         authSvc,
-		Bundle:       bundleSvc,
-		Snapshot:     snapshotSvc,
-		Quota:        quotaSvc,
-		Billing:      billingSvc,
-		Notification: notifSvc,
-		Retention:    retentionSvc,
-		TwoFactor:    twoFactorSvc,
-		Audit:        auditSvc,
-		Settings:     settingsSvc,
-		Entitlement:  entitlementSvc,
+		Repos:         deps.Repos,
+		Auth:          authSvc,
+		Bundle:        bundleSvc,
+		Snapshot:      snapshotSvc,
+		Quota:         quotaSvc,
+		Billing:       billingSvc,
+		Notification:  notifSvc,
+		Retention:     retentionSvc,
+		TwoFactor:     twoFactorSvc,
+		Audit:         auditSvc,
+		SecurityStats: securityStatsSvc,
+		Settings:      settingsSvc,
+		Entitlement:   entitlementSvc,
 	}
 }
 

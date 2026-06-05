@@ -40,6 +40,14 @@ stripe_disabled: true
 # Admin API key (set to enable /admin/* endpoints)
 # admin_key: ""
 
+# Cloudflare Turnstile bot protection for public auth routes.
+# When enabled, register/login/forgot-password/resend-verification requests must
+# include turnstile_token in the JSON body.
+turnstile_enabled: false
+# turnstile_secret: ""
+# turnstile_site_key: ""
+turnstile_timeout: "3s"
+
 # Background maintenance tasks
 # Periodic jobs run on a single instance at a time (leader-elected via a Postgres
 # advisory lock). Set background_tasks_enabled: false to disable all of them.

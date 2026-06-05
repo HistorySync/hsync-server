@@ -44,6 +44,26 @@ func TestDefaultConfigSetsOIDCDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigDisablesTurnstile(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.TurnstileEnabled {
+		t.Fatal("TurnstileEnabled = true, want false")
+	}
+	if cfg.TurnstileTimeout <= 0 {
+		t.Fatalf("TurnstileTimeout = %v, want > 0", cfg.TurnstileTimeout)
+	}
+}
+
+func TestValidateRequiresTurnstileSecretWhenEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.TurnstileEnabled = true
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "turnstile_secret") {
+		t.Fatalf("Validate() error = %v, want turnstile_secret error", err)
+	}
+}
+
 func TestDecodeEd25519PrivateKey(t *testing.T) {
 	seed := make([]byte, ed25519.SeedSize)
 	for i := range seed {

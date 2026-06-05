@@ -105,6 +105,7 @@ func TestEveryCodeInCatalog(t *testing.T) {
 		CodeRateLimited,
 		CodeConflict, CodeEmailTaken, CodeInvalidCredentials,
 		CodeInvalidRefreshToken, CodeInvalidResetToken, CodeInvalidVerificationToken,
+		CodeTurnstileFailed, CodeTurnstileRequired, CodeTurnstileUnavailable,
 		CodeQuotaExceeded, CodeReservationDenied,
 		CodeDeviceNotRegistered, CodeDeviceRevoked,
 		CodeBillingDisabled,

@@ -40,6 +40,7 @@ type Deps struct {
 	AdminKey     string
 	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
 	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
+	Turnstile    middleware.TurnstileConfig
 }
 
 // Handlers groups all HTTP handler instances.
@@ -99,6 +100,10 @@ func authRateLimit(limiter middleware.Limiter, window time.Duration, classify fu
 
 func (h *Handlers) enforceAuthRateLimit(c fiber.Ctx, window time.Duration, decision middleware.RateDecision) (bool, error) {
 	return middleware.EnforceRateLimit(c, h.deps.RateLimiter, window, decision)
+}
+
+func (h *Handlers) enforceTurnstile(c fiber.Ctx, token string) error {
+	return middleware.EnforceTurnstile(c, h.deps.Turnstile, token)
 }
 
 // RegisterRoutes mounts all API routes onto the Fiber app.
@@ -419,15 +424,19 @@ func parseFormInt(form map[string][]string, name string, bitSize int) (int64, er
 // ── Auth ────────────────────────────────────────────────────
 
 type registerRequest struct {
-	Email       string `json:"email"`
-	Password    string `json:"password"`
-	DisplayName string `json:"display_name"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	DisplayName    string `json:"display_name"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 func (h *Handlers) Register(c fiber.Ctx) error {
 	var req registerRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
+	}
+	if err := h.enforceTurnstile(c, req.TurnstileToken); err != nil {
+		return err
 	}
 
 	if req.Email == "" || req.Password == "" {
@@ -462,14 +471,18 @@ func (h *Handlers) Register(c fiber.Ctx) error {
 }
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email          string `json:"email"`
+	Password       string `json:"password"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 func (h *Handlers) Login(c fiber.Ctx) error {
 	var req loginRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
+	}
+	if err := h.enforceTurnstile(c, req.TurnstileToken); err != nil {
+		return err
 	}
 	if ok, err := h.enforceAuthRateLimit(c, rateLimitWindow,
 		middleware.AuthEmailRateDecisionForValue("auth:login:email", authLoginEmailLimit, req.Email)); err != nil || !ok {
@@ -500,11 +513,13 @@ type refreshRequest struct {
 }
 
 type forgotPasswordRequest struct {
-	Email string `json:"email"`
+	Email          string `json:"email"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 type resendVerificationRequest struct {
-	Email string `json:"email"`
+	Email          string `json:"email"`
+	TurnstileToken string `json:"turnstile_token"`
 }
 
 type verifyEmailRequest struct {
@@ -551,6 +566,9 @@ func (h *Handlers) ResendEmailVerification(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
 	}
+	if err := h.enforceTurnstile(c, req.TurnstileToken); err != nil {
+		return err
+	}
 	if ok, err := h.enforceAuthRateLimit(c, authRecoveryWindow,
 		middleware.AuthEmailRateDecisionForValue("auth:resend:email", authRecoveryEmailLimit, req.Email)); err != nil || !ok {
 		return err
@@ -595,6 +613,9 @@ func (h *Handlers) ForgotPassword(c fiber.Ctx) error {
 	var req forgotPasswordRequest
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return apierrors.NewBadRequest("invalid request body")
+	}
+	if err := h.enforceTurnstile(c, req.TurnstileToken); err != nil {
+		return err
 	}
 	if ok, err := h.enforceAuthRateLimit(c, authRecoveryWindow,
 		middleware.AuthEmailRateDecisionForValue("auth:forgot:email", authRecoveryEmailLimit, req.Email)); err != nil || !ok {

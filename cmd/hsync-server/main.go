@@ -84,7 +84,20 @@ func main() {
 		log.Info().Msg("rate limiting using in-memory limiter")
 	}
 
-	// ── Blob Storage ──────────────────────────────────────────
+	// Turnstile bot protection for public auth routes.
+	var turnstile middleware.TurnstileConfig
+	if cfg.TurnstileEnabled {
+		turnstile = middleware.TurnstileConfig{
+			Enabled: true,
+			Verifier: middleware.NewCloudflareTurnstileVerifier(
+				cfg.TurnstileSecret,
+				cfg.TurnstileTimeout,
+			),
+		}
+		log.Info().Msg("turnstile protection enabled for public auth routes")
+	}
+
+	// Blob Storage
 	blobStore, err := storage.NewS3Storage(ctx, storage.S3Config{
 		Endpoint:  cfg.S3Endpoint,
 		Bucket:    cfg.S3Bucket,
@@ -246,6 +259,7 @@ func main() {
 		AdminKey:     cfg.AdminKey,
 		RateLimiter:  rateLimiter,
 		OptionStore:  optionStore,
+		Turnstile:    turnstile,
 	})
 
 	// ── Fiber App ─────────────────────────────────────────────

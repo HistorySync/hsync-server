@@ -50,6 +50,9 @@ const (
 	CodeInvalidRefreshToken      Code = "INVALID_REFRESH_TOKEN"
 	CodeInvalidResetToken        Code = "INVALID_RESET_TOKEN"
 	CodeInvalidVerificationToken Code = "INVALID_VERIFICATION_TOKEN"
+	CodeTurnstileFailed          Code = "TURNSTILE_FAILED"
+	CodeTurnstileRequired        Code = "TURNSTILE_REQUIRED"
+	CodeTurnstileUnavailable     Code = "TURNSTILE_UNAVAILABLE"
 
 	// Quota / reservation
 	CodeQuotaExceeded     Code = "QUOTA_EXCEEDED"
@@ -100,6 +103,9 @@ var catalog = map[Code]Entry{
 	CodeInvalidRefreshToken:      {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},
 	CodeInvalidResetToken:        {CodeInvalidResetToken, http.StatusUnauthorized, "invalid or expired reset token"},
 	CodeInvalidVerificationToken: {CodeInvalidVerificationToken, http.StatusUnauthorized, "invalid or expired verification token"},
+	CodeTurnstileFailed:          {CodeTurnstileFailed, http.StatusForbidden, "turnstile verification failed"},
+	CodeTurnstileRequired:        {CodeTurnstileRequired, http.StatusBadRequest, "turnstile token is required"},
+	CodeTurnstileUnavailable:     {CodeTurnstileUnavailable, http.StatusServiceUnavailable, "turnstile verification is unavailable"},
 	CodeQuotaExceeded:            {CodeQuotaExceeded, 507, "storage quota exceeded"},
 	CodeReservationDenied:        {CodeReservationDenied, http.StatusForbidden, "reservation denied"},
 	CodeDeviceNotRegistered:      {CodeDeviceNotRegistered, http.StatusBadRequest, "device not registered"},

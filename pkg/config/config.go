@@ -56,6 +56,12 @@ type Config struct {
 	OIDCRedirectURL  string `mapstructure:"oidc_redirect_url"`
 	OIDCScopes       string `mapstructure:"oidc_scopes"`
 
+	// Cloudflare Turnstile bot protection for public auth flows.
+	TurnstileEnabled bool          `mapstructure:"turnstile_enabled"`
+	TurnstileSecret  string        `mapstructure:"turnstile_secret"`
+	TurnstileSiteKey string        `mapstructure:"turnstile_site_key"`
+	TurnstileTimeout time.Duration `mapstructure:"turnstile_timeout"`
+
 	// Background tasks
 	BackgroundTasksEnabled   bool          `mapstructure:"background_tasks_enabled"`
 	QuotaReconcileInterval   time.Duration `mapstructure:"quota_reconcile_interval"`
@@ -88,20 +94,21 @@ type Config struct {
 // DefaultConfig returns a Config with reasonable defaults.
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:      ":8080",
-		LogLevel:        zerolog.InfoLevel,
-		WebEnabled:      true,
-		WebAppName:      "HistorySync Cloud Server",
-		WebConsolePath:  "/console",
-		WebSupportEmail: "support@historysync.app",
-		DatabaseURL:     "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
-		RedisURL:        "redis://localhost:6379/0",
-		S3Endpoint:      "localhost:9000",
-		S3Bucket:        "hsync-bundles",
-		S3UseSSL:        false,
-		StripeDisabled:  true,
-		OIDCProviderID:  "default",
-		OIDCScopes:      "openid profile email",
+		ListenAddr:       ":8080",
+		LogLevel:         zerolog.InfoLevel,
+		WebEnabled:       true,
+		WebAppName:       "HistorySync Cloud Server",
+		WebConsolePath:   "/console",
+		WebSupportEmail:  "support@historysync.app",
+		DatabaseURL:      "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
+		RedisURL:         "redis://localhost:6379/0",
+		S3Endpoint:       "localhost:9000",
+		S3Bucket:         "hsync-bundles",
+		S3UseSSL:         false,
+		StripeDisabled:   true,
+		OIDCProviderID:   "default",
+		OIDCScopes:       "openid profile email",
+		TurnstileTimeout: 3 * time.Second,
 
 		BackgroundTasksEnabled:   true,
 		QuotaReconcileInterval:   24 * time.Hour,
@@ -181,6 +188,10 @@ func load() (*Config, error) {
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)
 	v.SetDefault("oidc_provider_id", cfg.OIDCProviderID)
 	v.SetDefault("oidc_scopes", cfg.OIDCScopes)
+	v.SetDefault("turnstile_enabled", cfg.TurnstileEnabled)
+	v.SetDefault("turnstile_secret", cfg.TurnstileSecret)
+	v.SetDefault("turnstile_site_key", cfg.TurnstileSiteKey)
+	v.SetDefault("turnstile_timeout", cfg.TurnstileTimeout)
 	v.SetDefault("background_tasks_enabled", cfg.BackgroundTasksEnabled)
 	v.SetDefault("quota_reconcile_interval", cfg.QuotaReconcileInterval)
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
@@ -260,6 +271,14 @@ func (c *Config) Validate() error {
 		}
 		if c.OIDCRedirectURL == "" {
 			errs = append(errs, "oidc_redirect_url is required when OIDC is enabled")
+		}
+	}
+	if c.TurnstileEnabled {
+		if strings.TrimSpace(c.TurnstileSecret) == "" {
+			errs = append(errs, "turnstile_secret is required when turnstile is enabled")
+		}
+		if c.TurnstileTimeout <= 0 {
+			errs = append(errs, "turnstile_timeout must be greater than 0 when turnstile is enabled")
 		}
 	}
 

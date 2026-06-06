@@ -12,7 +12,7 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- ============================================================
 -- 用户表
 -- ============================================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email             TEXT NOT NULL UNIQUE,
     password_hash     TEXT NOT NULL,
@@ -26,12 +26,12 @@ CREATE TABLE users (
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     deleted_at        TIMESTAMPTZ
 );
-CREATE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email) WHERE deleted_at IS NULL;
 
 -- ============================================================
 -- 刷新令牌表
 -- ============================================================
-CREATE TABLE refresh_tokens (
+CREATE TABLE IF NOT EXISTS refresh_tokens (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     token_hash   BYTEA NOT NULL UNIQUE,
@@ -40,12 +40,12 @@ CREATE TABLE refresh_tokens (
     revoked_at   TIMESTAMPTZ,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens(user_id);
 
 -- ============================================================
 -- 设备表
 -- ============================================================
-CREATE TABLE devices (
+CREATE TABLE IF NOT EXISTS devices (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_uuid     UUID NOT NULL,
@@ -58,12 +58,12 @@ CREATE TABLE devices (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE(user_id, device_uuid)
 );
-CREATE INDEX idx_devices_user ON devices(user_id);
+CREATE INDEX IF NOT EXISTS idx_devices_user ON devices(user_id);
 
 -- ============================================================
 -- Bundle 元数据表
 -- ============================================================
-CREATE TABLE bundles (
+CREATE TABLE IF NOT EXISTS bundles (
     bundle_id            TEXT NOT NULL,
     user_id              UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     uploader_device_uuid UUID NOT NULL,
@@ -77,14 +77,14 @@ CREATE TABLE bundles (
     deleted_at           TIMESTAMPTZ,
     PRIMARY KEY (user_id, bundle_id)
 );
-CREATE INDEX idx_bundles_device_lamport ON bundles(user_id, uploader_device_uuid, lamport_lo)
+CREATE INDEX IF NOT EXISTS idx_bundles_device_lamport ON bundles(user_id, uploader_device_uuid, lamport_lo)
     WHERE deleted_at IS NULL;
-CREATE INDEX idx_bundles_uploaded ON bundles(uploaded_at) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_bundles_uploaded ON bundles(uploaded_at) WHERE deleted_at IS NULL;
 
 -- ============================================================
 -- Snapshot 元数据表
 -- ============================================================
-CREATE TABLE snapshots (
+CREATE TABLE IF NOT EXISTS snapshots (
     snapshot_id    TEXT NOT NULL,
     user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     base_hlc       BIGINT NOT NULL,
@@ -95,24 +95,24 @@ CREATE TABLE snapshots (
     deleted_at     TIMESTAMPTZ,
     PRIMARY KEY (user_id, snapshot_id)
 );
-CREATE INDEX idx_snapshots_latest ON snapshots(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_snapshots_latest ON snapshots(user_id, created_at DESC);
 
 -- ============================================================
 -- 设备吊销事件表
 -- ============================================================
-CREATE TABLE device_revocations (
+CREATE TABLE IF NOT EXISTS device_revocations (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_uuid   UUID NOT NULL,
     revoked_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     revoked_by    UUID NOT NULL REFERENCES users(id)
 );
-CREATE INDEX idx_revocations_user ON device_revocations(user_id);
+CREATE INDEX IF NOT EXISTS idx_revocations_user ON device_revocations(user_id);
 
 -- ============================================================
 -- 存储使用量缓存表
 -- ============================================================
-CREATE TABLE storage_usage (
+CREATE TABLE IF NOT EXISTS storage_usage (
     user_id       UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     total_bytes   BIGINT NOT NULL DEFAULT 0,
     bundle_count  INTEGER NOT NULL DEFAULT 0,
@@ -123,7 +123,7 @@ CREATE TABLE storage_usage (
 -- ============================================================
 -- 配额限制表
 -- ============================================================
-CREATE TABLE quota_limits (
+CREATE TABLE IF NOT EXISTS quota_limits (
     user_id              UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
     storage_limit_bytes  BIGINT NOT NULL DEFAULT 1073741824,
     max_devices          INTEGER NOT NULL DEFAULT 1,
@@ -149,6 +149,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS trg_users_updated_at ON users;
 CREATE TRIGGER trg_users_updated_at
     BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -114,6 +115,7 @@ func (r *UserRepo) Create(ctx context.Context, user *model.User) error {
 		VALUES ($1, $2, $3, $4, $5, $6)
 		RETURNING id, created_at, updated_at`
 
+	user.Email = normalizeEmailForStorage(user.Email)
 	return r.pool.QueryRow(ctx, q,
 		user.Email, user.PasswordHash, user.DisplayName,
 		string(user.Tier), string(user.Status), user.EmailVerified,
@@ -142,15 +144,15 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.User, erro
 	return user, nil
 }
 
-// GetByEmail fetches a user by email (case-sensitive). Returns nil if not found.
+// GetByEmail fetches a user by email. Returns nil if not found.
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	const q = `
 		SELECT id, email, password_hash, display_name, tier, status,
 		       email_verified, created_at, updated_at, deleted_at
-		FROM users WHERE email = $1 AND deleted_at IS NULL`
+		FROM users WHERE lower(trim(email)) = $1 AND deleted_at IS NULL`
 
 	user := &model.User{}
-	err := r.pool.QueryRow(ctx, q, email).Scan(
+	err := r.pool.QueryRow(ctx, q, normalizeEmailForStorage(email)).Scan(
 		&user.ID, &user.Email, &user.PasswordHash, &user.DisplayName,
 		&user.Tier, &user.Status, &user.EmailVerified,
 		&user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
@@ -162,6 +164,10 @@ func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, e
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
 	return user, nil
+}
+
+func normalizeEmailForStorage(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 // UpdateTier changes a user's subscription tier and status.

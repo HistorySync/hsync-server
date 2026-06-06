@@ -65,6 +65,34 @@ func TestUserCreateDuplicateEmailRejected(t *testing.T) {
 	}
 }
 
+func TestUserEmailUniquenessIsCaseInsensitive(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "Casey@Example.COM")
+	if u.Email != "casey@example.com" {
+		t.Fatalf("stored email = %q, want casey@example.com", u.Email)
+	}
+
+	byEmail, err := repos.Users.GetByEmail(ctx, " CASEY@example.com ")
+	if err != nil {
+		t.Fatalf("GetByEmail: %v", err)
+	}
+	if byEmail == nil || byEmail.ID != u.ID {
+		t.Fatalf("GetByEmail = %+v, want ID %s", byEmail, u.ID)
+	}
+
+	dup := &model.User{
+		Email:        "casey@example.com",
+		PasswordHash: "x",
+		Tier:         model.TierFree,
+		Status:       model.StatusActive,
+	}
+	if err := repos.Users.Create(ctx, dup); err == nil {
+		t.Fatal("Create with case-variant duplicate email succeeded, want unique-violation error")
+	}
+}
+
 func TestUserSoftDeleteHidesFromReads(t *testing.T) {
 	repos := setupTest(t)
 	ctx := testContext(t)

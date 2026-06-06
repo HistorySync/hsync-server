@@ -169,12 +169,12 @@ func auditFailureReason(err error) string {
 
 // RegisterRoutes mounts all API routes onto the Fiber app.
 func (h *Handlers) RegisterRoutes(app *fiber.App) {
-	// ── Health (no auth) ─────────────────────────────────
+	// Health (no auth)
 	app.Get("/healthz", h.Healthz)
 	app.Get("/readyz", h.Readyz)
 	h.registerMetricsRoute(app)
 
-	// ── API v1 ───────────────────────────────────────────
+	// API v1
 	v1 := app.Group("/api/v1")
 	v1.Use(h.maintenanceModeMiddleware)
 
@@ -285,11 +285,11 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Stripe webhook has its own signature verification
 	v1.Post("/billing/webhook", h.StripeWebhook)
 
-	// ── WebSocket ────────────────────────────────────────
+	// WebSocket
 	app.Get("/ws/push", h.WebSocketUpgrade)
 	app.Get("/api/meta/overview", h.WebOverview)
 
-	// ── Admin ────────────────────────────────────────────
+	// Admin
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
 	admin.Get("/users", h.AdminListUsers)
 	admin.Get("/stats", h.AdminStats)
@@ -312,8 +312,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
 }
 
-// ── Health ───────────────────────────────────────────────────
-
+// Health
 func (h *Handlers) registerMetricsRoute(app *fiber.App) {
 	if !h.deps.Metrics.Enabled {
 		return
@@ -651,8 +650,7 @@ func parseFormInt(form map[string][]string, name string, bitSize int) (int64, er
 	return value, nil
 }
 
-// ── Auth ────────────────────────────────────────────────────
-
+// Auth
 type registerRequest struct {
 	Email          string `json:"email"`
 	Password       string `json:"password"`
@@ -1249,8 +1247,7 @@ func (h *Handlers) ResetPassword(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
-// ── Bundles ─────────────────────────────────────────────────
-
+// Bundles
 func (h *Handlers) UploadBundle(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 
@@ -1419,8 +1416,7 @@ func (h *Handlers) DeleteBundle(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "deleted"})
 }
 
-// ── Snapshots ───────────────────────────────────────────────
-
+// Snapshots
 func (h *Handlers) UploadSnapshot(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 
@@ -1530,8 +1526,7 @@ func (h *Handlers) DownloadSnapshot(c fiber.Ctx) error {
 	return c.SendStream(reader)
 }
 
-// ── Devices ─────────────────────────────────────────────────
-
+// Devices
 func (h *Handlers) ListDevices(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 	devices, err := h.deps.Services.Repos.Devices.ListByUser(c.Context(), userID)
@@ -1823,8 +1818,7 @@ func (h *Handlers) GetQuota(c fiber.Ctx) error {
 	})
 }
 
-// ── Billing ─────────────────────────────────────────────────
-
+// Billing
 func (h *Handlers) CreateCheckout(c fiber.Ctx) error {
 	userID := auth.UserID(c)
 
@@ -1907,14 +1901,12 @@ func (h *Handlers) StripeWebhook(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok"})
 }
 
-// ── WebSocket ───────────────────────────────────────────────
-
+// WebSocket
 func (h *Handlers) WebSocketUpgrade(c fiber.Ctx) error {
 	return h.deps.Hub.UpgradeHandler(c)
 }
 
-// ── Admin ───────────────────────────────────────────────────
-
+// Admin
 func (h *Handlers) AdminListUsers(c fiber.Ctx) error {
 	limit := int32(50)
 	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
@@ -2407,8 +2399,7 @@ func (h *Handlers) AdminRecalculateQuota(c fiber.Ctx) error {
 	})
 }
 
-// ── Dynamic Options ──────────────────────────────────────────
-
+// Dynamic Options
 // AdminListOptions returns all runtime-configurable key-value pairs. When the
 // OptionStore is not configured the response is an empty object.
 func (h *Handlers) AdminListOptions(c fiber.Ctx) error {
@@ -2452,8 +2443,7 @@ func (h *Handlers) AdminSetOption(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"key": key, "value": req.Value})
 }
 
-// ── Dynamic System Settings ──────────────────────────────────
-
+// Dynamic System Settings
 // AdminListSettings returns every whitelisted system setting with its effective
 // value, type, description, and metadata. Sensitive values are masked by the
 // service and never returned in plaintext.

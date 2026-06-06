@@ -57,8 +57,7 @@ func windowSeconds(window time.Duration) int64 {
 	return secs
 }
 
-// ── MemoryLimiter ────────────────────────────────────────────
-
+// MemoryLimiter
 type memoryBucket struct {
 	bucket    int64
 	count     int
@@ -131,8 +130,7 @@ func (m *MemoryLimiter) sweep() {
 	}
 }
 
-// ── RedisLimiter ─────────────────────────────────────────────
-
+// RedisLimiter
 // RedisLimiter is a fixed-window limiter backed by Redis, so the window is
 // shared across all server instances.
 type RedisLimiter struct {
@@ -165,8 +163,7 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window 
 	return decide(int(incr.Val()), limit, bucket, secs, now), nil
 }
 
-// ── Middleware ───────────────────────────────────────────────
-
+// Middleware
 // RateDecision describes how to limit a single request. A zero Limit, empty
 // Key, or Skip means the request is not rate limited.
 type RateDecision struct {

@@ -11,8 +11,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// ── User ─────────────────────────────────────────────────────
-
+// User
 // UserTier represents the subscription tier of a user account.
 type UserTier string
 
@@ -119,8 +118,7 @@ type NotificationFailureView struct {
 	UpdatedAt    time.Time           `json:"updated_at"`
 }
 
-// ── Device ───────────────────────────────────────────────────
-
+// Device
 type OpsRunType string
 
 const (
@@ -155,8 +153,7 @@ type Device struct {
 	CreatedAt  time.Time  `json:"created_at"    db:"created_at"`
 }
 
-// ── Bundle ───────────────────────────────────────────────────
-
+// Bundle
 // BundleMeta is the service-side metadata for an uploaded .hsb bundle.
 // The server never parses the bundle payload; this is the only data it indexes.
 type BundleMeta struct {
@@ -173,8 +170,7 @@ type BundleMeta struct {
 	DeletedAt          *time.Time `json:"deleted_at,omitempty" db:"deleted_at"`
 }
 
-// ── Snapshot ─────────────────────────────────────────────────
-
+// Snapshot
 // SnapshotMeta is server-side metadata for a full-database snapshot.
 type SnapshotMeta struct {
 	SnapshotID    string     `json:"snapshot_id"     db:"snapshot_id"`
@@ -187,8 +183,7 @@ type SnapshotMeta struct {
 	DeletedAt     *time.Time `json:"deleted_at,omitempty" db:"deleted_at"`
 }
 
-// ── Quota ────────────────────────────────────────────────────
-
+// Quota
 // QuotaUsage tracks current resource consumption for a user.
 type QuotaUsage struct {
 	UserID      uuid.UUID `json:"user_id"      db:"user_id"`
@@ -211,8 +206,7 @@ type QuotaLimits struct {
 	ExpiresAt           *time.Time `json:"expires_at,omitempty"  db:"expires_at"`
 }
 
-// ── Device Revocation ────────────────────────────────────────
-
+// Device Revocation
 // DeviceRevocation records a device revocation event for audit trail.
 type DeviceRevocation struct {
 	ID         uuid.UUID `json:"id"          db:"id"`

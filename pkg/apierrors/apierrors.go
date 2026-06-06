@@ -30,7 +30,7 @@ import (
 // literal.
 type Code string
 
-// ── Error Code Constants ──────────────────────────────────────────
+// Error Code Constants
 //
 // Sorted alphabetically within each group. When adding a code also add its
 // catalog entry below.
@@ -104,8 +104,7 @@ const (
 	CodeUnknownSetting      Code = "UNKNOWN_SETTING"
 )
 
-// ── Entry: one row in the error catalog ───────────────────────────
-
+// Entry: one row in the error catalog
 // Entry describes a single error code as it appears in API responses and in
 // the GET /admin/error-codes documentation endpoint.
 type Entry struct {
@@ -114,7 +113,7 @@ type Entry struct {
 	Message    string `json:"message"` // English default message
 }
 
-// ── Catalog ───────────────────────────────────────────────────────
+// Catalog
 //
 // Every Code constant MUST have an entry here. The Message field is the
 // English fallback; future i18n support will extend this with per-locale
@@ -193,8 +192,7 @@ func All() []Entry {
 	return entries
 }
 
-// ── Error type ────────────────────────────────────────────────────
-
+// Error type
 // Error is an API error that carries a machine-readable Code and a
 // human-readable Message. It implements the error interface so handlers
 // can return it directly to Fiber's error handler chain.
@@ -208,8 +206,7 @@ type Error struct {
 // Error returns the message so *Error implements error.
 func (e *Error) Error() string { return e.Message }
 
-// ── Constructors ──────────────────────────────────────────────────
-
+// Constructors
 // New returns an *Error for the given code. When detail is non-empty it is
 // used as the Message (preserving the service-layer error text); otherwise
 // the catalog default message is used.

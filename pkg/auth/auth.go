@@ -20,8 +20,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/config"
 )
 
-// ── TokenManager ─────────────────────────────────────────────
-
+// TokenManager
 // TokenConfig configures token lifetimes.
 type TokenConfig struct {
 	AccessTTL  time.Duration
@@ -249,8 +248,7 @@ func (tm *TokenManager) keyfunc(token *jwt.Token) (interface{}, error) {
 	return tm.publicKey, nil
 }
 
-// ── Fiber Middleware ─────────────────────────────────────────
-
+// Fiber Middleware
 // AuthMiddleware validates JWT Bearer tokens and injects user context.
 // On success, the following keys are set in c.Locals:
 //   - "user_id" (string)

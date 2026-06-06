@@ -10,8 +10,7 @@ import (
 	"sync"
 )
 
-// ── Common Errors ────────────────────────────────────────────
-
+// Common Errors
 var (
 	ErrMultiUserNotSupported = errors.New("multi-user registration requires HistorySync Enterprise")
 	ErrBillingNotSupported   = errors.New("billing requires HistorySync Enterprise")
@@ -20,8 +19,7 @@ var (
 	ErrDeviceLimit           = errors.New("device limit reached")
 )
 
-// ── Provider Interfaces ──────────────────────────────────────
-
+// Provider Interfaces
 // AuthProvider defines the authentication abstraction.
 type AuthProvider interface {
 	// ValidateCredentials verifies email/password and returns the user.
@@ -91,8 +89,7 @@ type ReadinessCheck struct {
 	Critical bool
 }
 
-// ── Shared Types ─────────────────────────────────────────────
-
+// Shared Types
 // CreateUserRequest carries registration data.
 type CreateUserRequest struct {
 	Email       string
@@ -133,8 +130,7 @@ type QuotaUsageInfo struct {
 	SnapCount   int32
 }
 
-// ── Registry ─────────────────────────────────────────────────
-
+// Registry
 // ProviderRegistry holds the active provider implementations.
 // Enterprise packages call Register*() in their init() to replace defaults.
 type ProviderRegistry struct {

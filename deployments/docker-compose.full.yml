@@ -122,8 +122,7 @@ services:
           cpus: "1"
           memory: 512M
 
-  # ── Monitoring Stack ───────────────────────────────────────
-
+  # Monitoring Stack
   prometheus:
     image: prom/prometheus:latest
     command:

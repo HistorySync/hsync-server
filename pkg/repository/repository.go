@@ -101,8 +101,7 @@ func NewRedisClient(ctx context.Context, redisURL string) (*redis.Client, error)
 	return client, nil
 }
 
-// ── UserRepo ─────────────────────────────────────────────────
-
+// UserRepo
 // UserRepo handles user CRUD operations.
 type UserRepo struct {
 	pool *pgxpool.Pool
@@ -309,8 +308,7 @@ func scanUsers(rows pgx.Rows) ([]model.User, error) {
 	return users, rows.Err()
 }
 
-// ── DeviceRepo ───────────────────────────────────────────────
-
+// DeviceRepo
 // DeviceRepo handles device registration and revocation.
 type DeviceRepo struct {
 	pool *pgxpool.Pool
@@ -456,8 +454,7 @@ func (r *DeviceRepo) UpdateLastSync(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-// ── BundleRepo ───────────────────────────────────────────────
-
+// BundleRepo
 // BundleRepo handles bundle metadata indexing and querying.
 type BundleRepo struct {
 	pool *pgxpool.Pool
@@ -702,8 +699,7 @@ func scanBundles(rows pgx.Rows) ([]model.BundleMeta, error) {
 	return bundles, rows.Err()
 }
 
-// ── SnapshotRepo ─────────────────────────────────────────────
-
+// SnapshotRepo
 // SnapshotRepo handles snapshot metadata indexing.
 type SnapshotRepo struct {
 	pool *pgxpool.Pool
@@ -922,8 +918,7 @@ func (r *SnapshotRepo) ListDeletedBefore(ctx context.Context, before time.Time) 
 	return snapshots, rows.Err()
 }
 
-// ── QuotaRepo ────────────────────────────────────────────────
-
+// QuotaRepo
 // QuotaRepo handles storage usage tracking and quota enforcement.
 type QuotaRepo struct {
 	pool  *pgxpool.Pool
@@ -1245,8 +1240,7 @@ func (r *QuotaRepo) RecalculateAllUsage(ctx context.Context) (int64, error) {
 	return tag.RowsAffected(), nil
 }
 
-// ── Refresh Token Repo ──────────────────────────────────────
-
+// Refresh Token Repo
 // RefreshTokenRepo manages refresh token storage.
 type RefreshTokenRepo struct {
 	pool *pgxpool.Pool
@@ -1307,8 +1301,7 @@ func (r *RefreshTokenRepo) GetUserIDByTokenHash(ctx context.Context, tokenHash [
 	return &userID, nil
 }
 
-// ── Email Verification Repo ────────────────────────────────
-
+// Email Verification Repo
 // EmailVerificationRepo manages email verification tokens.
 type EmailVerificationRepo struct {
 	pool *pgxpool.Pool
@@ -1349,8 +1342,7 @@ func (r *EmailVerificationRepo) DeleteByUser(ctx context.Context, userID uuid.UU
 	return err
 }
 
-// ── Password Reset Repo ────────────────────────────────────
-
+// Password Reset Repo
 // PasswordResetRepo manages password reset tokens.
 type PasswordResetRepo struct {
 	pool *pgxpool.Pool
@@ -1398,8 +1390,7 @@ func (r *PasswordResetRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) 
 	return err
 }
 
-// ── Device Revocation Repo ──────────────────────────────────
-
+// Device Revocation Repo
 // DeviceRevocationRepo manages the device revocation event log.
 type DeviceRevocationRepo struct {
 	pool *pgxpool.Pool

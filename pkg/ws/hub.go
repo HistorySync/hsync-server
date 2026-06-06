@@ -37,8 +37,7 @@ const (
 	maxMessageSize = 4096
 )
 
-// ── Message Types ────────────────────────────────────────────
-
+// Message Types
 // PushMessage is a JSON-serializable notification sent to connected clients.
 type PushMessage struct {
 	Type      string      `json:"type"`
@@ -56,8 +55,7 @@ const (
 	MsgSubscriptionChanged = "subscription_changed"
 )
 
-// ── Client ───────────────────────────────────────────────────
-
+// Client
 // Client represents a single WebSocket connection.
 type Client struct {
 	userID   uuid.UUID
@@ -124,8 +122,7 @@ func (c *Client) writePump() {
 	}
 }
 
-// ── Hub ──────────────────────────────────────────────────────
-
+// Hub
 // Hub maintains the set of active clients and broadcasts push notifications.
 type Hub struct {
 	mu         sync.RWMutex
@@ -258,8 +255,7 @@ func (h *Hub) countUserClients(userID uuid.UUID) int {
 	return 0
 }
 
-// ── WebSocket Upgrade Handler ───────────────────────────────
-
+// WebSocket Upgrade Handler
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,

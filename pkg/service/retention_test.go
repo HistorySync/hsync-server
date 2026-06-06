@@ -259,8 +259,7 @@ func TestPurgeExpiredBundlesCancelledContext(t *testing.T) {
 	}
 }
 
-// ── Snapshot Retention Tests ─────────────────────────────────
-
+// Snapshot Retention Tests
 // fakeSnapshotStore is the snapshot counterpart of fakeRetentionStore.
 type fakeSnapshotStore struct {
 	rows      []model.SnapshotMeta

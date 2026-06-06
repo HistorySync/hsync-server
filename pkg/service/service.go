@@ -321,8 +321,7 @@ func New(deps Deps) *Services {
 	}
 }
 
-// ── RetentionService ─────────────────────────────────────────
-
+// RetentionService
 // RetentionService reports on and purges data that has been soft-deleted past
 // its retention grace period. It covers bundles and snapshots; user cleanup can
 // be added as a further task.
@@ -463,8 +462,7 @@ func purgeExpiredBundles(ctx context.Context, bundles purgeableBundles, blobs bl
 	}
 }
 
-// ── Snapshot Retention ───────────────────────────────────────
-
+// Snapshot Retention
 // SnapshotReport summarizes soft-deleted snapshots eligible for purging or
 // actually removed.
 type SnapshotReport struct {
@@ -547,8 +545,7 @@ func purgeExpiredSnapshots(ctx context.Context, snapshots purgeableSnapshots, bl
 	}
 }
 
-// ── AuthService ──────────────────────────────────────────────
-
+// AuthService
 // AuthService handles user registration, login, and token management.
 type AuthService struct {
 	repos         *repository.Repos
@@ -999,8 +996,7 @@ func validatePassword(password string) error {
 	return nil
 }
 
-// ── Password Helpers ────────────────────────────────────────
-
+// Password Helpers
 func hashPassword(password string) (string, error) {
 	salt := make([]byte, Argon2Params.SaltLen)
 	if _, err := rand.Read(salt); err != nil {
@@ -1071,8 +1067,7 @@ func splitStr(s string, sep byte) []string {
 	return parts
 }
 
-// ── BundleService ────────────────────────────────────────────
-
+// BundleService
 // BundleService handles bundle upload validation, deduplication, and listing.
 type BundleService struct {
 	repos       *repository.Repos
@@ -1428,8 +1423,7 @@ func (s *AuthService) ListRevocations(ctx context.Context, userID uuid.UUID) ([]
 	return revs, nil
 }
 
-// ── QuotaService ─────────────────────────────────────────────
-
+// QuotaService
 // QuotaService checks and enforces resource limits.
 type QuotaService struct {
 	repos         *repository.Repos
@@ -1600,8 +1594,7 @@ func (s *QuotaService) CheckDeviceLimit(ctx context.Context, userID uuid.UUID, t
 	return nil
 }
 
-// ── BillingService ───────────────────────────────────────────
-
+// BillingService
 // BillingService integrates with Stripe for subscription management.
 type BillingService struct {
 	repos      *repository.Repos
@@ -1682,4 +1675,4 @@ func (s *BillingService) ListInvoices(ctx context.Context, userID uuid.UUID) ([]
 	return nil, ErrBillingNotSupported
 }
 
-// ── NotificationService ──────────────────────────────────────
+// NotificationService

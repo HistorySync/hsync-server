@@ -10,8 +10,7 @@ import (
 	"time"
 )
 
-// ── Interface ────────────────────────────────────────────────
-
+// Interface
 // BlobStorage is the abstract interface for storing and retrieving opaque
 // binary blobs (bundle files). All operations are context-aware for
 // cancellation and tracing.
@@ -44,8 +43,7 @@ type ObjectInfo struct {
 	LastModified time.Time
 }
 
-// ── Key Helpers ──────────────────────────────────────────────
-
+// Key Helpers
 // BundleKey builds the S3 key for a bundle file.
 // Format: bundles/{userID}/{bundleID}.hsb
 func BundleKey(userID, bundleID string) string {

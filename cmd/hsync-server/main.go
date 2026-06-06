@@ -30,19 +30,19 @@ import (
 )
 
 func main() {
-	// ── Logger ────────────────────────────────────────────────
+	// Logger
 	log.Logger = zerolog.New(os.Stdout).With().
 		Timestamp().
 		Str("service", "hsync-server").
 		Logger()
 
-	// ── Subcommands ───────────────────────────────────────────
+	// Subcommands
 	// "migrate" runs database migrations and exits; anything else starts the server.
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		os.Exit(runMigrate(os.Args[2:]))
 	}
 
-	// ── Config ────────────────────────────────────────────────
+	// Config
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to load config")
@@ -50,7 +50,7 @@ func main() {
 	zerolog.SetGlobalLevel(cfg.LogLevel)
 	log.Info().Msg("starting HistorySync Cloud Server")
 
-	// ── Connect to PostgreSQL ─────────────────────────────────
+	// Connect to PostgreSQL
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -61,14 +61,14 @@ func main() {
 	defer pgPool.Close()
 	log.Info().Msg("connected to PostgreSQL")
 
-	// ── Connect to Redis ──────────────────────────────────────
+	// Connect to Redis
 	redisClient, err := repository.NewRedisClient(ctx, cfg.RedisURL)
 	if err != nil {
 		// Redis is optional; the server degrades gracefully without it.
 		log.Warn().Err(err).Msg("redis unavailable, continuing without it")
 	}
 
-	// ── Rate Limiter ──────────────────────────────────────────
+	// Rate Limiter
 	// Background context for long-lived tasks (e.g. in-memory limiter cleanup),
 	// cancelled when main returns after shutdown.
 	bgCtx, bgCancel := context.WithCancel(context.Background())
@@ -111,10 +111,10 @@ func main() {
 	}
 	log.Info().Msg("connected to S3-compatible storage")
 
-	// ── Repositories ──────────────────────────────────────────
+	// Repositories
 	repos := repository.New(pgPool, redisClient)
 
-	// ── Token Manager ─────────────────────────────────────────
+	// Token Manager
 	tokenManager, err := auth.NewTokenManager(cfg.JWTPrivateKey, auth.TokenConfig{
 		AccessTTL:  15 * time.Minute,
 		RefreshTTL: 30 * 24 * time.Hour,
@@ -144,7 +144,7 @@ func main() {
 		log.Warn().Msg("notifications enabled without smtp; using log-only notifier")
 	}
 
-	// ── Services ──────────────────────────────────────────────
+	// Services
 	databasePing := func(ctx context.Context) error {
 		return pgPool.Ping(ctx)
 	}
@@ -177,11 +177,11 @@ func main() {
 		},
 	})
 
-	// ── WebSocket Hub ─────────────────────────────────────────
+	// WebSocket Hub
 	hub := ws.NewHub(repos.Devices)
 	go hub.Run()
 
-	// ── Dynamic Options ──────────────────────────────────────
+	// Dynamic Options
 	var optionStore config.OptionStore
 	if cfg.OptionsFile != "" {
 		var err error
@@ -192,7 +192,7 @@ func main() {
 		log.Info().Str("path", cfg.OptionsFile).Msg("dynamic options loaded")
 	}
 
-	// ── Background Scheduler ──────────────────────────────────
+	// Background Scheduler
 	// Periodic maintenance tasks run on a single instance at a time (leader
 	// elected via a Postgres advisory lock) and stop on shutdown via bgCtx.
 	if cfg.BackgroundTasksEnabled {
@@ -313,7 +313,7 @@ func main() {
 		log.Info().Msg("background tasks disabled")
 	}
 
-	// ── HTTP Handlers ─────────────────────────────────────────
+	// HTTP Handlers
 	h := handler.New(handler.Deps{
 		Services:     svcs,
 		TokenManager: tokenManager,
@@ -332,7 +332,7 @@ func main() {
 		},
 	})
 
-	// ── Fiber App ─────────────────────────────────────────────
+	// Fiber App
 	app := fiber.New(fiber.Config{
 		AppName:      "HistorySync Cloud Server",
 		ReadTimeout:  30 * time.Second,
@@ -358,7 +358,7 @@ func main() {
 		AdminPath:    "/admin",
 	})
 
-	// ── Graceful Shutdown ─────────────────────────────────────
+	// Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
@@ -382,7 +382,7 @@ func main() {
 		}
 	}()
 
-	// ── Listen ────────────────────────────────────────────────
+	// Listen
 	log.Info().Str("addr", cfg.ListenAddr).Msg("server listening")
 	if err := app.Listen(cfg.ListenAddr, fiber.ListenConfig{
 		EnablePrefork: false, // 如果需要多进程，由外部进程管理器控制

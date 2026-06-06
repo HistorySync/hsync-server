@@ -615,6 +615,31 @@ func (r *BundleRepo) SumSizeAll(ctx context.Context) (int64, error) {
 	return total, err
 }
 
+// ListForOpsConsistency returns a bounded sample of active bundle metadata for
+// operator consistency checks. The server still treats the blob payload as
+// opaque; callers use only IDs and size metadata.
+func (r *BundleRepo) ListForOpsConsistency(ctx context.Context, limit int32) ([]model.BundleMeta, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	const q = `
+		SELECT bundle_id, user_id, uploader_device_uuid,
+		       lamport_lo, lamport_hi, event_count, size_bytes,
+		       cipher_id, key_generation, uploaded_at, deleted_at
+		FROM bundles
+		WHERE deleted_at IS NULL
+		ORDER BY uploaded_at DESC, bundle_id
+		LIMIT $1`
+
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list bundles for ops consistency: %w", err)
+	}
+	defer rows.Close()
+
+	return scanBundles(rows)
+}
+
 // ListDeletedBefore returns bundles soft-deleted before the given time (for cleanup).
 func (r *BundleRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error) {
 	const q = `
@@ -772,6 +797,38 @@ func (r *SnapshotRepo) SumSizeAll(ctx context.Context) (int64, error) {
 	var total int64
 	err := r.pool.QueryRow(ctx, q).Scan(&total)
 	return total, err
+}
+
+// ListForOpsConsistency returns a bounded sample of active snapshot metadata for
+// operator consistency checks. It exposes metadata only and never reads snapshot
+// blob contents.
+func (r *SnapshotRepo) ListForOpsConsistency(ctx context.Context, limit int32) ([]model.SnapshotMeta, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 1000
+	}
+	const q = `
+		SELECT snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
+		FROM snapshots
+		WHERE deleted_at IS NULL
+		ORDER BY created_at DESC, snapshot_id
+		LIMIT $1`
+
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list snapshots for ops consistency: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []model.SnapshotMeta
+	for rows.Next() {
+		var s model.SnapshotMeta
+		if err := rows.Scan(&s.SnapshotID, &s.UserID, &s.BaseHLC, &s.SizeBytes,
+			&s.CipherID, &s.KeyGeneration, &s.CreatedAt, &s.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan ops consistency snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	return snapshots, rows.Err()
 }
 
 // PruneOldest marks the oldest snapshots beyond the given limit as deleted and returns them.

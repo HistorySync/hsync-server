@@ -10,9 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/historysync/hsync-server/pkg/config"
+	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/storage"
 )
 
@@ -82,11 +84,106 @@ func (f *fakeOpsBlobStore) Size(_ context.Context, key string) (int64, bool, err
 	return int64(len(body)), ok, nil
 }
 
-func (f *fakeOpsBlobStore) List(context.Context, string) ([]storage.ObjectInfo, error) {
+func (f *fakeOpsBlobStore) List(_ context.Context, prefix string) ([]storage.ObjectInfo, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return f.objects, nil
+	if f.objects == nil {
+		objects := make([]storage.ObjectInfo, 0, len(f.data))
+		for key, body := range f.data {
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+			objects = append(objects, storage.ObjectInfo{Key: key, Size: int64(len(body))})
+		}
+		return objects, nil
+	}
+	objects := make([]storage.ObjectInfo, 0, len(f.objects))
+	for _, obj := range f.objects {
+		if strings.HasPrefix(obj.Key, prefix) {
+			objects = append(objects, obj)
+		}
+	}
+	return objects, nil
+}
+
+func (f *fakeOpsBlobStore) setObject(key string, size int64) {
+	if f.data == nil {
+		f.data = map[string][]byte{}
+	}
+	f.data[key] = bytes.Repeat([]byte("x"), int(size))
+}
+
+type fakeOpsBundleMetadata struct {
+	rows     []model.BundleMeta
+	countErr error
+	sumErr   error
+	listErr  error
+}
+
+func (f fakeOpsBundleMetadata) CountAll(context.Context) (int64, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return int64(len(f.rows)), nil
+}
+
+func (f fakeOpsBundleMetadata) SumSizeAll(context.Context) (int64, error) {
+	if f.sumErr != nil {
+		return 0, f.sumErr
+	}
+	var total int64
+	for _, row := range f.rows {
+		total += row.SizeBytes
+	}
+	return total, nil
+}
+
+func (f fakeOpsBundleMetadata) ListForOpsConsistency(_ context.Context, limit int32) ([]model.BundleMeta, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	rows := append([]model.BundleMeta(nil), f.rows...)
+	if int(limit) < len(rows) {
+		rows = rows[:limit]
+	}
+	return rows, nil
+}
+
+type fakeOpsSnapshotMetadata struct {
+	rows     []model.SnapshotMeta
+	countErr error
+	sumErr   error
+	listErr  error
+}
+
+func (f fakeOpsSnapshotMetadata) CountAll(context.Context) (int64, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	return int64(len(f.rows)), nil
+}
+
+func (f fakeOpsSnapshotMetadata) SumSizeAll(context.Context) (int64, error) {
+	if f.sumErr != nil {
+		return 0, f.sumErr
+	}
+	var total int64
+	for _, row := range f.rows {
+		total += row.SizeBytes
+	}
+	return total, nil
+}
+
+func (f fakeOpsSnapshotMetadata) ListForOpsConsistency(_ context.Context, limit int32) ([]model.SnapshotMeta, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	rows := append([]model.SnapshotMeta(nil), f.rows...)
+	if int(limit) < len(rows) {
+		rows = rows[:limit]
+	}
+	return rows, nil
 }
 
 func testOpsConfig() *config.Config {
@@ -249,10 +346,100 @@ func TestOpsCheckDependenciesReportsActionableFailures(t *testing.T) {
 	}
 }
 
+func TestOpsConsistencyReportsMetadataStorageMatchWithoutReadingBlobs(t *testing.T) {
+	user := uuid.New()
+	bundle := model.BundleMeta{UserID: user, BundleID: "b1", SizeBytes: 3}
+	snapshot := model.SnapshotMeta{UserID: user, SnapshotID: "s1", SizeBytes: 5}
+	store := newFakeOpsBlobStore()
+	store.setObject(storage.BundleKey(user.String(), bundle.BundleID), bundle.SizeBytes)
+	store.setObject(storage.SnapshotKey(user.String(), snapshot.SnapshotID), snapshot.SizeBytes)
+	svc := NewOpsService(OpsDeps{
+		BlobStore:        store,
+		BundleMetadata:   fakeOpsBundleMetadata{rows: []model.BundleMeta{bundle}},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{rows: []model.SnapshotMeta{snapshot}},
+	})
+
+	report := svc.CheckConsistency(context.Background(), 100)
+	if report.Overall != OpsStatusOK {
+		t.Fatalf("overall = %q, want ok: %+v", report.Overall, report.Artifacts)
+	}
+	for _, artifact := range report.Artifacts {
+		if artifact.Status != OpsStatusOK || artifact.CheckedMetadata != 1 || artifact.IssueCount != 0 {
+			t.Fatalf("artifact = %+v, want ok checked=1 issues=0", artifact)
+		}
+	}
+	if len(report.Issues) != 0 {
+		t.Fatalf("issues = %+v, want none", report.Issues)
+	}
+	if store.gets != 0 {
+		t.Fatalf("consistency check read %d blob(s), want 0", store.gets)
+	}
+
+	summary := svc.Summary(context.Background())
+	if summary.Readiness.LastConsistencyCheck == nil || summary.Readiness.LastConsistencyCheck.Overall != OpsStatusOK {
+		t.Fatalf("summary last consistency = %+v, want ok report", summary.Readiness.LastConsistencyCheck)
+	}
+}
+
+func TestOpsConsistencyFindsMissingAndSizeMismatchedObjects(t *testing.T) {
+	user := uuid.New()
+	bundles := []model.BundleMeta{
+		{UserID: user, BundleID: "ok", SizeBytes: 3},
+		{UserID: user, BundleID: "wrong-size", SizeBytes: 5},
+	}
+	snapshots := []model.SnapshotMeta{
+		{UserID: user, SnapshotID: "missing", SizeBytes: 7},
+	}
+	store := newFakeOpsBlobStore()
+	store.setObject(storage.BundleKey(user.String(), "ok"), 3)
+	store.setObject(storage.BundleKey(user.String(), "wrong-size"), 4)
+	svc := NewOpsService(OpsDeps{
+		BlobStore:        store,
+		BundleMetadata:   fakeOpsBundleMetadata{rows: bundles},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{rows: snapshots},
+	})
+
+	report := svc.CheckConsistency(context.Background(), 100)
+	if report.Overall != OpsStatusUnhealthy {
+		t.Fatalf("overall = %q, want unhealthy: %+v", report.Overall, report.Artifacts)
+	}
+	artifacts := consistencyArtifactsByKind(report)
+	if artifacts["bundle"].SizeMismatches != 1 || artifacts["bundle"].MissingObjects != 0 {
+		t.Fatalf("bundle artifact = %+v, want one size mismatch", artifacts["bundle"])
+	}
+	if artifacts["snapshot"].MissingObjects != 1 {
+		t.Fatalf("snapshot artifact = %+v, want one missing object", artifacts["snapshot"])
+	}
+	if len(report.Issues) != 2 {
+		t.Fatalf("issues = %+v, want 2", report.Issues)
+	}
+	statuses := map[string]bool{}
+	for _, issue := range report.Issues {
+		statuses[issue.Status] = true
+		if issue.Key == "" || issue.Action == "" {
+			t.Fatalf("issue missing operator context: %+v", issue)
+		}
+	}
+	if !statuses["size_mismatch"] || !statuses["missing_object"] {
+		t.Fatalf("issue statuses = %+v, want size_mismatch and missing_object", statuses)
+	}
+	if store.gets != 0 {
+		t.Fatalf("consistency check read %d blob(s), want 0", store.gets)
+	}
+}
+
 func statusByName(report OpsDependencyReport) map[string]string {
 	out := make(map[string]string, len(report.Checks))
 	for _, check := range report.Checks {
 		out[check.Name] = check.Status
+	}
+	return out
+}
+
+func consistencyArtifactsByKind(report OpsConsistencyReport) map[string]OpsArtifactConsistency {
+	out := make(map[string]OpsArtifactConsistency, len(report.Artifacts))
+	for _, artifact := range report.Artifacts {
+		out[artifact.Kind] = artifact
 	}
 	return out
 }

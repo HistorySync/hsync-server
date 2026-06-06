@@ -269,6 +269,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	v1Admin.Get("/ops/summary", h.AdminOpsSummary)
 	v1Admin.Post("/ops/check", h.AdminOpsCheck)
+	v1Admin.Post("/ops/consistency", h.AdminOpsConsistency)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -301,6 +302,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/error-codes", h.AdminErrorCodes)
 	admin.Get("/ops/summary", h.AdminOpsSummary)
 	admin.Post("/ops/check", h.AdminOpsCheck)
+	admin.Post("/ops/consistency", h.AdminOpsConsistency)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -2002,6 +2004,22 @@ func (h *Handlers) AdminOpsCheck(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
 	defer cancel()
 	return c.JSON(ops.CheckDependencies(ctx))
+}
+
+func (h *Handlers) AdminOpsConsistency(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	limit := service.DefaultOpsConsistencyLimit
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = int32(parsed)
+		}
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
+	defer cancel()
+	return c.JSON(ops.CheckConsistency(ctx, limit))
 }
 
 func (h *Handlers) opsService() *service.OpsService {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/historysync/hsync-server/pkg/config"
+	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
 )
@@ -28,19 +29,38 @@ const (
 	OpsStatusNotChecked    = "not_checked"
 )
 
+const (
+	DefaultOpsConsistencyLimit int32 = 1000
+	maxOpsConsistencyIssues          = 50
+)
+
 // PingFunc verifies one runtime dependency without exposing the concrete client.
 type PingFunc func(ctx context.Context) error
+
+type opsBundleMetadataStore interface {
+	CountAll(ctx context.Context) (int64, error)
+	SumSizeAll(ctx context.Context) (int64, error)
+	ListForOpsConsistency(ctx context.Context, limit int32) ([]model.BundleMeta, error)
+}
+
+type opsSnapshotMetadataStore interface {
+	CountAll(ctx context.Context) (int64, error)
+	SumSizeAll(ctx context.Context) (int64, error)
+	ListForOpsConsistency(ctx context.Context, limit int32) ([]model.SnapshotMeta, error)
+}
 
 // OpsDeps holds the runtime dependencies used by the self-hosted operations
 // surface. The active probes are intentionally dependency-injected so tests and
 // Enterprise wrappers can provide narrow fakes.
 type OpsDeps struct {
-	Config       *config.Config
-	Repos        *repository.Repos
-	BlobStore    storage.BlobStorage
-	DatabasePing PingFunc
-	RedisPing    PingFunc
-	Now          func() time.Time
+	Config           *config.Config
+	Repos            *repository.Repos
+	BlobStore        storage.BlobStorage
+	DatabasePing     PingFunc
+	RedisPing        PingFunc
+	BundleMetadata   opsBundleMetadataStore
+	SnapshotMetadata opsSnapshotMetadataStore
+	Now              func() time.Time
 }
 
 // OpsService builds operator-facing summaries and dependency probes.
@@ -50,10 +70,13 @@ type OpsService struct {
 	blobStore    storage.BlobStorage
 	databasePing PingFunc
 	redisPing    PingFunc
+	bundles      opsBundleMetadataStore
+	snapshots    opsSnapshotMetadataStore
 	now          func() time.Time
 
-	mu             sync.Mutex
-	lastDependency *OpsDependencyReport
+	mu              sync.Mutex
+	lastDependency  *OpsDependencyReport
+	lastConsistency *OpsConsistencyReport
 }
 
 func NewOpsService(deps OpsDeps) *OpsService {
@@ -61,12 +84,24 @@ func NewOpsService(deps OpsDeps) *OpsService {
 	if now == nil {
 		now = time.Now
 	}
+	bundles := deps.BundleMetadata
+	snapshots := deps.SnapshotMetadata
+	if deps.Repos != nil {
+		if bundles == nil {
+			bundles = deps.Repos.Bundles
+		}
+		if snapshots == nil {
+			snapshots = deps.Repos.Snapshots
+		}
+	}
 	return &OpsService{
 		cfg:          deps.Config,
 		repos:        deps.Repos,
 		blobStore:    deps.BlobStore,
 		databasePing: deps.DatabasePing,
 		redisPing:    deps.RedisPing,
+		bundles:      bundles,
+		snapshots:    snapshots,
 		now:          now,
 	}
 }
@@ -94,7 +129,8 @@ type OpsConfigSummary struct {
 }
 
 type OpsReadinessSummary struct {
-	LastDependencyCheck *OpsDependencyReport `json:"last_dependency_check,omitempty"`
+	LastDependencyCheck  *OpsDependencyReport  `json:"last_dependency_check,omitempty"`
+	LastConsistencyCheck *OpsConsistencyReport `json:"last_consistency_check,omitempty"`
 }
 
 type OpsBackupGuidance struct {
@@ -132,14 +168,57 @@ type OpsDependencyCheck struct {
 	ErrorClass     string `json:"error_class,omitempty"`
 }
 
+type OpsConsistencyReport struct {
+	Overall               string                   `json:"overall"`
+	CheckedAt             time.Time                `json:"checked_at"`
+	DurationMillis        int64                    `json:"duration_millis"`
+	SampleLimit           int32                    `json:"sample_limit"`
+	ZeroKnowledgeBoundary string                   `json:"zero_knowledge_boundary"`
+	Artifacts             []OpsArtifactConsistency `json:"artifacts"`
+	Issues                []OpsConsistencyIssue    `json:"issues,omitempty"`
+}
+
+type OpsArtifactConsistency struct {
+	Kind                 string `json:"kind"`
+	Status               string `json:"status"`
+	MetadataTotal        int64  `json:"metadata_total"`
+	MetadataBytes        int64  `json:"metadata_bytes"`
+	CheckedMetadata      int    `json:"checked_metadata"`
+	StorageObjectCount   int    `json:"storage_object_count"`
+	StorageBytes         int64  `json:"storage_bytes"`
+	MetadataTruncated    bool   `json:"metadata_truncated"`
+	StorageListTruncated bool   `json:"storage_list_truncated"`
+	MissingObjects       int    `json:"missing_objects"`
+	SizeMismatches       int    `json:"size_mismatches"`
+	CheckFailures        int    `json:"check_failures"`
+	IssueCount           int    `json:"issue_count"`
+	Message              string `json:"message"`
+	Action               string `json:"action,omitempty"`
+	ErrorClass           string `json:"error_class,omitempty"`
+}
+
+type OpsConsistencyIssue struct {
+	Kind         string `json:"kind"`
+	ID           string `json:"id"`
+	Key          string `json:"key"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	Action       string `json:"action"`
+	ExpectedSize *int64 `json:"expected_size,omitempty"`
+	ActualSize   *int64 `json:"actual_size,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`
+}
+
 func (s *OpsService) Summary(ctx context.Context) OpsSummary {
 	_ = ctx
 	last := s.lastDependencyReport()
+	lastConsistency := s.lastConsistencyReport()
 	return OpsSummary{
 		GeneratedAt: s.now().UTC(),
 		Config:      s.configSummary(),
 		Readiness: OpsReadinessSummary{
-			LastDependencyCheck: last,
+			LastDependencyCheck:  last,
+			LastConsistencyCheck: lastConsistency,
 		},
 		Backup: s.backupGuidance(last),
 	}
@@ -164,6 +243,34 @@ func (s *OpsService) CheckDependencies(ctx context.Context) OpsDependencyReport 
 	s.mu.Lock()
 	cp := cloneDependencyReport(report)
 	s.lastDependency = &cp
+	s.mu.Unlock()
+
+	return report
+}
+
+func (s *OpsService) CheckConsistency(ctx context.Context, limit int32) OpsConsistencyReport {
+	if limit <= 0 || limit > DefaultOpsConsistencyLimit {
+		limit = DefaultOpsConsistencyLimit
+	}
+	start := s.now()
+	report := OpsConsistencyReport{
+		Overall:               OpsStatusOK,
+		CheckedAt:             start.UTC(),
+		SampleLimit:           limit,
+		ZeroKnowledgeBoundary: "This check compares metadata rows to object existence and size only; it never downloads, parses, or decrypts real bundle or snapshot blobs.",
+	}
+
+	bundleArtifact, bundleIssues := s.checkBundleConsistency(ctx, limit)
+	snapshotArtifact, snapshotIssues := s.checkSnapshotConsistency(ctx, limit)
+	report.Artifacts = []OpsArtifactConsistency{bundleArtifact, snapshotArtifact}
+	report.Issues = append(report.Issues, bundleIssues...)
+	report.Issues = append(report.Issues, snapshotIssues...)
+	report.Overall = consistencyOverall(report.Artifacts)
+	report.DurationMillis = millisSince(start, s.now)
+
+	s.mu.Lock()
+	cp := cloneConsistencyReport(report)
+	s.lastConsistency = &cp
 	s.mu.Unlock()
 
 	return report
@@ -493,6 +600,248 @@ func (s *OpsService) checkStorageProbe(ctx context.Context, storageStatus string
 	}
 }
 
+func (s *OpsService) checkBundleConsistency(ctx context.Context, limit int32) (OpsArtifactConsistency, []OpsConsistencyIssue) {
+	artifact := OpsArtifactConsistency{Kind: "bundle"}
+	if s.bundles == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Bundle metadata store is not configured; bundle consistency cannot be checked."
+		artifact.Action = "Verify PostgreSQL repository wiring and rerun the consistency check."
+		return artifact, nil
+	}
+	if s.blobStore == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Blob storage is not configured; bundle objects cannot be checked."
+		artifact.Action = "Verify S3 storage wiring and rerun the consistency check."
+		return artifact, nil
+	}
+
+	total, err := s.bundles.CountAll(ctx)
+	if err != nil {
+		return consistencyMetadataFailure("bundle", "Bundle metadata count failed.", "Verify PostgreSQL health and bundle table access.", err), nil
+	}
+	artifact.MetadataTotal = total
+	bytes, err := s.bundles.SumSizeAll(ctx)
+	if err != nil {
+		return consistencyMetadataFailure("bundle", "Bundle metadata byte summary failed.", "Verify PostgreSQL health and bundle table access.", err), nil
+	}
+	artifact.MetadataBytes = bytes
+	metas, err := s.bundles.ListForOpsConsistency(ctx, limit)
+	if err != nil {
+		return consistencyMetadataFailure("bundle", "Bundle metadata sample could not be loaded.", "Verify PostgreSQL health and bundle table access.", err), nil
+	}
+	artifact.CheckedMetadata = len(metas)
+	artifact.MetadataTruncated = total > int64(len(metas))
+
+	objects, err := s.blobStore.List(ctx, "bundles/")
+	if err != nil {
+		artifact.Status = OpsStatusUnhealthy
+		artifact.Message = "Bundle object count could not be read from storage."
+		artifact.Action = "Verify S3 list permission for the bundles/ prefix."
+		artifact.ErrorClass = classifyOpsError(err)
+		return artifact, nil
+	}
+	artifact.StorageObjectCount = len(objects)
+	artifact.StorageBytes = sumObjectBytes(objects)
+	artifact.StorageListTruncated = len(objects) >= int(DefaultOpsConsistencyLimit)
+
+	var issues []OpsConsistencyIssue
+	for _, meta := range metas {
+		if err := ctx.Err(); err != nil {
+			artifact.CheckFailures++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("bundle", bundleIssueID(meta), storage.BundleKey(meta.UserID.String(), meta.BundleID), "check_failed", "Bundle object check stopped before completion.", "Rerun after the request timeout or cancellation is resolved.", nil, nil, classifyOpsError(err)))
+			break
+		}
+		key := storage.BundleKey(meta.UserID.String(), meta.BundleID)
+		size, exists, err := s.blobStore.Size(ctx, key)
+		if err != nil {
+			artifact.CheckFailures++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("bundle", bundleIssueID(meta), key, "check_failed", "Bundle object metadata could not be checked.", "Verify S3 stat/head permission and rerun the consistency check.", int64Value(meta.SizeBytes), nil, classifyOpsError(err)))
+			continue
+		}
+		if !exists {
+			artifact.MissingObjects++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("bundle", bundleIssueID(meta), key, "missing_object", "PostgreSQL references a bundle object that is missing from storage.", "Restore the object from backup or investigate interrupted writes before accepting new sync traffic.", int64Value(meta.SizeBytes), nil, "missing"))
+			continue
+		}
+		if size != meta.SizeBytes {
+			artifact.SizeMismatches++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("bundle", bundleIssueID(meta), key, "size_mismatch", "Bundle object size does not match PostgreSQL metadata.", "Restore the expected object version from backup; do not parse or mutate the encrypted blob.", int64Value(meta.SizeBytes), int64Value(size), "metadata_mismatch"))
+		}
+	}
+
+	return finalizeConsistencyArtifact(artifact), issues
+}
+
+func (s *OpsService) checkSnapshotConsistency(ctx context.Context, limit int32) (OpsArtifactConsistency, []OpsConsistencyIssue) {
+	artifact := OpsArtifactConsistency{Kind: "snapshot"}
+	if s.snapshots == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Snapshot metadata store is not configured; snapshot consistency cannot be checked."
+		artifact.Action = "Verify PostgreSQL repository wiring and rerun the consistency check."
+		return artifact, nil
+	}
+	if s.blobStore == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Blob storage is not configured; snapshot objects cannot be checked."
+		artifact.Action = "Verify S3 storage wiring and rerun the consistency check."
+		return artifact, nil
+	}
+
+	total, err := s.snapshots.CountAll(ctx)
+	if err != nil {
+		return consistencyMetadataFailure("snapshot", "Snapshot metadata count failed.", "Verify PostgreSQL health and snapshot table access.", err), nil
+	}
+	artifact.MetadataTotal = total
+	bytes, err := s.snapshots.SumSizeAll(ctx)
+	if err != nil {
+		return consistencyMetadataFailure("snapshot", "Snapshot metadata byte summary failed.", "Verify PostgreSQL health and snapshot table access.", err), nil
+	}
+	artifact.MetadataBytes = bytes
+	metas, err := s.snapshots.ListForOpsConsistency(ctx, limit)
+	if err != nil {
+		return consistencyMetadataFailure("snapshot", "Snapshot metadata sample could not be loaded.", "Verify PostgreSQL health and snapshot table access.", err), nil
+	}
+	artifact.CheckedMetadata = len(metas)
+	artifact.MetadataTruncated = total > int64(len(metas))
+
+	objects, err := s.blobStore.List(ctx, "snapshots/")
+	if err != nil {
+		artifact.Status = OpsStatusUnhealthy
+		artifact.Message = "Snapshot object count could not be read from storage."
+		artifact.Action = "Verify S3 list permission for the snapshots/ prefix."
+		artifact.ErrorClass = classifyOpsError(err)
+		return artifact, nil
+	}
+	artifact.StorageObjectCount = len(objects)
+	artifact.StorageBytes = sumObjectBytes(objects)
+	artifact.StorageListTruncated = len(objects) >= int(DefaultOpsConsistencyLimit)
+
+	var issues []OpsConsistencyIssue
+	for _, meta := range metas {
+		if err := ctx.Err(); err != nil {
+			artifact.CheckFailures++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("snapshot", snapshotIssueID(meta), storage.SnapshotKey(meta.UserID.String(), meta.SnapshotID), "check_failed", "Snapshot object check stopped before completion.", "Rerun after the request timeout or cancellation is resolved.", nil, nil, classifyOpsError(err)))
+			break
+		}
+		key := storage.SnapshotKey(meta.UserID.String(), meta.SnapshotID)
+		size, exists, err := s.blobStore.Size(ctx, key)
+		if err != nil {
+			artifact.CheckFailures++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("snapshot", snapshotIssueID(meta), key, "check_failed", "Snapshot object metadata could not be checked.", "Verify S3 stat/head permission and rerun the consistency check.", int64Value(meta.SizeBytes), nil, classifyOpsError(err)))
+			continue
+		}
+		if !exists {
+			artifact.MissingObjects++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("snapshot", snapshotIssueID(meta), key, "missing_object", "PostgreSQL references a snapshot object that is missing from storage.", "Restore the object from backup or investigate interrupted writes before accepting new sync traffic.", int64Value(meta.SizeBytes), nil, "missing"))
+			continue
+		}
+		if size != meta.SizeBytes {
+			artifact.SizeMismatches++
+			artifact.IssueCount++
+			issues = appendLimitedIssue(issues, consistencyIssue("snapshot", snapshotIssueID(meta), key, "size_mismatch", "Snapshot object size does not match PostgreSQL metadata.", "Restore the expected object version from backup; do not parse or mutate the encrypted blob.", int64Value(meta.SizeBytes), int64Value(size), "metadata_mismatch"))
+		}
+	}
+
+	return finalizeConsistencyArtifact(artifact), issues
+}
+
+func consistencyMetadataFailure(kind, message, action string, err error) OpsArtifactConsistency {
+	return OpsArtifactConsistency{
+		Kind:       kind,
+		Status:     OpsStatusUnhealthy,
+		Message:    message,
+		Action:     action,
+		ErrorClass: classifyOpsError(err),
+	}
+}
+
+func finalizeConsistencyArtifact(artifact OpsArtifactConsistency) OpsArtifactConsistency {
+	switch {
+	case artifact.MissingObjects > 0 || artifact.SizeMismatches > 0 || artifact.CheckFailures > 0:
+		artifact.Status = OpsStatusUnhealthy
+		artifact.Message = fmt.Sprintf("%s metadata sample found storage inconsistencies.", artifact.Kind)
+		artifact.Action = "Review the issues list, restore missing or mismatched objects from backup, then rerun the check."
+	case artifact.MetadataTruncated || artifact.StorageListTruncated:
+		artifact.Status = OpsStatusDegraded
+		artifact.Message = fmt.Sprintf("%s consistency check passed for the bounded sample; more rows or objects exist outside this check.", artifact.Kind)
+		artifact.Action = "Increase backup verification coverage with an external full scan if the deployment has more objects than the built-in limit."
+	case artifact.StorageObjectCount < int(artifact.MetadataTotal):
+		artifact.Status = OpsStatusDegraded
+		artifact.Message = fmt.Sprintf("%s object count is lower than active metadata count, though checked objects were present.", artifact.Kind)
+		artifact.Action = "Run a broader consistency scan and inspect retention state; active metadata should normally have matching objects."
+	default:
+		artifact.Status = OpsStatusOK
+		artifact.Message = fmt.Sprintf("%s metadata and storage sample are consistent.", artifact.Kind)
+	}
+	return artifact
+}
+
+func consistencyOverall(artifacts []OpsArtifactConsistency) string {
+	overall := OpsStatusOK
+	for _, artifact := range artifacts {
+		switch artifact.Status {
+		case OpsStatusOK:
+			continue
+		case OpsStatusDegraded:
+			if overall == OpsStatusOK {
+				overall = OpsStatusDegraded
+			}
+		default:
+			return OpsStatusUnhealthy
+		}
+	}
+	return overall
+}
+
+func sumObjectBytes(objects []storage.ObjectInfo) int64 {
+	var total int64
+	for _, obj := range objects {
+		total += obj.Size
+	}
+	return total
+}
+
+func consistencyIssue(kind, id, key, status, message, action string, expectedSize, actualSize *int64, errorClass string) OpsConsistencyIssue {
+	return OpsConsistencyIssue{
+		Kind:         kind,
+		ID:           id,
+		Key:          key,
+		Status:       status,
+		Message:      message,
+		Action:       action,
+		ExpectedSize: expectedSize,
+		ActualSize:   actualSize,
+		ErrorClass:   errorClass,
+	}
+}
+
+func appendLimitedIssue(issues []OpsConsistencyIssue, issue OpsConsistencyIssue) []OpsConsistencyIssue {
+	if len(issues) >= maxOpsConsistencyIssues {
+		return issues
+	}
+	return append(issues, issue)
+}
+
+func int64Value(v int64) *int64 {
+	cp := v
+	return &cp
+}
+
+func bundleIssueID(meta model.BundleMeta) string {
+	return meta.UserID.String() + "/" + meta.BundleID
+}
+
+func snapshotIssueID(meta model.SnapshotMeta) string {
+	return meta.UserID.String() + "/" + meta.SnapshotID
+}
+
 func storageProbeFailure(start time.Time, now func() time.Time, stage, message, action string, err error) OpsDependencyCheck {
 	return OpsDependencyCheck{
 		Name:           "storage_probe",
@@ -523,10 +872,31 @@ func (s *OpsService) lastDependencyReport() *OpsDependencyReport {
 	return &cp
 }
 
+func (s *OpsService) lastConsistencyReport() *OpsConsistencyReport {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastConsistency == nil {
+		return nil
+	}
+	cp := cloneConsistencyReport(*s.lastConsistency)
+	return &cp
+}
+
 func cloneDependencyReport(report OpsDependencyReport) OpsDependencyReport {
 	cp := report
 	if report.Checks != nil {
 		cp.Checks = append([]OpsDependencyCheck(nil), report.Checks...)
+	}
+	return cp
+}
+
+func cloneConsistencyReport(report OpsConsistencyReport) OpsConsistencyReport {
+	cp := report
+	if report.Artifacts != nil {
+		cp.Artifacts = append([]OpsArtifactConsistency(nil), report.Artifacts...)
+	}
+	if report.Issues != nil {
+		cp.Issues = append([]OpsConsistencyIssue(nil), report.Issues...)
 	}
 	return cp
 }

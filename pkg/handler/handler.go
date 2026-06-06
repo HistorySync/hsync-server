@@ -267,6 +267,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin.Post("/notifications/failures/retry", h.AdminRetryNotificationFailures)
 	v1Admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
 	v1Admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
+	v1Admin.Get("/ops/summary", h.AdminOpsSummary)
+	v1Admin.Post("/ops/check", h.AdminOpsCheck)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -297,6 +299,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
 	admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	admin.Get("/error-codes", h.AdminErrorCodes)
+	admin.Get("/ops/summary", h.AdminOpsSummary)
+	admin.Post("/ops/check", h.AdminOpsCheck)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -1980,6 +1984,31 @@ func (h *Handlers) AdminStats(c fiber.Ctx) error {
 			"active_connections": h.deps.Hub.ActiveConnectionCount(),
 		},
 	})
+}
+
+func (h *Handlers) AdminOpsSummary(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	return c.JSON(ops.Summary(c.Context()))
+}
+
+func (h *Handlers) AdminOpsCheck(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+	return c.JSON(ops.CheckDependencies(ctx))
+}
+
+func (h *Handlers) opsService() *service.OpsService {
+	if h.deps.Services == nil {
+		return nil
+	}
+	return h.deps.Services.Ops
 }
 
 func (h *Handlers) AdminSecurityStats(c fiber.Ctx) error {

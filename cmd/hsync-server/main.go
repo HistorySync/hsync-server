@@ -145,6 +145,15 @@ func main() {
 	}
 
 	// ── Services ──────────────────────────────────────────────
+	databasePing := func(ctx context.Context) error {
+		return pgPool.Ping(ctx)
+	}
+	var redisPing service.PingFunc
+	if redisClient != nil {
+		redisPing = func(ctx context.Context) error {
+			return redisClient.Ping(ctx).Err()
+		}
+	}
 	svcs := service.New(service.Deps{
 		Repos:          repos,
 		TokenManager:   tokenManager,
@@ -153,6 +162,9 @@ func main() {
 		StripeWebhook:  cfg.StripeWebhookSecret,
 		StripeDisabled: cfg.StripeDisabled,
 		SecuritySecret: cfg.SecuritySecret,
+		Config:         cfg,
+		DatabasePing:   databasePing,
+		RedisPing:      redisPing,
 		Notifier:       notifier,
 		Notification: service.NotificationConfig{
 			Enabled:            cfg.NotificationsEnabled,

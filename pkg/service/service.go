@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
@@ -94,6 +95,9 @@ type Deps struct {
 	Webhook        provider.WebhookProvider
 	Notification   NotificationConfig
 	SecuritySecret string
+	Config         *config.Config
+	DatabasePing   PingFunc
+	RedisPing      PingFunc
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -201,6 +205,7 @@ type Services struct {
 	SecurityStats *SecurityStatsService
 	Settings      *SettingsService
 	Idempotency   *IdempotencyService
+	Ops           *OpsService
 }
 
 // New creates all service instances with their dependencies.
@@ -278,6 +283,13 @@ func New(deps Deps) *Services {
 	if deps.Repos != nil {
 		idempotencySvc = NewIdempotencyService(deps.Repos.Idempotency)
 	}
+	opsSvc := NewOpsService(OpsDeps{
+		Config:       deps.Config,
+		Repos:        deps.Repos,
+		BlobStore:    deps.BlobStore,
+		DatabasePing: deps.DatabasePing,
+		RedisPing:    deps.RedisPing,
+	})
 
 	return &Services{
 		Repos:         deps.Repos,
@@ -294,6 +306,7 @@ func New(deps Deps) *Services {
 		SecurityStats: securityStatsSvc,
 		Settings:      settingsSvc,
 		Idempotency:   idempotencySvc,
+		Ops:           opsSvc,
 	}
 }
 

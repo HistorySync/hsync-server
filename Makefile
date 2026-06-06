@@ -6,13 +6,13 @@ BUILD_DIR   := ./build
 CMD_DIR     := ./cmd/hsync-server
 DOCKER_IMAGE:= historysync/server
 
-# ── Go build flags ───────────────────────────────────────────
+# Go build flags
 LDFLAGS := -s -w \
 	-X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev") \
 	-X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
 	-X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-# ── Targets ──────────────────────────────────────────────────
+# Targets
 
 .PHONY: all build run test test-integration lint clean docker-build docker-up docker-down migrate-up migrate-down
 
@@ -48,7 +48,7 @@ clean:
 dev:
 	air -c .air.toml
 
-# ── Docker ───────────────────────────────────────────────────
+# Docker
 
 ## docker-build: Build Docker image
 docker-build:
@@ -70,7 +70,7 @@ docker-up:
 docker-down:
 	docker compose -f deployments/docker-compose.full.yml down
 
-# ── Database ─────────────────────────────────────────────────
+# Database
 
 ## migrate-up: Run all pending migrations
 migrate-up:
@@ -85,7 +85,7 @@ migrate-down:
 migrate-create:
 	go run $(CMD_DIR) migrate create $(name)
 
-# ── Utilities ────────────────────────────────────────────────
+# Utilities
 
 ## gen-key: Generate a new Ed25519 JWT signing key
 gen-key:

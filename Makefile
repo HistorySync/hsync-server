@@ -52,7 +52,7 @@ dev:
 
 ## docker-build: Build Docker image
 docker-build:
-	docker build -t $(DOCKER_IMAGE):latest -f Dockerfile ..
+	docker build -t $(DOCKER_IMAGE):latest -f Dockerfile .
 
 ## docker-up-simple: Start self-hosted stack (Postgres + Redis + MinIO)
 docker-up-simple:

@@ -5,6 +5,7 @@
 #
 # Requirements:
 #   - .env file with all secrets (DB_PASSWORD, JWT_PRIVATE_KEY,
+#     SECURITY_SECRET,
 #     REDIS_PASSWORD, S3_ACCESS_KEY, S3_SECRET_KEY, GRAFANA_PASSWORD)
 #   - DNS pointing to this host
 #   - TLS termination via reverse proxy (nginx/Caddy/Cloudflare)
@@ -27,6 +28,7 @@ services:
       - HSYNC_S3_SECRET_KEY=${S3_SECRET_KEY}
       - HSYNC_S3_USE_SSL=false
       - HSYNC_JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - HSYNC_SECURITY_SECRET=${SECURITY_SECRET:?set SECURITY_SECRET in .env}
       - HSYNC_STRIPE_DISABLED=true
       - HSYNC_ADMIN_KEY=${ADMIN_KEY}
       - HSYNC_LOG_LEVEL=info

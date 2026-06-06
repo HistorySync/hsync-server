@@ -3,8 +3,8 @@
 # No billing, no Redis cluster, local MinIO for storage.
 #
 # Usage:
-#   1. Generate JWT key: openssl rand -base64 32
-#   2. Set DB_PASSWORD and JWT_PRIVATE_KEY in .env
+#   1. Generate JWT and security keys: openssl rand -base64 32
+#   2. Set DB_PASSWORD, JWT_PRIVATE_KEY, and SECURITY_SECRET in .env
 #   3. docker compose -f docker-compose.simple.yml up -d
 
 version: "3.9"
@@ -25,6 +25,7 @@ services:
       - HSYNC_S3_SECRET_KEY=minioadmin
       - HSYNC_S3_USE_SSL=false
       - HSYNC_JWT_PRIVATE_KEY=${JWT_PRIVATE_KEY}
+      - HSYNC_SECURITY_SECRET=${SECURITY_SECRET:?set SECURITY_SECRET in .env}
       - HSYNC_STRIPE_DISABLED=true
       - HSYNC_LOG_LEVEL=info
     depends_on:

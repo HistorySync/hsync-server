@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateRequiresJWTPrivateKey(t *testing.T) {
@@ -229,6 +230,34 @@ func TestDefaultConfigSetsNotificationDefaults(t *testing.T) {
 	}
 	if cfg.SMTPTLSMode != "starttls" {
 		t.Fatalf("SMTPTLSMode = %q, want starttls", cfg.SMTPTLSMode)
+	}
+}
+
+func TestDefaultConfigSetsHistoryRetentionDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.HistoryRetentionInterval != 0 {
+		t.Fatalf("HistoryRetentionInterval = %v, want disabled by default", cfg.HistoryRetentionInterval)
+	}
+	if cfg.HistoryHotRetention != 90*24*time.Hour {
+		t.Fatalf("HistoryHotRetention = %v, want 90 days", cfg.HistoryHotRetention)
+	}
+	if cfg.HistoryArchiveRetention != 365*24*time.Hour {
+		t.Fatalf("HistoryArchiveRetention = %v, want 365 days", cfg.HistoryArchiveRetention)
+	}
+	if !cfg.HistoryRetentionDryRun {
+		t.Fatal("HistoryRetentionDryRun = false, want true")
+	}
+}
+
+func TestValidateRejectsInvalidHistoryRetention(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg.HistoryHotRetention = 30 * 24 * time.Hour
+	cfg.HistoryArchiveRetention = 30 * 24 * time.Hour
+
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "history_archive_retention") {
+		t.Fatalf("Validate() error = %v, want history_archive_retention error", err)
 	}
 }
 

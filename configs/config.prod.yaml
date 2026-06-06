@@ -15,3 +15,8 @@ stripe_disabled: true
 # retention_cleanup_interval: "24h"
 # retention_grace_period: "720h"   # 30 days
 # retention_dry_run: false         # set false only once the dry-run report looks right
+# Operational history archive/purge is separately opt-in:
+# history_retention_interval: "24h"
+# history_hot_retention: "2160h"       # 90 days hot
+# history_archive_retention: "8760h"   # 365 days total
+# history_retention_dry_run: false

@@ -24,6 +24,7 @@ const (
 	LockNotificationOutbox  int64 = 9_000_003
 	LockOpsDependencyCheck  int64 = 9_000_004
 	LockOpsConsistencyCheck int64 = 9_000_005
+	LockHistoryRetention    int64 = 9_000_006
 )
 
 // Task is a periodic background job. Run is invoked at most once per Interval and

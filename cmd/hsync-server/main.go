@@ -273,6 +273,33 @@ func main() {
 					return nil
 				},
 			},
+			{
+				Name:     "history-retention",
+				LockKey:  scheduler.LockHistoryRetention,
+				Interval: cfg.HistoryRetentionInterval,
+				Run: func(ctx context.Context) error {
+					result, err := svcs.History.Run(ctx, service.OperationalHistoryRetentionPolicy{
+						HotRetention:     cfg.HistoryHotRetention,
+						ArchiveRetention: cfg.HistoryArchiveRetention,
+						DryRun:           cfg.HistoryRetentionDryRun,
+					})
+					if err != nil {
+						return err
+					}
+					log.Info().
+						Bool("dry_run", result.DryRun).
+						Time("hot_cutoff", result.HotCutoff).
+						Time("archive_cutoff", result.ArchiveCutoff).
+						Int64("archived_audit_logs", result.ArchivedAuditLogs).
+						Int64("archived_ops_check_runs", result.ArchivedOpsCheckRuns).
+						Int64("archived_notification_outbox_rows", result.ArchivedNotificationOutboxRows).
+						Int64("purged_audit_log_archives", result.PurgedAuditLogArchives).
+						Int64("purged_ops_check_run_archives", result.PurgedOpsCheckRunArchives).
+						Int64("purged_notification_archives", result.PurgedNotificationArchives).
+						Msg("operational history retention completed")
+					return nil
+				},
+			},
 		}
 		tasks = append(tasks, scheduler.OpsTasks(svcs.Ops, scheduler.OpsTaskConfig{
 			DependencyInterval:  cfg.OpsDependencyCheckInterval,

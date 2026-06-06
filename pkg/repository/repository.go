@@ -36,6 +36,7 @@ type Repos struct {
 	SystemSettings     *SystemSettingRepo
 	Idempotency        *IdempotencyRepo
 	OpsHistory         *OpsHistoryRepo
+	OperationalHistory *OperationalHistoryRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -58,6 +59,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		SystemSettings:     NewSystemSettingRepo(pgPool),
 		Idempotency:        &IdempotencyRepo{pool: pgPool},
 		OpsHistory:         NewOpsHistoryRepo(pgPool),
+		OperationalHistory: NewOperationalHistoryRepo(pgPool),
 	}
 }
 

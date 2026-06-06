@@ -76,6 +76,10 @@ type Config struct {
 	RetentionCleanupInterval    time.Duration `mapstructure:"retention_cleanup_interval"`
 	RetentionGracePeriod        time.Duration `mapstructure:"retention_grace_period"`
 	RetentionDryRun             bool          `mapstructure:"retention_dry_run"`
+	HistoryRetentionInterval    time.Duration `mapstructure:"history_retention_interval"`
+	HistoryHotRetention         time.Duration `mapstructure:"history_hot_retention"`
+	HistoryArchiveRetention     time.Duration `mapstructure:"history_archive_retention"`
+	HistoryRetentionDryRun      bool          `mapstructure:"history_retention_dry_run"`
 	NotificationOutboxInterval  time.Duration `mapstructure:"notification_outbox_interval"`
 	OpsDependencyCheckInterval  time.Duration `mapstructure:"ops_dependency_check_interval"`
 	OpsConsistencyCheckInterval time.Duration `mapstructure:"ops_consistency_check_interval"`
@@ -139,6 +143,10 @@ func DefaultConfig() *Config {
 		RetentionCleanupInterval:    0,
 		RetentionGracePeriod:        30 * 24 * time.Hour,
 		RetentionDryRun:             true,
+		HistoryRetentionInterval:    0,
+		HistoryHotRetention:         90 * 24 * time.Hour,
+		HistoryArchiveRetention:     365 * 24 * time.Hour,
+		HistoryRetentionDryRun:      true,
 		NotificationOutboxInterval:  time.Minute,
 		OpsDependencyCheckInterval:  6 * time.Hour,
 		OpsConsistencyCheckInterval: 24 * time.Hour,
@@ -247,6 +255,10 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
+	v.SetDefault("history_retention_interval", cfg.HistoryRetentionInterval)
+	v.SetDefault("history_hot_retention", cfg.HistoryHotRetention)
+	v.SetDefault("history_archive_retention", cfg.HistoryArchiveRetention)
+	v.SetDefault("history_retention_dry_run", cfg.HistoryRetentionDryRun)
 	v.SetDefault("notification_outbox_interval", cfg.NotificationOutboxInterval)
 	v.SetDefault("ops_dependency_check_interval", cfg.OpsDependencyCheckInterval)
 	v.SetDefault("ops_consistency_check_interval", cfg.OpsConsistencyCheckInterval)
@@ -377,6 +389,18 @@ func (c *Config) Validate() error {
 	}
 	if c.OpsConsistencyCheckLimit <= 0 {
 		errs = append(errs, "ops_consistency_check_limit must be greater than 0")
+	}
+	if c.HistoryRetentionInterval < 0 {
+		errs = append(errs, "history_retention_interval must be zero or greater")
+	}
+	if c.HistoryHotRetention <= 0 {
+		errs = append(errs, "history_hot_retention must be greater than 0")
+	}
+	if c.HistoryArchiveRetention <= 0 {
+		errs = append(errs, "history_archive_retention must be greater than 0")
+	}
+	if c.HistoryArchiveRetention <= c.HistoryHotRetention {
+		errs = append(errs, "history_archive_retention must be greater than history_hot_retention")
 	}
 
 	if len(errs) > 0 {

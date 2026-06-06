@@ -199,6 +199,7 @@ type Services struct {
 	Billing       *BillingService
 	Notification  *NotificationService
 	Retention     *RetentionService
+	History       *OperationalHistoryRetentionService
 	TwoFactor     *TwoFactorService
 	Passkey       *PasskeyService
 	Audit         *AuditService
@@ -256,6 +257,7 @@ func New(deps Deps) *Services {
 		provider:   provider.Registry().Billing,
 	}
 	retentionSvc := &RetentionService{repos: deps.Repos, blobStore: deps.BlobStore}
+	historySvc := NewOperationalHistoryRetentionService(deps.Repos)
 	twoFactorSvc := NewTwoFactorService(deps.Repos, deps.TokenManager, deps.SecuritySecret)
 	var auditStore auditEventStore
 	var securityAuditStore securityAuditStore
@@ -308,6 +310,7 @@ func New(deps Deps) *Services {
 		Billing:       billingSvc,
 		Notification:  notifSvc,
 		Retention:     retentionSvc,
+		History:       historySvc,
 		TwoFactor:     twoFactorSvc,
 		Passkey:       passkeySvc,
 		Audit:         auditSvc,

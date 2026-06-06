@@ -61,6 +61,7 @@ func TestAdminListAuditLogsParsesFilters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
 	}
@@ -123,6 +124,7 @@ func TestAdminSetSettingRecordsAuditEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)
 	}
+	defer resp.Body.Close()
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
 	}

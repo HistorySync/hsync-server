@@ -1616,7 +1616,7 @@ func (s *BillingService) CreateCheckoutSession(ctx context.Context, userID uuid.
 	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return "", ErrStripeDisabled
 	}
-	url, err := s.provider.CreateCheckoutSession(userID.String(), priceID)
+	url, err := s.provider.CreateCheckoutSession(ctx, userID.String(), priceID)
 	if err != nil {
 		if errors.Is(err, provider.ErrBillingNotSupported) {
 			return "", ErrBillingNotSupported
@@ -1631,7 +1631,7 @@ func (s *BillingService) CreatePortalSession(ctx context.Context, userID uuid.UU
 	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return "", ErrStripeDisabled
 	}
-	url, err := s.provider.CreatePortalSession(userID.String())
+	url, err := s.provider.CreatePortalSession(ctx, userID.String())
 	if err != nil {
 		if errors.Is(err, provider.ErrBillingNotSupported) {
 			return "", ErrBillingNotSupported
@@ -1646,7 +1646,7 @@ func (s *BillingService) HandleWebhook(ctx context.Context, payload []byte, sign
 	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return ErrStripeDisabled
 	}
-	if err := s.provider.HandleWebhook(payload, signature); err != nil {
+	if err := s.provider.HandleWebhook(ctx, payload, signature); err != nil {
 		if errors.Is(err, provider.ErrBillingNotSupported) {
 			return ErrBillingNotSupported
 		}
@@ -1660,7 +1660,7 @@ func (s *BillingService) GetSubscription(ctx context.Context, userID uuid.UUID) 
 	if s.disabled || s.provider == nil || !s.provider.IsEnabled() {
 		return map[string]any{"status": "disabled"}, nil
 	}
-	sub, err := s.provider.GetSubscription(userID.String())
+	sub, err := s.provider.GetSubscription(ctx, userID.String())
 	if err != nil {
 		return nil, err
 	}

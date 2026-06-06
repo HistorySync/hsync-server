@@ -32,10 +32,10 @@ func TestNoopBillingProvider(t *testing.T) {
 	if p.IsEnabled() {
 		t.Fatal("IsEnabled() = true, want false")
 	}
-	if _, err := p.CreateCheckoutSession("u", "price"); !errors.Is(err, ErrBillingNotSupported) {
+	if _, err := p.CreateCheckoutSession(context.Background(), "u", "price"); !errors.Is(err, ErrBillingNotSupported) {
 		t.Fatalf("CreateCheckoutSession() error = %v, want ErrBillingNotSupported", err)
 	}
-	if sub, err := p.GetSubscription("u"); err != nil || sub != nil {
+	if sub, err := p.GetSubscription(context.Background(), "u"); err != nil || sub != nil {
 		t.Fatalf("GetSubscription() = (%v, %v), want (nil, nil)", sub, err)
 	}
 }

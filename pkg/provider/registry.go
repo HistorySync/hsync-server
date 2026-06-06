@@ -41,16 +41,16 @@ type AuthProvider interface {
 // BillingProvider defines the billing/payment abstraction.
 type BillingProvider interface {
 	// CreateCheckoutSession creates a Stripe Checkout session URL.
-	CreateCheckoutSession(userID, priceID string) (string, error)
+	CreateCheckoutSession(ctx context.Context, userID, priceID string) (string, error)
 
 	// HandleWebhook processes an incoming Stripe webhook event.
-	HandleWebhook(payload []byte, signature string) error
+	HandleWebhook(ctx context.Context, payload []byte, signature string) error
 
 	// GetSubscription returns the current subscription for a user.
-	GetSubscription(userID string) (*SubscriptionInfo, error)
+	GetSubscription(ctx context.Context, userID string) (*SubscriptionInfo, error)
 
 	// CreatePortalSession creates a Stripe Customer Portal URL.
-	CreatePortalSession(userID string) (string, error)
+	CreatePortalSession(ctx context.Context, userID string) (string, error)
 
 	// IsEnabled reports whether billing is configured and available.
 	IsEnabled() bool

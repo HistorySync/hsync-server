@@ -1,6 +1,7 @@
 # Go build output
 build/
 tmp/
+tmp-gocache/
 *.exe
 *.exe~
 *.dll

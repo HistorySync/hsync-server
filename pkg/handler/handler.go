@@ -325,18 +325,24 @@ func (h *Handlers) registerMetricsRoute(app *fiber.App) {
 	handler := promhttp.HandlerFor(observability.Registry(), promhttp.HandlerOpts{
 		ErrorHandling: promhttp.ContinueOnError,
 	})
-	app.Get(path, adaptor.HTTPHandler(handler), h.metricsAccessMiddleware)
+	promHandler := adaptor.HTTPHandler(handler)
+	app.Get(path, func(c fiber.Ctx) error {
+		if err := h.checkMetricsAccess(c); err != nil {
+			return err
+		}
+		return promHandler(c)
+	})
 }
 
-func (h *Handlers) metricsAccessMiddleware(c fiber.Ctx) error {
+func (h *Handlers) checkMetricsAccess(c fiber.Ctx) error {
 	if len(h.deps.Metrics.AllowedCIDRs) == 0 {
-		return c.Next()
+		return nil
 	}
 	ip, ok := clientAddr(c)
 	if !ok || !addrAllowed(ip, h.deps.Metrics.AllowedCIDRs) {
 		return fiber.NewError(fiber.StatusForbidden, "metrics endpoint is restricted")
 	}
-	return c.Next()
+	return nil
 }
 
 func clientAddr(c fiber.Ctx) (netip.Addr, bool) {

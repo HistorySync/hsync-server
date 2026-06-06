@@ -30,6 +30,7 @@ type OperationalHistoryRetentionResult struct {
 type operationalHistoryRetentionStore interface {
 	ReportRetention(ctx context.Context, hotCutoff, archiveCutoff time.Time) (repository.OperationalHistoryRetentionCounts, error)
 	ApplyRetention(ctx context.Context, hotCutoff, archiveCutoff time.Time) (repository.OperationalHistoryRetentionCounts, error)
+	Export(ctx context.Context, filter repository.OperationalExportFilter) ([]repository.OperationalExportRecord, error)
 }
 
 type OperationalHistoryRetentionService struct {
@@ -54,6 +55,13 @@ func (s *OperationalHistoryRetentionService) Run(ctx context.Context, policy Ope
 		now = s.now
 	}
 	return runOperationalHistoryRetention(ctx, s.store, now(), policy)
+}
+
+func (s *OperationalHistoryRetentionService) Export(ctx context.Context, filter repository.OperationalExportFilter) ([]repository.OperationalExportRecord, error) {
+	if s == nil || s.store == nil {
+		return []repository.OperationalExportRecord{}, nil
+	}
+	return s.store.Export(ctx, filter)
 }
 
 func runOperationalHistoryRetention(ctx context.Context, store operationalHistoryRetentionStore, now time.Time, policy OperationalHistoryRetentionPolicy) (OperationalHistoryRetentionResult, error) {

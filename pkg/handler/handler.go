@@ -6,7 +6,9 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"net"
@@ -31,6 +33,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
+	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
 	"github.com/historysync/hsync-server/pkg/ws"
@@ -271,6 +274,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin.Get("/ops/history", h.AdminOpsHistory)
 	v1Admin.Post("/ops/check", h.AdminOpsCheck)
 	v1Admin.Post("/ops/consistency", h.AdminOpsConsistency)
+	v1Admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -305,6 +309,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Get("/ops/history", h.AdminOpsHistory)
 	admin.Post("/ops/check", h.AdminOpsCheck)
 	admin.Post("/ops/consistency", h.AdminOpsConsistency)
+	admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
 }
 
 // ── Health ───────────────────────────────────────────────────
@@ -2040,6 +2045,141 @@ func (h *Handlers) AdminOpsConsistency(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 	defer cancel()
 	return c.JSON(ops.CheckConsistency(ctx, limit))
+}
+
+func (h *Handlers) AdminExportOperationalRecords(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.History == nil {
+		return apierrors.NewInternal("operational history service is not configured")
+	}
+	recordType, err := parseOperationalExportRecordType(c.Query("record_type"))
+	if err != nil {
+		return err
+	}
+	format, err := parseOperationalExportFormat(c.Query("format", "json"))
+	if err != nil {
+		return err
+	}
+	source, err := parseOperationalExportSource(c.Query("source", "hot"))
+	if err != nil {
+		return err
+	}
+	from, err := parseOperationalExportTime(c.Query("from"), "from")
+	if err != nil {
+		return err
+	}
+	to, err := parseOperationalExportTime(c.Query("to"), "to")
+	if err != nil {
+		return err
+	}
+	limit := int32(1000)
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 || parsed > 5000 {
+			return apierrors.NewBadRequest("limit must be between 1 and 5000")
+		}
+		limit = int32(parsed)
+	}
+
+	filter := repository.OperationalExportFilter{
+		RecordType: recordType,
+		Source:     source,
+		Type:       strings.TrimSpace(c.Query("type")),
+		Status:     strings.TrimSpace(c.Query("status")),
+		From:       from,
+		To:         to,
+		Limit:      limit,
+	}
+	records, err := h.deps.Services.History.Export(c.Context(), filter)
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	if format == "csv" {
+		return sendOperationalExportCSV(c, recordType, records)
+	}
+	return c.JSON(fiber.Map{
+		"record_type": recordType,
+		"source":      source,
+		"format":      format,
+		"count":       len(records),
+		"records":     records,
+	})
+}
+
+func parseOperationalExportRecordType(raw string) (string, error) {
+	switch strings.TrimSpace(raw) {
+	case "audit_logs", "ops_history", "notification_outbox":
+		return strings.TrimSpace(raw), nil
+	default:
+		return "", apierrors.NewBadRequest("record_type must be audit_logs, ops_history, or notification_outbox")
+	}
+}
+
+func parseOperationalExportFormat(raw string) (string, error) {
+	switch strings.TrimSpace(raw) {
+	case "", "json":
+		return "json", nil
+	case "csv":
+		return "csv", nil
+	default:
+		return "", apierrors.NewBadRequest("format must be json or csv")
+	}
+}
+
+func parseOperationalExportSource(raw string) (string, error) {
+	switch strings.TrimSpace(raw) {
+	case "", "hot":
+		return "hot", nil
+	case "archive":
+		return "archive", nil
+	case "all":
+		return "all", nil
+	default:
+		return "", apierrors.NewBadRequest("source must be hot, archive, or all")
+	}
+}
+
+func parseOperationalExportTime(raw, name string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, apierrors.NewBadRequest(name + " must be an RFC3339 timestamp")
+	}
+	return parsed, nil
+}
+
+func sendOperationalExportCSV(c fiber.Ctx, recordType string, records []repository.OperationalExportRecord) error {
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	_ = w.Write([]string{"record_type", "source", "id", "timestamp", "type", "status", "actor", "target", "details"})
+	for _, record := range records {
+		details, err := json.Marshal(record.Details)
+		if err != nil {
+			return apierrors.NewInternal("failed to encode export details")
+		}
+		if err := w.Write([]string{
+			record.RecordType,
+			record.Source,
+			record.ID,
+			record.Timestamp.UTC().Format(time.RFC3339Nano),
+			record.Type,
+			record.Status,
+			record.Actor,
+			record.Target,
+			string(details),
+		}); err != nil {
+			return apierrors.NewInternal("failed to encode csv export")
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return apierrors.NewInternal("failed to flush csv export")
+	}
+	c.Set("Content-Type", "text/csv; charset=utf-8")
+	c.Set("Content-Disposition", `attachment; filename="`+recordType+`-export.csv"`)
+	return c.Send(buf.Bytes())
 }
 
 func (h *Handlers) opsService() *service.OpsService {

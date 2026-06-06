@@ -39,6 +39,10 @@ func (f *fakeOperationalHistoryStore) ApplyRetention(ctx context.Context, hotCut
 	return f.apply, nil
 }
 
+func (f *fakeOperationalHistoryStore) Export(ctx context.Context, filter repository.OperationalExportFilter) ([]repository.OperationalExportRecord, error) {
+	return []repository.OperationalExportRecord{}, f.err
+}
+
 func TestOperationalHistoryRetentionCutoffs(t *testing.T) {
 	now := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
 	hot, archive, err := operationalHistoryCutoffs(now, OperationalHistoryRetentionPolicy{

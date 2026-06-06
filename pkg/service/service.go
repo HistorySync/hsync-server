@@ -289,6 +289,14 @@ func New(deps Deps) *Services {
 		BlobStore:    deps.BlobStore,
 		DatabasePing: deps.DatabasePing,
 		RedisPing:    deps.RedisPing,
+		Alert: OpsAlertConfig{
+			Email:         opsAlertEmail(deps.Config),
+			WebhookURL:    opsAlertWebhookURL(deps.Config),
+			WebhookSecret: opsAlertWebhookSecret(deps.Config),
+			AppName:       opsAlertAppName(deps.Config),
+		},
+		Notifier: deps.Notifier,
+		Webhook:  deps.Webhook,
 	})
 
 	return &Services{
@@ -315,6 +323,34 @@ func New(deps Deps) *Services {
 // RetentionService reports on and purges data that has been soft-deleted past
 // its retention grace period. It covers bundles and snapshots; user cleanup can
 // be added as a further task.
+func opsAlertEmail(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.OpsAlertEmail
+}
+
+func opsAlertWebhookURL(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.OpsAlertWebhookURL
+}
+
+func opsAlertWebhookSecret(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.OpsAlertWebhookSecret
+}
+
+func opsAlertAppName(cfg *config.Config) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.WebAppName
+}
+
 type RetentionService struct {
 	repos     *repository.Repos
 	blobStore storage.BlobStorage

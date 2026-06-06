@@ -71,12 +71,15 @@ type Config struct {
 	TurnstileTimeout time.Duration `mapstructure:"turnstile_timeout"`
 
 	// Background tasks
-	BackgroundTasksEnabled     bool          `mapstructure:"background_tasks_enabled"`
-	QuotaReconcileInterval     time.Duration `mapstructure:"quota_reconcile_interval"`
-	RetentionCleanupInterval   time.Duration `mapstructure:"retention_cleanup_interval"`
-	RetentionGracePeriod       time.Duration `mapstructure:"retention_grace_period"`
-	RetentionDryRun            bool          `mapstructure:"retention_dry_run"`
-	NotificationOutboxInterval time.Duration `mapstructure:"notification_outbox_interval"`
+	BackgroundTasksEnabled      bool          `mapstructure:"background_tasks_enabled"`
+	QuotaReconcileInterval      time.Duration `mapstructure:"quota_reconcile_interval"`
+	RetentionCleanupInterval    time.Duration `mapstructure:"retention_cleanup_interval"`
+	RetentionGracePeriod        time.Duration `mapstructure:"retention_grace_period"`
+	RetentionDryRun             bool          `mapstructure:"retention_dry_run"`
+	NotificationOutboxInterval  time.Duration `mapstructure:"notification_outbox_interval"`
+	OpsDependencyCheckInterval  time.Duration `mapstructure:"ops_dependency_check_interval"`
+	OpsConsistencyCheckInterval time.Duration `mapstructure:"ops_consistency_check_interval"`
+	OpsConsistencyCheckLimit    int32         `mapstructure:"ops_consistency_check_limit"`
 
 	// Runtime options
 	OptionsFile string `mapstructure:"options_file"`
@@ -98,6 +101,9 @@ type Config struct {
 	SMTPFrom                string `mapstructure:"smtp_from"`
 	SMTPFromName            string `mapstructure:"smtp_from_name"`
 	SMTPTLSMode             string `mapstructure:"smtp_tls_mode"`
+	OpsAlertEmail           string `mapstructure:"ops_alert_email"`
+	OpsAlertWebhookURL      string `mapstructure:"ops_alert_webhook_url"`
+	OpsAlertWebhookSecret   string `mapstructure:"ops_alert_webhook_secret"`
 }
 
 // DefaultConfig returns a Config with reasonable defaults.
@@ -128,23 +134,26 @@ func DefaultConfig() *Config {
 		OIDCScopes:       "openid profile email",
 		TurnstileTimeout: 3 * time.Second,
 
-		BackgroundTasksEnabled:     true,
-		QuotaReconcileInterval:     24 * time.Hour,
-		RetentionCleanupInterval:   0,
-		RetentionGracePeriod:       30 * 24 * time.Hour,
-		RetentionDryRun:            true,
-		NotificationOutboxInterval: time.Minute,
-		OptionsFile:                "",
-		PublicURL:                  "http://localhost:8080",
-		NotificationsEnabled:       false,
-		QuotaWarningThreshold:      80,
-		QuotaExhaustedThreshold:    100,
-		EmailVerificationPath:      "/verify-email",
-		PasswordResetPath:          "/reset-password",
-		SMTPEnabled:                false,
-		SMTPPort:                   587,
-		SMTPFromName:               "HistorySync Cloud",
-		SMTPTLSMode:                "starttls",
+		BackgroundTasksEnabled:      true,
+		QuotaReconcileInterval:      24 * time.Hour,
+		RetentionCleanupInterval:    0,
+		RetentionGracePeriod:        30 * 24 * time.Hour,
+		RetentionDryRun:             true,
+		NotificationOutboxInterval:  time.Minute,
+		OpsDependencyCheckInterval:  6 * time.Hour,
+		OpsConsistencyCheckInterval: 24 * time.Hour,
+		OpsConsistencyCheckLimit:    1000,
+		OptionsFile:                 "",
+		PublicURL:                   "http://localhost:8080",
+		NotificationsEnabled:        false,
+		QuotaWarningThreshold:       80,
+		QuotaExhaustedThreshold:     100,
+		EmailVerificationPath:       "/verify-email",
+		PasswordResetPath:           "/reset-password",
+		SMTPEnabled:                 false,
+		SMTPPort:                    587,
+		SMTPFromName:                "HistorySync Cloud",
+		SMTPTLSMode:                 "starttls",
 	}
 }
 
@@ -239,6 +248,9 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("retention_grace_period", cfg.RetentionGracePeriod)
 	v.SetDefault("retention_dry_run", cfg.RetentionDryRun)
 	v.SetDefault("notification_outbox_interval", cfg.NotificationOutboxInterval)
+	v.SetDefault("ops_dependency_check_interval", cfg.OpsDependencyCheckInterval)
+	v.SetDefault("ops_consistency_check_interval", cfg.OpsConsistencyCheckInterval)
+	v.SetDefault("ops_consistency_check_limit", cfg.OpsConsistencyCheckLimit)
 	v.SetDefault("options_file", cfg.OptionsFile)
 	v.SetDefault("public_url", cfg.PublicURL)
 	v.SetDefault("notifications_enabled", cfg.NotificationsEnabled)
@@ -254,6 +266,9 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("smtp_from", cfg.SMTPFrom)
 	v.SetDefault("smtp_from_name", cfg.SMTPFromName)
 	v.SetDefault("smtp_tls_mode", cfg.SMTPTLSMode)
+	v.SetDefault("ops_alert_email", cfg.OpsAlertEmail)
+	v.SetDefault("ops_alert_webhook_url", cfg.OpsAlertWebhookURL)
+	v.SetDefault("ops_alert_webhook_secret", cfg.OpsAlertWebhookSecret)
 
 	// Read config file (non-fatal if missing)
 	if err := v.ReadInConfig(); err != nil {
@@ -359,6 +374,9 @@ func (c *Config) Validate() error {
 		if c.SMTPFrom == "" {
 			errs = append(errs, "smtp_from is required when smtp is enabled")
 		}
+	}
+	if c.OpsConsistencyCheckLimit <= 0 {
+		errs = append(errs, "ops_consistency_check_limit must be greater than 0")
 	}
 
 	if len(errs) > 0 {

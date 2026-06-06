@@ -163,6 +163,9 @@ func TestLandingPageIncludesRuntimeShell(t *testing.T) {
 	if !strings.Contains(body, "/api/v1/admin/security/stats") {
 		t.Fatal("landing page missing security stats endpoint")
 	}
+	if !strings.Contains(body, `adminPath+"/ops/summary"`) {
+		t.Fatal("landing page missing ops summary endpoint")
+	}
 	if !strings.Contains(body, "/admin/notifications/failures") {
 		t.Fatal("landing page missing notification failures endpoint")
 	}
@@ -228,6 +231,8 @@ func TestLandingPageIncludesAdminConsoleInteractions(t *testing.T) {
 		`method:"PUT"`,
 		`adminPath+"/settings/`,
 		`masked override`,
+		`id="ops-run-rows"`,
+		`refresh-ops`,
 		`Redrive`,
 	}
 	for _, check := range checks {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/storage"
 )
 
@@ -232,6 +233,23 @@ func limitOpsRuns(runs []model.OpsCheckRun, limit int32) []model.OpsCheckRun {
 		out = out[:limit]
 	}
 	return out
+}
+
+type captureOpsWebhookProvider struct {
+	sent         int
+	webhookURL   string
+	secret       string
+	notification provider.WebhookNotification
+}
+
+func (p *captureOpsWebhookProvider) DeliveryEnabled() bool { return true }
+
+func (p *captureOpsWebhookProvider) Send(_ context.Context, webhookURL, secret string, notification provider.WebhookNotification) error {
+	p.sent++
+	p.webhookURL = webhookURL
+	p.secret = secret
+	p.notification = notification
+	return nil
 }
 
 func testOpsConfig() *config.Config {
@@ -522,6 +540,71 @@ func TestOpsCheckHistoryPersistence(t *testing.T) {
 	}
 	if len(view.RecentRuns) != 2 || len(view.RecentFailures) != 1 {
 		t.Fatalf("history view runs=%d failures=%d, want 2/1", len(view.RecentRuns), len(view.RecentFailures))
+	}
+}
+
+func TestOpsScheduledFailureAlerts(t *testing.T) {
+	user := uuid.New()
+	bundle := model.BundleMeta{UserID: user, BundleID: "missing", SizeBytes: 3}
+	store := newFakeOpsBlobStore()
+	history := &fakeOpsHistoryStore{}
+	notifier := &countingNotifier{}
+	webhook := &captureOpsWebhookProvider{}
+	svc := NewOpsService(OpsDeps{
+		BlobStore:        store,
+		BundleMetadata:   fakeOpsBundleMetadata{rows: []model.BundleMeta{bundle}},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{},
+		History:          history,
+		Alert: OpsAlertConfig{
+			Email:         "ops@example.com",
+			WebhookURL:    "https://hooks.example.com/ops",
+			WebhookSecret: "hook-secret",
+			AppName:       "HistorySync Test",
+		},
+		Notifier: notifier,
+		Webhook:  webhook,
+	})
+
+	svc.RunScheduledConsistencyCheck(context.Background(), 10)
+	if len(history.runs) != 1 || history.runs[0].RunType != model.OpsRunTypeConsistency || history.runs[0].OverallStatus != OpsStatusUnhealthy {
+		t.Fatalf("history = %+v, want unhealthy consistency run", history.runs)
+	}
+	if notifier.sent != 1 {
+		t.Fatalf("email alerts = %d, want 1", notifier.sent)
+	}
+	if webhook.sent != 1 || webhook.webhookURL != "https://hooks.example.com/ops" || webhook.secret != "hook-secret" {
+		t.Fatalf("webhook sent=%d url=%q secret=%q, want configured hook", webhook.sent, webhook.webhookURL, webhook.secret)
+	}
+	if webhook.notification.Type != "ops.consistency.failure" || webhook.notification.Category != "ops" {
+		t.Fatalf("webhook notification = %+v, want ops consistency failure", webhook.notification)
+	}
+	if got := webhook.notification.Data["run_type"]; got != string(model.OpsRunTypeConsistency) {
+		t.Fatalf("webhook run_type = %#v, want consistency", got)
+	}
+	if store.gets != 0 {
+		t.Fatalf("scheduled consistency check read %d blob(s), want 0", store.gets)
+	}
+}
+
+func TestOpsScheduledHealthyCheckDoesNotAlert(t *testing.T) {
+	store := newFakeOpsBlobStore()
+	notifier := &countingNotifier{}
+	webhook := &captureOpsWebhookProvider{}
+	svc := NewOpsService(OpsDeps{
+		BlobStore:    store,
+		DatabasePing: func(context.Context) error { return nil },
+		History:      &fakeOpsHistoryStore{},
+		Alert: OpsAlertConfig{
+			Email:      "ops@example.com",
+			WebhookURL: "https://hooks.example.com/ops",
+		},
+		Notifier: notifier,
+		Webhook:  webhook,
+	})
+
+	svc.RunScheduledDependencyCheck(context.Background())
+	if notifier.sent != 0 || webhook.sent != 0 {
+		t.Fatalf("alerts email=%d webhook=%d, want none for healthy dependency check", notifier.sent, webhook.sent)
 	}
 }
 

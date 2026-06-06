@@ -16,6 +16,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
 	"github.com/rs/zerolog/log"
@@ -57,6 +58,13 @@ type opsHistoryStore interface {
 	ListRecentFailures(ctx context.Context, limit int32) ([]model.OpsCheckRun, error)
 }
 
+type OpsAlertConfig struct {
+	Email         string
+	WebhookURL    string
+	WebhookSecret string
+	AppName       string
+}
+
 // OpsDeps holds the runtime dependencies used by the self-hosted operations
 // surface. The active probes are intentionally dependency-injected so tests and
 // Enterprise wrappers can provide narrow fakes.
@@ -69,6 +77,9 @@ type OpsDeps struct {
 	BundleMetadata   opsBundleMetadataStore
 	SnapshotMetadata opsSnapshotMetadataStore
 	History          opsHistoryStore
+	Alert            OpsAlertConfig
+	Notifier         provider.Notifier
+	Webhook          provider.WebhookProvider
 	Now              func() time.Time
 }
 
@@ -82,6 +93,9 @@ type OpsService struct {
 	bundles      opsBundleMetadataStore
 	snapshots    opsSnapshotMetadataStore
 	history      opsHistoryStore
+	alert        OpsAlertConfig
+	notifier     provider.Notifier
+	webhook      provider.WebhookProvider
 	now          func() time.Time
 
 	mu              sync.Mutex
@@ -116,6 +130,9 @@ func NewOpsService(deps OpsDeps) *OpsService {
 		bundles:      bundles,
 		snapshots:    snapshots,
 		history:      deps.History,
+		alert:        deps.Alert,
+		notifier:     deps.Notifier,
+		webhook:      deps.Webhook,
 		now:          now,
 	}
 }
@@ -305,6 +322,16 @@ func (s *OpsService) CheckConsistency(ctx context.Context, limit int32) OpsConsi
 	return report
 }
 
+func (s *OpsService) RunScheduledDependencyCheck(ctx context.Context) {
+	report := s.CheckDependencies(ctx)
+	s.notifyOpsFailure(ctx, model.OpsRunTypeDependency, report.Overall, report.DurationMillis, dependencyAlertSummary(report))
+}
+
+func (s *OpsService) RunScheduledConsistencyCheck(ctx context.Context, limit int32) {
+	report := s.CheckConsistency(ctx, limit)
+	s.notifyOpsFailure(ctx, model.OpsRunTypeConsistency, report.Overall, report.DurationMillis, consistencyAlertSummary(report))
+}
+
 func (s *OpsService) History(ctx context.Context, limit int32) (OpsHistoryView, error) {
 	view := OpsHistoryView{
 		RecentRuns:     []model.OpsCheckRun{},
@@ -324,6 +351,78 @@ func (s *OpsService) History(ctx context.Context, limit int32) (OpsHistoryView, 
 	view.RecentRuns = recent
 	view.RecentFailures = failures
 	return view, nil
+}
+
+func (s *OpsService) notifyOpsFailure(ctx context.Context, runType model.OpsRunType, overall string, durationMillis int64, summary map[string]any) {
+	if s == nil || overall == OpsStatusOK {
+		return
+	}
+	subject := fmt.Sprintf("HistorySync ops %s check %s", runType, overall)
+	message := fmt.Sprintf("The scheduled %s ops check completed with status %s.", runType, overall)
+	data := map[string]any{
+		"run_type":        string(runType),
+		"overall_status":  overall,
+		"duration_millis": durationMillis,
+		"summary":         summary,
+	}
+	if strings.TrimSpace(s.alert.Email) != "" && s.notifier != nil && s.notifier.DeliveryEnabled() {
+		if err := s.notifier.SendNotification(ctx, provider.NotificationParams{
+			UserID:      "ops",
+			Email:       strings.TrimSpace(s.alert.Email),
+			DisplayName: "HistorySync operator",
+			AppName:     fallbackOpsAlertAppName(s.alert.AppName),
+			Category:    "ops",
+			Type:        "ops." + string(runType) + ".failure",
+			Subject:     subject,
+			Message:     message,
+		}); err != nil {
+			log.Warn().Err(err).Str("run_type", string(runType)).Msg("ops email alert failed")
+		}
+	}
+	if strings.TrimSpace(s.alert.WebhookURL) != "" && s.webhook != nil && s.webhook.DeliveryEnabled() {
+		if err := s.webhook.Send(ctx, s.alert.WebhookURL, s.alert.WebhookSecret, provider.WebhookNotification{
+			Type:     "ops." + string(runType) + ".failure",
+			Category: "ops",
+			Subject:  subject,
+			Message:  message,
+			Data:     data,
+		}); err != nil {
+			log.Warn().Err(err).Str("run_type", string(runType)).Msg("ops webhook alert failed")
+		}
+	}
+}
+
+func dependencyAlertSummary(report OpsDependencyReport) map[string]any {
+	return map[string]any{
+		"failures": dependencyFailureSummaries(report.Checks),
+		"counts": map[string]any{
+			"dependencies": len(report.Checks),
+			"ok":           countDependencyStatus(report.Checks, OpsStatusOK),
+			"degraded":     countDependencyStatus(report.Checks, OpsStatusDegraded),
+			"unhealthy":    countDependencyStatus(report.Checks, OpsStatusUnhealthy),
+		},
+	}
+}
+
+func consistencyAlertSummary(report OpsConsistencyReport) map[string]any {
+	return map[string]any{
+		"issues": consistencyIssueSummaries(report.Issues),
+		"counts": map[string]any{
+			"artifacts":       len(report.Artifacts),
+			"checked_rows":    sumCheckedMetadata(report.Artifacts),
+			"missing_objects": sumMissingObjects(report.Artifacts),
+			"size_mismatches": sumSizeMismatches(report.Artifacts),
+			"check_failures":  sumCheckFailures(report.Artifacts),
+		},
+	}
+}
+
+func fallbackOpsAlertAppName(appName string) string {
+	appName = strings.TrimSpace(appName)
+	if appName == "" {
+		return "HistorySync Cloud"
+	}
+	return appName
 }
 
 func (s *OpsService) persistDependencyRun(ctx context.Context, report OpsDependencyReport) {
@@ -535,16 +634,19 @@ func (s *OpsService) configSummary() OpsConfigSummary {
 			"turnstile_secret":      maskSecret(cfg.TurnstileSecret),
 		},
 		Features: map[string]any{
-			"stripe_disabled":              cfg.StripeDisabled,
-			"oidc_enabled":                 cfg.OIDCEnabled,
-			"turnstile_enabled":            cfg.TurnstileEnabled,
-			"background_tasks_enabled":     cfg.BackgroundTasksEnabled,
-			"quota_reconcile_interval":     cfg.QuotaReconcileInterval.String(),
-			"retention_cleanup_interval":   cfg.RetentionCleanupInterval.String(),
-			"retention_grace_period":       cfg.RetentionGracePeriod.String(),
-			"retention_dry_run":            cfg.RetentionDryRun,
-			"notification_outbox_interval": cfg.NotificationOutboxInterval.String(),
-			"options_file":                 cfg.OptionsFile,
+			"stripe_disabled":                cfg.StripeDisabled,
+			"oidc_enabled":                   cfg.OIDCEnabled,
+			"turnstile_enabled":              cfg.TurnstileEnabled,
+			"background_tasks_enabled":       cfg.BackgroundTasksEnabled,
+			"quota_reconcile_interval":       cfg.QuotaReconcileInterval.String(),
+			"retention_cleanup_interval":     cfg.RetentionCleanupInterval.String(),
+			"retention_grace_period":         cfg.RetentionGracePeriod.String(),
+			"retention_dry_run":              cfg.RetentionDryRun,
+			"notification_outbox_interval":   cfg.NotificationOutboxInterval.String(),
+			"ops_dependency_check_interval":  cfg.OpsDependencyCheckInterval.String(),
+			"ops_consistency_check_interval": cfg.OpsConsistencyCheckInterval.String(),
+			"ops_consistency_check_limit":    cfg.OpsConsistencyCheckLimit,
+			"options_file":                   cfg.OptionsFile,
 		},
 		Notification: map[string]any{
 			"notifications_enabled":     cfg.NotificationsEnabled,
@@ -560,6 +662,9 @@ func (s *OpsService) configSummary() OpsConfigSummary {
 			"smtp_from":                 cfg.SMTPFrom,
 			"smtp_from_name":            cfg.SMTPFromName,
 			"smtp_tls_mode":             cfg.SMTPTLSMode,
+			"ops_alert_email":           maskEmailAddress(cfg.OpsAlertEmail),
+			"ops_alert_webhook_url":     maskWebhookURL(cfg.OpsAlertWebhookURL),
+			"ops_alert_webhook_secret":  maskSecret(cfg.OpsAlertWebhookSecret),
 		},
 	}
 }
@@ -1180,6 +1285,30 @@ func maskSecret(value string) MaskedValue {
 		return MaskedValue{Set: false}
 	}
 	return MaskedValue{Set: true, Value: "********"}
+}
+
+func maskEmailAddress(value string) MaskedValue {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return MaskedValue{Set: false}
+	}
+	at := strings.LastIndex(value, "@")
+	if at <= 0 {
+		return MaskedValue{Set: true, Value: "***"}
+	}
+	return MaskedValue{Set: true, Value: "***" + value[at:]}
+}
+
+func maskWebhookURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "<redacted>"
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/..."
 }
 
 func redactConnectionURL(raw string) string {

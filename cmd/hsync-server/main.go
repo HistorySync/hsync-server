@@ -196,7 +196,7 @@ func main() {
 	// Periodic maintenance tasks run on a single instance at a time (leader
 	// elected via a Postgres advisory lock) and stop on shutdown via bgCtx.
 	if cfg.BackgroundTasksEnabled {
-		sched := scheduler.New(pgPool, log.Logger,
+		tasks := []scheduler.Task{
 			scheduler.Task{
 				Name:     "quota-reconcile",
 				LockKey:  scheduler.LockQuotaReconcile,
@@ -210,7 +210,7 @@ func main() {
 					return nil
 				},
 			},
-			scheduler.Task{
+			{
 				Name:     "retention-cleanup",
 				LockKey:  scheduler.LockRetentionCleanup,
 				Interval: cfg.RetentionCleanupInterval,
@@ -255,7 +255,7 @@ func main() {
 					return nil
 				},
 			},
-			scheduler.Task{
+			{
 				Name:     "notification-outbox",
 				LockKey:  scheduler.LockNotificationOutbox,
 				Interval: cfg.NotificationOutboxInterval,
@@ -273,7 +273,13 @@ func main() {
 					return nil
 				},
 			},
-		)
+		}
+		tasks = append(tasks, scheduler.OpsTasks(svcs.Ops, scheduler.OpsTaskConfig{
+			DependencyInterval:  cfg.OpsDependencyCheckInterval,
+			ConsistencyInterval: cfg.OpsConsistencyCheckInterval,
+			ConsistencyLimit:    cfg.OpsConsistencyCheckLimit,
+		})...)
+		sched := scheduler.New(pgPool, log.Logger, tasks...)
 		go sched.Run(bgCtx)
 		log.Info().Msg("background scheduler started")
 	} else {

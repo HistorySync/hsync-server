@@ -479,6 +479,69 @@ tbody.appendChild(tr);
 }
 }
 
+async function loadOps(){
+const response=await requestAdmin(adminPath+"/ops/summary");
+renderOps(response.body||{});
+}
+
+function opsStatusPill(status){
+const span=document.createElement("span");
+let tone="";
+if(status==="ok"){tone=" ok";}
+else if(status==="degraded"||status==="disabled"||status==="skipped"){tone=" warn";}
+else if(status){tone=" err";}
+span.className="pill"+tone;
+span.textContent=status||"not checked";
+return span;
+}
+
+function renderOps(summary){
+const readiness=summary.readiness||{};
+const root=document.getElementById("ops-summary");
+root.textContent="";
+const dep=readiness.last_dependency_check||{};
+const consistency=readiness.last_consistency_check||{};
+const cards=[
+["Dependency check",dep.overall,dateValue(dep.checked_at)],
+["Consistency check",consistency.overall,dateValue(consistency.checked_at)],
+];
+for(const card of cards){
+const node=document.createElement("div");
+node.className="stat";
+const label=document.createElement("span");
+label.textContent=card[0];
+const strong=document.createElement("strong");
+strong.textContent=card[1]||"not checked";
+const note=document.createElement("span");
+note.textContent=card[2];
+node.appendChild(label);
+node.appendChild(strong);
+node.appendChild(note);
+root.appendChild(node);
+}
+renderOpsRuns(document.getElementById("ops-run-rows"),readiness.recent_runs||[],false);
+renderOpsRuns(document.getElementById("ops-failure-rows"),readiness.recent_failures||[],true);
+}
+
+function renderOpsRuns(tbody,items,includeSummary){
+tbody.textContent="";
+if(!items.length){
+emptyRow(tbody,4,includeSummary?"no recent failed checks":"no recent checks");
+return;
+}
+for(const item of items){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(dateValue(item.started_at)));
+tr.appendChild(makeCell(item.run_type));
+const status=document.createElement("td");
+status.appendChild(opsStatusPill(item.overall_status));
+tr.appendChild(status);
+const detail=includeSummary?item.summarized_findings:item.artifact_counts;
+tr.appendChild(makeCell(JSON.stringify(detail||{}),"mono json-cell"));
+tbody.appendChild(tr);
+}
+}
+
 async function loadNotifications(){
 const response=await requestAdmin(adminPath+"/notifications/failures?limit=50");
 renderNotifications(response.body.notifications||[]);
@@ -553,6 +616,7 @@ const tasks=[
 ["settings",loadSettings],
 ["audit logs",loadAuditLogs],
 ["security stats",loadSecurity],
+["ops checks",loadOps],
 ["notification failures",loadNotifications],
 ["health",loadHealth],
 ];
@@ -578,6 +642,7 @@ document.getElementById("refresh-all").addEventListener("click",loadAll);
 document.getElementById("refresh-overview").addEventListener("click",function(){loadOverview().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-settings").addEventListener("click",function(){loadSettings().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("refresh-ops").addEventListener("click",function(){loadOps().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-notifications").addEventListener("click",function(){loadNotifications().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-health").addEventListener("click",function(){loadHealth().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("audit-filter").addEventListener("submit",function(event){event.preventDefault();loadAuditLogs().catch(function(error){setBanner(error.message,"err");});});

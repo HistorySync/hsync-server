@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -49,6 +51,12 @@ type opsSnapshotMetadataStore interface {
 	ListForOpsConsistency(ctx context.Context, limit int32) ([]model.SnapshotMeta, error)
 }
 
+type opsHistoryStore interface {
+	Create(ctx context.Context, run *model.OpsCheckRun) error
+	ListRecent(ctx context.Context, limit int32) ([]model.OpsCheckRun, error)
+	ListRecentFailures(ctx context.Context, limit int32) ([]model.OpsCheckRun, error)
+}
+
 // OpsDeps holds the runtime dependencies used by the self-hosted operations
 // surface. The active probes are intentionally dependency-injected so tests and
 // Enterprise wrappers can provide narrow fakes.
@@ -60,6 +68,7 @@ type OpsDeps struct {
 	RedisPing        PingFunc
 	BundleMetadata   opsBundleMetadataStore
 	SnapshotMetadata opsSnapshotMetadataStore
+	History          opsHistoryStore
 	Now              func() time.Time
 }
 
@@ -72,6 +81,7 @@ type OpsService struct {
 	redisPing    PingFunc
 	bundles      opsBundleMetadataStore
 	snapshots    opsSnapshotMetadataStore
+	history      opsHistoryStore
 	now          func() time.Time
 
 	mu              sync.Mutex
@@ -93,6 +103,9 @@ func NewOpsService(deps OpsDeps) *OpsService {
 		if snapshots == nil {
 			snapshots = deps.Repos.Snapshots
 		}
+		if deps.History == nil {
+			deps.History = deps.Repos.OpsHistory
+		}
 	}
 	return &OpsService{
 		cfg:          deps.Config,
@@ -102,6 +115,7 @@ func NewOpsService(deps OpsDeps) *OpsService {
 		redisPing:    deps.RedisPing,
 		bundles:      bundles,
 		snapshots:    snapshots,
+		history:      deps.History,
 		now:          now,
 	}
 }
@@ -131,6 +145,8 @@ type OpsConfigSummary struct {
 type OpsReadinessSummary struct {
 	LastDependencyCheck  *OpsDependencyReport  `json:"last_dependency_check,omitempty"`
 	LastConsistencyCheck *OpsConsistencyReport `json:"last_consistency_check,omitempty"`
+	RecentRuns           []model.OpsCheckRun   `json:"recent_runs"`
+	RecentFailures       []model.OpsCheckRun   `json:"recent_failures"`
 }
 
 type OpsBackupGuidance struct {
@@ -209,16 +225,27 @@ type OpsConsistencyIssue struct {
 	ErrorClass   string `json:"error_class,omitempty"`
 }
 
+type OpsHistoryView struct {
+	RecentRuns     []model.OpsCheckRun `json:"recent_runs"`
+	RecentFailures []model.OpsCheckRun `json:"recent_failures"`
+}
+
 func (s *OpsService) Summary(ctx context.Context) OpsSummary {
-	_ = ctx
 	last := s.lastDependencyReport()
 	lastConsistency := s.lastConsistencyReport()
+	history, err := s.History(ctx, 10)
+	if err != nil {
+		log.Warn().Err(err).Msg("load ops check history failed")
+		history = OpsHistoryView{RecentRuns: []model.OpsCheckRun{}, RecentFailures: []model.OpsCheckRun{}}
+	}
 	return OpsSummary{
 		GeneratedAt: s.now().UTC(),
 		Config:      s.configSummary(),
 		Readiness: OpsReadinessSummary{
 			LastDependencyCheck:  last,
 			LastConsistencyCheck: lastConsistency,
+			RecentRuns:           history.RecentRuns,
+			RecentFailures:       history.RecentFailures,
 		},
 		Backup: s.backupGuidance(last),
 	}
@@ -245,6 +272,7 @@ func (s *OpsService) CheckDependencies(ctx context.Context) OpsDependencyReport 
 	s.lastDependency = &cp
 	s.mu.Unlock()
 
+	s.persistDependencyRun(ctx, report)
 	return report
 }
 
@@ -273,7 +301,190 @@ func (s *OpsService) CheckConsistency(ctx context.Context, limit int32) OpsConsi
 	s.lastConsistency = &cp
 	s.mu.Unlock()
 
+	s.persistConsistencyRun(ctx, report)
 	return report
+}
+
+func (s *OpsService) History(ctx context.Context, limit int32) (OpsHistoryView, error) {
+	view := OpsHistoryView{
+		RecentRuns:     []model.OpsCheckRun{},
+		RecentFailures: []model.OpsCheckRun{},
+	}
+	if s == nil || s.history == nil {
+		return view, nil
+	}
+	recent, err := s.history.ListRecent(ctx, limit)
+	if err != nil {
+		return view, err
+	}
+	failures, err := s.history.ListRecentFailures(ctx, limit)
+	if err != nil {
+		return view, err
+	}
+	view.RecentRuns = recent
+	view.RecentFailures = failures
+	return view, nil
+}
+
+func (s *OpsService) persistDependencyRun(ctx context.Context, report OpsDependencyReport) {
+	if s == nil || s.history == nil {
+		return
+	}
+	run, err := dependencyHistoryRun(report)
+	if err != nil {
+		log.Warn().Err(err).Msg("build dependency check history failed")
+		return
+	}
+	if err := s.history.Create(ctx, &run); err != nil {
+		log.Warn().Err(err).Msg("persist dependency check history failed")
+	}
+}
+
+func (s *OpsService) persistConsistencyRun(ctx context.Context, report OpsConsistencyReport) {
+	if s == nil || s.history == nil {
+		return
+	}
+	run, err := consistencyHistoryRun(report)
+	if err != nil {
+		log.Warn().Err(err).Msg("build consistency check history failed")
+		return
+	}
+	if err := s.history.Create(ctx, &run); err != nil {
+		log.Warn().Err(err).Msg("persist consistency check history failed")
+	}
+}
+
+func dependencyHistoryRun(report OpsDependencyReport) (model.OpsCheckRun, error) {
+	findings := map[string]any{
+		"checks":   len(report.Checks),
+		"failures": dependencyFailureSummaries(report.Checks),
+	}
+	counts := map[string]any{
+		"dependencies": len(report.Checks),
+		"ok":           countDependencyStatus(report.Checks, OpsStatusOK),
+		"degraded":     countDependencyStatus(report.Checks, OpsStatusDegraded),
+		"unhealthy":    countDependencyStatus(report.Checks, OpsStatusUnhealthy),
+	}
+	started := report.CheckedAt
+	finished := started.Add(time.Duration(report.DurationMillis) * time.Millisecond)
+	return buildOpsHistoryRun(model.OpsRunTypeDependency, report.Overall, started, finished, report.DurationMillis, findings, counts, report)
+}
+
+func consistencyHistoryRun(report OpsConsistencyReport) (model.OpsCheckRun, error) {
+	findings := map[string]any{
+		"issue_count": len(report.Issues),
+		"issues":      consistencyIssueSummaries(report.Issues),
+	}
+	counts := map[string]any{
+		"artifacts":       len(report.Artifacts),
+		"checked_rows":    sumCheckedMetadata(report.Artifacts),
+		"missing_objects": sumMissingObjects(report.Artifacts),
+		"size_mismatches": sumSizeMismatches(report.Artifacts),
+		"check_failures":  sumCheckFailures(report.Artifacts),
+	}
+	started := report.CheckedAt
+	finished := started.Add(time.Duration(report.DurationMillis) * time.Millisecond)
+	return buildOpsHistoryRun(model.OpsRunTypeConsistency, report.Overall, started, finished, report.DurationMillis, findings, counts, report)
+}
+
+func buildOpsHistoryRun(runType model.OpsRunType, overall string, started, finished time.Time, durationMillis int64, findings, counts map[string]any, report any) (model.OpsCheckRun, error) {
+	findingsJSON, err := json.Marshal(findings)
+	if err != nil {
+		return model.OpsCheckRun{}, err
+	}
+	countsJSON, err := json.Marshal(counts)
+	if err != nil {
+		return model.OpsCheckRun{}, err
+	}
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		return model.OpsCheckRun{}, err
+	}
+	return model.OpsCheckRun{
+		RunType:            runType,
+		OverallStatus:      overall,
+		StartedAt:          started.UTC(),
+		FinishedAt:         finished.UTC(),
+		DurationMillis:     durationMillis,
+		SummarizedFindings: json.RawMessage(findingsJSON),
+		ArtifactCounts:     json.RawMessage(countsJSON),
+		ReportJSON:         json.RawMessage(reportJSON),
+	}, nil
+}
+
+func dependencyFailureSummaries(checks []OpsDependencyCheck) []map[string]any {
+	failures := make([]map[string]any, 0)
+	for _, check := range checks {
+		if check.Status == OpsStatusOK || check.Status == OpsStatusDisabled {
+			continue
+		}
+		failures = append(failures, map[string]any{
+			"name":        check.Name,
+			"status":      check.Status,
+			"required":    check.Required,
+			"error_class": check.ErrorClass,
+			"message":     check.Message,
+			"action":      check.Action,
+		})
+	}
+	return failures
+}
+
+func consistencyIssueSummaries(issues []OpsConsistencyIssue) []map[string]any {
+	summaries := make([]map[string]any, 0, len(issues))
+	for _, issue := range issues {
+		summaries = append(summaries, map[string]any{
+			"kind":        issue.Kind,
+			"id":          issue.ID,
+			"status":      issue.Status,
+			"error_class": issue.ErrorClass,
+			"message":     issue.Message,
+			"action":      issue.Action,
+		})
+	}
+	return summaries
+}
+
+func countDependencyStatus(checks []OpsDependencyCheck, status string) int {
+	var count int
+	for _, check := range checks {
+		if check.Status == status {
+			count++
+		}
+	}
+	return count
+}
+
+func sumCheckedMetadata(artifacts []OpsArtifactConsistency) int {
+	var total int
+	for _, artifact := range artifacts {
+		total += artifact.CheckedMetadata
+	}
+	return total
+}
+
+func sumMissingObjects(artifacts []OpsArtifactConsistency) int {
+	var total int
+	for _, artifact := range artifacts {
+		total += artifact.MissingObjects
+	}
+	return total
+}
+
+func sumSizeMismatches(artifacts []OpsArtifactConsistency) int {
+	var total int
+	for _, artifact := range artifacts {
+		total += artifact.SizeMismatches
+	}
+	return total
+}
+
+func sumCheckFailures(artifacts []OpsArtifactConsistency) int {
+	var total int
+	for _, artifact := range artifacts {
+		total += artifact.CheckFailures
+	}
+	return total
 }
 
 func (s *OpsService) configSummary() OpsConfigSummary {

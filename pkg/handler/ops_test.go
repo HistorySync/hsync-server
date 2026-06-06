@@ -103,6 +103,44 @@ func (m handlerOpsSnapshotMetadata) ListForOpsConsistency(_ context.Context, _ i
 	return append([]model.SnapshotMeta(nil), m.rows...), nil
 }
 
+type handlerOpsHistoryStore struct {
+	runs []model.OpsCheckRun
+}
+
+func (s *handlerOpsHistoryStore) Create(_ context.Context, run *model.OpsCheckRun) error {
+	cp := *run
+	if cp.ID == uuid.Nil {
+		cp.ID = uuid.New()
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = cp.FinishedAt
+	}
+	s.runs = append([]model.OpsCheckRun{cp}, s.runs...)
+	return nil
+}
+
+func (s *handlerOpsHistoryStore) ListRecent(_ context.Context, limit int32) ([]model.OpsCheckRun, error) {
+	return handlerLimitOpsRuns(s.runs, limit), nil
+}
+
+func (s *handlerOpsHistoryStore) ListRecentFailures(_ context.Context, limit int32) ([]model.OpsCheckRun, error) {
+	failures := make([]model.OpsCheckRun, 0)
+	for _, run := range s.runs {
+		if run.OverallStatus != service.OpsStatusOK {
+			failures = append(failures, run)
+		}
+	}
+	return handlerLimitOpsRuns(failures, limit), nil
+}
+
+func handlerLimitOpsRuns(runs []model.OpsCheckRun, limit int32) []model.OpsCheckRun {
+	out := append([]model.OpsCheckRun(nil), runs...)
+	if limit > 0 && int(limit) < len(out) {
+		out = out[:limit]
+	}
+	return out
+}
+
 func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.DatabaseURL = "postgres://hsync:secret@db.example:5432/hsync?sslmode=disable"
@@ -115,6 +153,7 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	blobStore := newHandlerOpsBlobStore()
 	blobStore.data[storage.BundleKey(user.String(), bundle.BundleID)] = []byte("abc")
 	blobStore.data[storage.SnapshotKey(user.String(), snapshot.SnapshotID)] = []byte("12345")
+	historyStore := &handlerOpsHistoryStore{}
 	ops := service.NewOpsService(service.OpsDeps{
 		Config:           cfg,
 		BlobStore:        blobStore,
@@ -122,6 +161,7 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 		RedisPing:        func(context.Context) error { return nil },
 		BundleMetadata:   handlerOpsBundleMetadata{rows: []model.BundleMeta{bundle}},
 		SnapshotMetadata: handlerOpsSnapshotMetadata{rows: []model.SnapshotMeta{snapshot}},
+		History:          historyStore,
 	})
 	h := New(Deps{
 		Services: &service.Services{Ops: ops},
@@ -183,6 +223,26 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	if consistency.Overall != service.OpsStatusOK {
 		t.Fatalf("consistency overall = %q, want ok: %+v", consistency.Overall, consistency.Artifacts)
 	}
+	if len(historyStore.runs) != 2 {
+		t.Fatalf("history store runs = %d, want 2", len(historyStore.runs))
+	}
+
+	historyReq := httptest.NewRequest("GET", "/admin/ops/history?limit=5", nil)
+	historyReq.Header.Set("X-Admin-Key", "secret")
+	historyResp, err := app.Test(historyReq)
+	if err != nil {
+		t.Fatalf("history app.Test: %v", err)
+	}
+	if historyResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("history status = %d, want %d", historyResp.StatusCode, fiber.StatusOK)
+	}
+	var history service.OpsHistoryView
+	if err := json.NewDecoder(historyResp.Body).Decode(&history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if len(history.RecentRuns) != 2 || history.RecentRuns[0].RunType != model.OpsRunTypeConsistency {
+		t.Fatalf("history recent runs = %+v, want latest consistency and 2 runs", history.RecentRuns)
+	}
 
 	summaryReq = httptest.NewRequest("GET", "/api/v1/admin/ops/summary", nil)
 	summaryReq.Header.Set("X-Admin-Key", "secret")
@@ -201,5 +261,8 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	}
 	if summary.Readiness.LastConsistencyCheck == nil || summary.Readiness.LastConsistencyCheck.Overall != service.OpsStatusOK {
 		t.Fatalf("summary last consistency check = %+v, want ok report", summary.Readiness.LastConsistencyCheck)
+	}
+	if len(summary.Readiness.RecentRuns) != 2 {
+		t.Fatalf("summary recent runs = %d, want 2", len(summary.Readiness.RecentRuns))
 	}
 }

@@ -121,6 +121,26 @@ type NotificationFailureView struct {
 
 // ── Device ───────────────────────────────────────────────────
 
+type OpsRunType string
+
+const (
+	OpsRunTypeDependency  OpsRunType = "dependency"
+	OpsRunTypeConsistency OpsRunType = "consistency"
+)
+
+type OpsCheckRun struct {
+	ID                 uuid.UUID       `json:"id"                  db:"id"`
+	RunType            OpsRunType      `json:"run_type"            db:"run_type"`
+	OverallStatus      string          `json:"overall_status"      db:"overall_status"`
+	StartedAt          time.Time       `json:"started_at"          db:"started_at"`
+	FinishedAt         time.Time       `json:"finished_at"         db:"finished_at"`
+	DurationMillis     int64           `json:"duration_millis"     db:"duration_millis"`
+	SummarizedFindings json.RawMessage `json:"summarized_findings" db:"summarized_findings"`
+	ArtifactCounts     json.RawMessage `json:"artifact_counts"     db:"artifact_counts"`
+	ReportJSON         json.RawMessage `json:"report_json"         db:"report_json"`
+	CreatedAt          time.Time       `json:"created_at"          db:"created_at"`
+}
+
 // Device represents a registered client device.
 type Device struct {
 	ID         uuid.UUID  `json:"id"            db:"id"`

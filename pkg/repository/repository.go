@@ -35,6 +35,7 @@ type Repos struct {
 	NotificationOutbox *NotificationOutboxRepo
 	SystemSettings     *SystemSettingRepo
 	Idempotency        *IdempotencyRepo
+	OpsHistory         *OpsHistoryRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -56,6 +57,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		NotificationOutbox: NewNotificationOutboxRepo(pgPool),
 		SystemSettings:     NewSystemSettingRepo(pgPool),
 		Idempotency:        &IdempotencyRepo{pool: pgPool},
+		OpsHistory:         NewOpsHistoryRepo(pgPool),
 	}
 }
 

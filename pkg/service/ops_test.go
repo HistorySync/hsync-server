@@ -186,6 +186,54 @@ func (f fakeOpsSnapshotMetadata) ListForOpsConsistency(_ context.Context, limit 
 	return rows, nil
 }
 
+type fakeOpsHistoryStore struct {
+	runs []model.OpsCheckRun
+	err  error
+}
+
+func (s *fakeOpsHistoryStore) Create(_ context.Context, run *model.OpsCheckRun) error {
+	if s.err != nil {
+		return s.err
+	}
+	cp := *run
+	if cp.ID == uuid.Nil {
+		cp.ID = uuid.New()
+	}
+	if cp.CreatedAt.IsZero() {
+		cp.CreatedAt = cp.FinishedAt
+	}
+	s.runs = append([]model.OpsCheckRun{cp}, s.runs...)
+	return nil
+}
+
+func (s *fakeOpsHistoryStore) ListRecent(_ context.Context, limit int32) ([]model.OpsCheckRun, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return limitOpsRuns(s.runs, limit), nil
+}
+
+func (s *fakeOpsHistoryStore) ListRecentFailures(_ context.Context, limit int32) ([]model.OpsCheckRun, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	failures := make([]model.OpsCheckRun, 0)
+	for _, run := range s.runs {
+		if run.OverallStatus != OpsStatusOK {
+			failures = append(failures, run)
+		}
+	}
+	return limitOpsRuns(failures, limit), nil
+}
+
+func limitOpsRuns(runs []model.OpsCheckRun, limit int32) []model.OpsCheckRun {
+	out := append([]model.OpsCheckRun(nil), runs...)
+	if limit > 0 && int(limit) < len(out) {
+		out = out[:limit]
+	}
+	return out
+}
+
 func testOpsConfig() *config.Config {
 	return &config.Config{
 		ListenAddr:                 ":8080",
@@ -425,6 +473,55 @@ func TestOpsConsistencyFindsMissingAndSizeMismatchedObjects(t *testing.T) {
 	}
 	if store.gets != 0 {
 		t.Fatalf("consistency check read %d blob(s), want 0", store.gets)
+	}
+}
+
+func TestOpsCheckHistoryPersistence(t *testing.T) {
+	user := uuid.New()
+	bundle := model.BundleMeta{UserID: user, BundleID: "missing", SizeBytes: 3}
+	store := newFakeOpsBlobStore()
+	history := &fakeOpsHistoryStore{}
+	svc := NewOpsService(OpsDeps{
+		BlobStore:        store,
+		DatabasePing:     func(context.Context) error { return nil },
+		BundleMetadata:   fakeOpsBundleMetadata{rows: []model.BundleMeta{bundle}},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{},
+		History:          history,
+	})
+
+	dependency := svc.CheckDependencies(context.Background())
+	if dependency.Overall != OpsStatusOK {
+		t.Fatalf("dependency overall = %q, want ok", dependency.Overall)
+	}
+	consistency := svc.CheckConsistency(context.Background(), 10)
+	if consistency.Overall != OpsStatusUnhealthy {
+		t.Fatalf("consistency overall = %q, want unhealthy", consistency.Overall)
+	}
+	if len(history.runs) != 2 {
+		t.Fatalf("history runs = %d, want 2", len(history.runs))
+	}
+	if history.runs[0].RunType != model.OpsRunTypeConsistency || history.runs[0].OverallStatus != OpsStatusUnhealthy {
+		t.Fatalf("latest history = %+v, want unhealthy consistency", history.runs[0])
+	}
+	if history.runs[1].RunType != model.OpsRunTypeDependency || history.runs[1].OverallStatus != OpsStatusOK {
+		t.Fatalf("previous history = %+v, want ok dependency", history.runs[1])
+	}
+	if !json.Valid(history.runs[0].SummarizedFindings) || !strings.Contains(string(history.runs[0].SummarizedFindings), "missing_object") {
+		t.Fatalf("consistency findings = %s, want missing object summary", history.runs[0].SummarizedFindings)
+	}
+	if !json.Valid(history.runs[0].ArtifactCounts) || !strings.Contains(string(history.runs[0].ArtifactCounts), "missing_objects") {
+		t.Fatalf("consistency artifact counts = %s, want missing_objects", history.runs[0].ArtifactCounts)
+	}
+	if !json.Valid(history.runs[1].ReportJSON) || !strings.Contains(string(history.runs[1].ReportJSON), "postgresql") {
+		t.Fatalf("dependency report = %s, want report json", history.runs[1].ReportJSON)
+	}
+
+	view, err := svc.History(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	if len(view.RecentRuns) != 2 || len(view.RecentFailures) != 1 {
+		t.Fatalf("history view runs=%d failures=%d, want 2/1", len(view.RecentRuns), len(view.RecentFailures))
 	}
 }
 

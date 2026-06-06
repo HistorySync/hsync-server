@@ -1,0 +1,5 @@
+BEGIN;
+
+DROP TABLE IF EXISTS ops_check_runs;
+
+COMMIT;

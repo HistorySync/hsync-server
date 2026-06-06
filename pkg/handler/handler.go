@@ -268,6 +268,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
 	v1Admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	v1Admin.Get("/ops/summary", h.AdminOpsSummary)
+	v1Admin.Get("/ops/history", h.AdminOpsHistory)
 	v1Admin.Post("/ops/check", h.AdminOpsCheck)
 	v1Admin.Post("/ops/consistency", h.AdminOpsConsistency)
 
@@ -301,6 +302,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	admin.Get("/error-codes", h.AdminErrorCodes)
 	admin.Get("/ops/summary", h.AdminOpsSummary)
+	admin.Get("/ops/history", h.AdminOpsHistory)
 	admin.Post("/ops/check", h.AdminOpsCheck)
 	admin.Post("/ops/consistency", h.AdminOpsConsistency)
 }
@@ -1994,6 +1996,24 @@ func (h *Handlers) AdminOpsSummary(c fiber.Ctx) error {
 		return apierrors.NewInternal("ops service is not configured")
 	}
 	return c.JSON(ops.Summary(c.Context()))
+}
+
+func (h *Handlers) AdminOpsHistory(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	limit := int32(20)
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 && parsed <= 100 {
+			limit = int32(parsed)
+		}
+	}
+	history, err := ops.History(c.Context(), limit)
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(history)
 }
 
 func (h *Handlers) AdminOpsCheck(c fiber.Ctx) error {

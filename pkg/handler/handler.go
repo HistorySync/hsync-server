@@ -52,11 +52,20 @@ type Deps struct {
 	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
 	Turnstile    middleware.TurnstileConfig
 	Metrics      MetricsConfig
+	// RouteExclusions lets an embedding server own selected CE route paths
+	// without depending on Fiber's duplicate-route registration order.
+	RouteExclusions []RouteExclusion
 }
 
 // Handlers groups all HTTP handler instances.
 type Handlers struct {
 	deps Deps
+}
+
+// RouteExclusion identifies one CE route that should not be mounted.
+type RouteExclusion struct {
+	Method string
+	Path   string
 }
 
 // MetricsConfig controls the unauthenticated Prometheus scrape endpoint. It is
@@ -71,6 +80,15 @@ type MetricsConfig struct {
 // New creates a Handlers instance with the given dependencies.
 func New(deps Deps) *Handlers {
 	return &Handlers{deps: deps}
+}
+
+func (h *Handlers) routeExcluded(method, path string) bool {
+	for _, excluded := range h.deps.RouteExclusions {
+		if strings.EqualFold(excluded.Method, method) && excluded.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // Rate limit settings.
@@ -195,14 +213,24 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		return authRateLimit(h.deps.RateLimiter, window, classify)
 	}
 	stepUp := auth.StepUpMiddleware(h.deps.TokenManager)
+	get := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
+		if !h.routeExcluded(fiber.MethodGet, fullPath) {
+			router.Get(path, handlers[0], handlers[1:]...)
+		}
+	}
+	post := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
+		if !h.routeExcluded(fiber.MethodPost, fullPath) {
+			router.Post(path, handlers[0], handlers[1:]...)
+		}
+	}
 
 	// Auth (public; endpoint-specific throttles blunt credential-stuffing and
 	// email workflow abuse without applying one coarse limit to every route).
 	authGroup := v1.Group("/auth")
-	authGroup.Post("/register",
+	post(authGroup, "/api/v1/auth/register", "/register",
 		h.Register,
 		authRL(authRegisterWindow, middleware.AuthIPRateDecision("auth:register:ip", authRegisterIPLimit)))
-	authGroup.Post("/login",
+	post(authGroup, "/api/v1/auth/login", "/login",
 		h.Login,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:ip", authLoginIPLimit)))
 	authGroup.Post("/login/2fa",
@@ -213,16 +241,16 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	authGroup.Post("/verify", h.VerifyAuth, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	authGroup.Post("/verify/passkey/begin", h.BeginPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	authGroup.Post("/verify/passkey/finish", h.FinishPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
-	authGroup.Post("/refresh", h.RefreshToken, publicAuthRL)
-	authGroup.Post("/logout", h.Logout, publicAuthRL)
+	post(authGroup, "/api/v1/auth/refresh", "/refresh", h.RefreshToken, publicAuthRL)
+	post(authGroup, "/api/v1/auth/logout", "/logout", h.Logout, publicAuthRL)
 	authGroup.Post("/resend-verification",
 		h.ResendEmailVerification,
 		authRL(authRecoveryWindow, middleware.AuthIPRateDecision("auth:resend:ip", authRecoveryIPLimit)))
-	authGroup.Post("/verify-email", h.VerifyEmail, publicAuthRL)
-	authGroup.Post("/forgot-password",
+	post(authGroup, "/api/v1/auth/verify-email", "/verify-email", h.VerifyEmail, publicAuthRL)
+	post(authGroup, "/api/v1/auth/forgot-password", "/forgot-password",
 		h.ForgotPassword,
 		authRL(authRecoveryWindow, middleware.AuthIPRateDecision("auth:forgot:ip", authRecoveryIPLimit)))
-	authGroup.Post("/reset-password",
+	post(authGroup, "/api/v1/auth/reset-password", "/reset-password",
 		h.ResetPassword,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:reset:ip", authResetIPLimit)))
 
@@ -241,8 +269,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// Devices (JWT-protected)
 	devices := v1.Group("/devices", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
-	devices.Get("/", h.ListDevices)
-	devices.Post("/:uuid/revoke", h.RevokeDevice, stepUp)
+	get(devices, "/api/v1/devices/", "/", h.ListDevices)
+	post(devices, "/api/v1/devices/:uuid/revoke", "/:uuid/revoke", h.RevokeDevice, stepUp)
 	devices.Get("/revocations", h.ListRevocations)
 
 	// Account security (JWT-protected)
@@ -260,7 +288,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
 	// Quota (JWT-protected)
-	v1.Get("/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
+	get(v1, "/api/v1/quota", "/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
 
 	// Admin security stats for the v1 API surface.
 	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
@@ -278,12 +306,12 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
-	billing.Post("/checkout", h.CreateCheckout)
-	billing.Post("/portal", h.CreatePortalSession)
-	billing.Get("/subscription", h.GetSubscription)
-	billing.Get("/invoices", h.ListInvoices)
+	post(billing, "/api/v1/billing/checkout", "/checkout", h.CreateCheckout)
+	post(billing, "/api/v1/billing/portal", "/portal", h.CreatePortalSession)
+	get(billing, "/api/v1/billing/subscription", "/subscription", h.GetSubscription)
+	get(billing, "/api/v1/billing/invoices", "/invoices", h.ListInvoices)
 	// Stripe webhook has its own signature verification
-	v1.Post("/billing/webhook", h.StripeWebhook)
+	post(v1, "/api/v1/billing/webhook", "/billing/webhook", h.StripeWebhook)
 
 	// WebSocket
 	app.Get("/ws/push", h.WebSocketUpgrade)
@@ -291,8 +319,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// Admin
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
-	admin.Get("/users", h.AdminListUsers)
-	admin.Get("/stats", h.AdminStats)
+	get(admin, "/admin/users", "/users", h.AdminListUsers)
+	get(admin, "/admin/stats", "/stats", h.AdminStats)
 	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
 	admin.Get("/options", h.AdminListOptions)
 	admin.Put("/options/:key", h.AdminSetOption)

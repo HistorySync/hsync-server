@@ -262,7 +262,8 @@ var upgrader = websocket.Upgrader{
 }
 
 // UpgradeHandler is a Fiber-compatible handler that upgrades HTTP to WebSocket.
-// The request should include a `token` query parameter with a valid device token.
+// The request should include a valid device token in Authorization. The legacy
+// `token` query parameter is still accepted for older clients.
 func (h *Hub) UpgradeHandler(c fiber.Ctx) error {
 	// Fiber v3 uses fasthttp; adapt gorilla/websocket via fasthttpadaptor.
 	fasthttpadaptor.NewFastHTTPHandlerFunc(
@@ -272,7 +273,7 @@ func (h *Hub) UpgradeHandler(c fiber.Ctx) error {
 				return
 			}
 
-			token := strings.TrimSpace(r.URL.Query().Get("token"))
+			token := deviceTokenFromRequest(r)
 			if token == "" {
 				http.Error(w, "missing device token", http.StatusUnauthorized)
 				return
@@ -303,4 +304,26 @@ func (h *Hub) UpgradeHandler(c fiber.Ctx) error {
 	)(c.RequestCtx())
 
 	return nil
+}
+
+func deviceTokenFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if token := bearerToken(r.Header.Get("Authorization")); token != "" {
+		return token
+	}
+	return strings.TrimSpace(r.URL.Query().Get("token"))
+}
+
+func bearerToken(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return ""
+	}
+	const prefix = "bearer "
+	if len(header) >= len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
+		return strings.TrimSpace(header[len(prefix):])
+	}
+	return header
 }

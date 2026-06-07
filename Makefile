@@ -14,7 +14,7 @@ LDFLAGS := -s -w \
 
 # Targets
 
-.PHONY: all build run test test-integration lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-smoke test-integration lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -31,6 +31,10 @@ run: build
 ## test: Run all tests with race detection
 test:
 	go test -race -count=1 -timeout 60s ./...
+
+## test-smoke: Run production readiness smoke checks (requires Docker)
+test-smoke:
+	go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server
 
 ## test-integration: Run DB-backed integration tests (requires a running Docker daemon)
 test-integration:

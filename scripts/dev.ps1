@@ -6,6 +6,7 @@ param(
         "run",
         "test",
         "test-no-race",
+        "test-smoke",
         "test-integration",
         "lint",
         "clean",
@@ -84,6 +85,7 @@ Tasks:
   run                  build and run the server
   test                 run unit tests with -race
   test-no-race         run unit tests without -race
+  test-smoke           run production readiness smoke checks
   test-integration     run DB-backed integration tests
   lint                 run golangci-lint
   clean                remove .\build
@@ -113,6 +115,7 @@ switch ($Task) {
     }
     "test" { Invoke-External "go" @("test", "-race", "-count=1", "-timeout", "60s", "./...") }
     "test-no-race" { Invoke-External "go" @("test", "-count=1", "-timeout", "60s", "./...") }
+    "test-smoke" { Invoke-External "go" @("test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server") }
     "test-integration" { Invoke-External "go" @("test", "-tags=integration", "-count=1", "-timeout", "300s", "./pkg/repository/...") }
     "lint" { Invoke-External "golangci-lint" @("run", "./...") }
     "clean" {

@@ -1136,8 +1136,8 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	// so an over-quota upload is rejected without ever touching S3. The
 	// conditional UPDATE in TryAddBundleUsage is the single authoritative,
 	// race-safe check. (EE reserved capacity through the hook above and settles
-	// below.) Trade-off: usage is counted before the metadata row exists, so a
-	// crash before Create over-counts the user by one bundle until usage is
+	// below.) Trade-off: usage is counted before the blob exists, so a crash
+	// before rollback can temporarily over-count the user until usage is
 	// recomputed -- bounded, and preferred over writing the blob then racing.
 	storageLimit := int64(0)
 	if !guard.active() {
@@ -1156,18 +1156,6 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 		observability.RecordQuotaReservation("bundle", "success")
 	}
 
-	// Store the blob
-	key := storage.BundleKey(userID.String(), input.BundleID)
-	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
-		if !guard.active() {
-			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
-			observability.RecordQuotaReservation("bundle", "rollback")
-		}
-		uploadResult = "storage_error"
-		return nil, fmt.Errorf("store bundle: %w", err)
-	}
-
-	// Write metadata
 	meta := &model.BundleMeta{
 		BundleID:           input.BundleID,
 		UserID:             userID,
@@ -1181,13 +1169,22 @@ func (s *BundleService) UploadBundle(ctx context.Context, userID uuid.UUID, inpu
 	}
 
 	if err := s.repos.Bundles.Create(ctx, meta); err != nil {
-		// Rollback: delete the uploaded blob and release the reservation.
-		_ = s.blobStore.Delete(ctx, key)
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
 			observability.RecordQuotaReservation("bundle", "rollback")
 		}
 		return nil, fmt.Errorf("create bundle meta: %w", err)
+	}
+
+	key := storage.BundleKey(userID.String(), input.BundleID)
+	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
+		_ = s.repos.Bundles.HardDelete(ctx, userID, input.BundleID)
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveBundleUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("bundle", "rollback")
+		}
+		uploadResult = "storage_error"
+		return nil, fmt.Errorf("store bundle: %w", err)
 	}
 
 	if guard.active() {
@@ -1329,16 +1326,6 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		observability.RecordQuotaReservation("snapshot", "success")
 	}
 
-	key := storage.SnapshotKey(userID.String(), input.SnapshotID)
-	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
-		if !guard.active() {
-			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
-			observability.RecordQuotaReservation("snapshot", "rollback")
-		}
-		uploadResult = "storage_error"
-		return nil, fmt.Errorf("store snapshot: %w", err)
-	}
-
 	meta := &model.SnapshotMeta{
 		SnapshotID:    input.SnapshotID,
 		UserID:        userID,
@@ -1348,12 +1335,22 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		KeyGeneration: input.KeyGeneration,
 	}
 	if err := s.repos.Snapshots.Create(ctx, meta); err != nil {
-		_ = s.blobStore.Delete(ctx, key)
 		if !guard.active() {
 			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
 			observability.RecordQuotaReservation("snapshot", "rollback")
 		}
 		return nil, fmt.Errorf("create snapshot meta: %w", err)
+	}
+
+	key := storage.SnapshotKey(userID.String(), input.SnapshotID)
+	if err := s.blobStore.Put(ctx, key, input.Reader, input.SizeBytes, input.ContentType); err != nil {
+		_ = s.repos.Snapshots.HardDelete(ctx, userID, input.SnapshotID)
+		if !guard.active() {
+			_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+			observability.RecordQuotaReservation("snapshot", "rollback")
+		}
+		uploadResult = "storage_error"
+		return nil, fmt.Errorf("store snapshot: %w", err)
 	}
 
 	if guard.active() {

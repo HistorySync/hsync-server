@@ -176,7 +176,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// API v1
 	v1 := app.Group("/api/v1")
-	v1.Use(h.maintenanceModeMiddleware)
+	h.UseAPIMaintenanceMiddleware(v1)
 
 	// Rate limiting: per-user (tier MaxRPM) on authenticated groups, and
 	// endpoint-specific controls on public auth endpoints. A nil RateLimiter
@@ -310,6 +310,13 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin.Post("/ops/check", h.AdminOpsCheck)
 	admin.Post("/ops/consistency", h.AdminOpsConsistency)
 	admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
+}
+
+// UseAPIMaintenanceMiddleware mounts the CE maintenance gate on an API group.
+// Enterprise registers its routes before CE fallback routes, so it calls this
+// before mounting any /api/v1 handlers to keep maintenance behavior consistent.
+func (h *Handlers) UseAPIMaintenanceMiddleware(api fiber.Router) {
+	api.Use(h.maintenanceModeMiddleware)
 }
 
 // Health

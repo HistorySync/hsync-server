@@ -10,6 +10,18 @@
 version: "3.9"
 
 services:
+  migrate:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["migrate", "up"]
+    environment:
+      - HSYNC_DATABASE_URL=postgres://hsync:${DB_PASSWORD:-hsync}@postgres:5432/hsync?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   server:
     build:
       context: ..
@@ -29,6 +41,8 @@ services:
       - HSYNC_STRIPE_DISABLED=true
       - HSYNC_LOG_LEVEL=info
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       minio:

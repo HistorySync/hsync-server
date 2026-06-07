@@ -223,6 +223,11 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 			router.Post(path, handlers[0], handlers[1:]...)
 		}
 	}
+	put := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
+		if !h.routeExcluded(fiber.MethodPut, fullPath) {
+			router.Put(path, handlers[0], handlers[1:]...)
+		}
+	}
 
 	// Auth (public; endpoint-specific throttles blunt credential-stuffing and
 	// email workflow abuse without applying one coarse limit to every route).
@@ -292,17 +297,17 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// Admin security stats for the v1 API surface.
 	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
-	v1Admin.Get("/security/stats", h.AdminSecurityStats)
-	v1Admin.Get("/notifications/failures", h.AdminNotificationFailures)
-	v1Admin.Post("/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
-	v1Admin.Post("/notifications/failures/retry", h.AdminRetryNotificationFailures)
-	v1Admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
-	v1Admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
-	v1Admin.Get("/ops/summary", h.AdminOpsSummary)
-	v1Admin.Get("/ops/history", h.AdminOpsHistory)
-	v1Admin.Post("/ops/check", h.AdminOpsCheck)
-	v1Admin.Post("/ops/consistency", h.AdminOpsConsistency)
-	v1Admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
+	get(v1Admin, "/api/v1/admin/security/stats", "/security/stats", h.AdminSecurityStats)
+	get(v1Admin, "/api/v1/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
+	post(v1Admin, "/api/v1/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
+	post(v1Admin, "/api/v1/admin/notifications/failures/retry", "/notifications/failures/retry", h.AdminRetryNotificationFailures)
+	post(v1Admin, "/api/v1/admin/notifications/failures/:id/requeue", "/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
+	post(v1Admin, "/api/v1/admin/notifications/failures/:id/discard", "/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
+	get(v1Admin, "/api/v1/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
+	get(v1Admin, "/api/v1/admin/ops/history", "/ops/history", h.AdminOpsHistory)
+	post(v1Admin, "/api/v1/admin/ops/check", "/ops/check", h.AdminOpsCheck)
+	post(v1Admin, "/api/v1/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency)
+	get(v1Admin, "/api/v1/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 
 	// Billing (JWT-protected, except webhook)
 	billing := v1.Group("/billing", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -321,23 +326,23 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
 	get(admin, "/admin/users", "/users", h.AdminListUsers)
 	get(admin, "/admin/stats", "/stats", h.AdminStats)
-	admin.Post("/users/:id/recalculate-quota", h.AdminRecalculateQuota)
-	admin.Get("/options", h.AdminListOptions)
-	admin.Put("/options/:key", h.AdminSetOption)
-	admin.Get("/settings", h.AdminListSettings)
-	admin.Put("/settings/:key", h.AdminSetSetting)
-	admin.Get("/audit-logs", h.AdminListAuditLogs)
-	admin.Get("/notifications/failures", h.AdminNotificationFailures)
-	admin.Post("/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
-	admin.Post("/notifications/failures/retry", h.AdminRetryNotificationFailures)
-	admin.Post("/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
-	admin.Post("/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
-	admin.Get("/error-codes", h.AdminErrorCodes)
-	admin.Get("/ops/summary", h.AdminOpsSummary)
-	admin.Get("/ops/history", h.AdminOpsHistory)
-	admin.Post("/ops/check", h.AdminOpsCheck)
-	admin.Post("/ops/consistency", h.AdminOpsConsistency)
-	admin.Get("/exports/operational-records", h.AdminExportOperationalRecords)
+	post(admin, "/admin/users/:id/recalculate-quota", "/users/:id/recalculate-quota", h.AdminRecalculateQuota)
+	get(admin, "/admin/options", "/options", h.AdminListOptions)
+	put(admin, "/admin/options/:key", "/options/:key", h.AdminSetOption)
+	get(admin, "/admin/settings", "/settings", h.AdminListSettings)
+	put(admin, "/admin/settings/:key", "/settings/:key", h.AdminSetSetting)
+	get(admin, "/admin/audit-logs", "/audit-logs", h.AdminListAuditLogs)
+	get(admin, "/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
+	post(admin, "/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
+	post(admin, "/admin/notifications/failures/retry", "/notifications/failures/retry", h.AdminRetryNotificationFailures)
+	post(admin, "/admin/notifications/failures/:id/requeue", "/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
+	post(admin, "/admin/notifications/failures/:id/discard", "/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
+	get(admin, "/admin/error-codes", "/error-codes", h.AdminErrorCodes)
+	get(admin, "/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
+	get(admin, "/admin/ops/history", "/ops/history", h.AdminOpsHistory)
+	post(admin, "/admin/ops/check", "/ops/check", h.AdminOpsCheck)
+	post(admin, "/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency)
+	get(admin, "/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 }
 
 // UseAPIMaintenanceMiddleware mounts the CE maintenance gate on an API group.

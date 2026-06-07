@@ -1298,22 +1298,13 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		return nil, ErrUserNotFound
 	}
 	limits := model.TierLimits(user.Tier)
-	if count >= limits.MaxSnapshots {
-		pruned, err := s.repos.Snapshots.PruneOldest(ctx, userID, limits.MaxSnapshots-1)
-		if err != nil {
-			return nil, fmt.Errorf("prune old snapshots: %w", err)
-		}
-		for _, snapshot := range pruned {
-			if err := s.repos.Quota.RemoveSnapshotUsage(ctx, userID, snapshot.SizeBytes); err != nil {
-				return nil, fmt.Errorf("update snapshot quota usage after prune: %w", err)
-			}
-		}
-	}
 
-	// CE quota enforcement: atomically reserve storage after pruning (so freed
-	// space counts) and before writing the blob, rejecting an over-quota upload
-	// without touching S3. See UploadBundle for the crash-window trade-off. (EE
-	// reserved via the hook above and settles below.)
+	// CE quota enforcement: atomically reserve storage before writing the blob,
+	// rejecting an over-quota upload without touching S3. Old snapshots are
+	// pruned only after the replacement snapshot has been fully stored, so a
+	// failed upload never reduces the user's restore points. See UploadBundle
+	// for the crash-window trade-off. (EE reserved via the hook above and
+	// settles below.)
 	if !guard.active() {
 		ok, err := s.quota.TryAddSnapshotUsage(ctx, userID, input.SizeBytes, limits.StorageLimitBytes)
 		if err != nil {
@@ -1351,6 +1342,24 @@ func (s *SnapshotService) UploadSnapshot(ctx context.Context, userID uuid.UUID, 
 		}
 		uploadResult = "storage_error"
 		return nil, fmt.Errorf("store snapshot: %w", err)
+	}
+
+	if count >= limits.MaxSnapshots {
+		pruned, err := s.repos.Snapshots.PruneOldest(ctx, userID, limits.MaxSnapshots)
+		if err != nil {
+			_ = s.repos.Snapshots.HardDelete(ctx, userID, input.SnapshotID)
+			_ = s.blobStore.Delete(ctx, key)
+			if !guard.active() {
+				_ = s.repos.Quota.RemoveSnapshotUsage(ctx, userID, input.SizeBytes)
+				observability.RecordQuotaReservation("snapshot", "rollback")
+			}
+			return nil, fmt.Errorf("prune old snapshots: %w", err)
+		}
+		for _, snapshot := range pruned {
+			if err := s.repos.Quota.RemoveSnapshotUsage(ctx, userID, snapshot.SizeBytes); err != nil {
+				return nil, fmt.Errorf("update snapshot quota usage after prune: %w", err)
+			}
+		}
 	}
 
 	if guard.active() {

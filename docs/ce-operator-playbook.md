@@ -36,7 +36,9 @@ already exists.
 
 ### Required operator inputs
 
-- `admin_key` must be configured or `/admin/*` returns forbidden.
+- `admin_key` must be configured or `/admin/*` returns forbidden. Use a long
+  random value and keep the admin surface behind private networking or a trusted
+  reverse proxy.
 - The web console must be enabled (`web_enabled=true`) to use `/console`.
 - Metrics must be enabled (`metrics_enabled=true`) to scrape Prometheus data.
 - Background processing must stay enabled (`background_tasks_enabled=true`) if
@@ -85,7 +87,8 @@ The report never prints secret values. Secrets are shown only as `present`,
 CE preflight checks cover:
 
 - JWT signing key and `security_secret` decoding.
-- `admin_key` presence for admin and ops routes.
+- `admin_key` presence, obvious weak-format warnings, and admin route exposure
+  guidance.
 - PostgreSQL connectivity and Redis optional degraded mode.
 - Rate-limit fixed-window mode, limiter error fail mode, and Redis-unavailable
   fallback risk.
@@ -144,6 +147,12 @@ The CE console is a lightweight operator shell, not a separate frontend app.
 It is served directly by the server and does not persist the admin key in
 browser storage.
 
+CE intentionally keeps admin authentication simple: `/admin/*` and
+`/api/v1/admin/*` use `X-Admin-Key`, plus an admin-specific per-IP fixed-window
+rate limit. This is not an operator account, session, or RBAC model. Treat the
+admin key like a deployment secret and do not expose the admin surface directly
+to the public internet.
+
 ### Main console sections
 
 - Overview
@@ -168,6 +177,25 @@ browser storage.
 - `GET /admin/ops/summary`
 - `POST /admin/ops/check`
 - `POST /admin/ops/consistency`
+
+### Mutation safeguards
+
+High-risk admin mutations require an `Idempotency-Key` header in addition to
+`X-Admin-Key`:
+
+- Runtime option writes.
+- System setting writes.
+- User quota recalculation.
+- Notification retry, requeue, and discard actions.
+- Ops dependency and consistency checks.
+
+Notification outbox actions use the server idempotency store to replay matching
+requests. Other CE admin mutations require the header as an operator safety
+guard and audit affordance, without adding the Enterprise operator/session/RBAC
+model.
+
+Admin routes use a dedicated `ce_admin` rate-limit policy before admin-key
+validation, so missing or invalid key attempts are throttled too.
 
 ### Common states
 
@@ -423,6 +451,15 @@ multi-instance risk. Metrics expose:
 
 When Redis is down, do not assume fleet-wide rate limiting still exists unless
 the fallback is `deny` or an external gateway enforces the same budget.
+
+Operational exposure checklist:
+
+- Admin: expose only over private network/VPN or a trusted reverse proxy path;
+  never rely on the admin key alone for internet-facing deployments.
+- Metrics: keep `/metrics` on an internal scrape path, use
+  `metrics_allowed_cidrs`, and avoid exposing it publicly.
+- WebSocket: configure `websocket_allowed_origins` for browser origins and size
+  per-process connection caps to the load balancer topology.
 
 ## 7. WebSocket Push Hardening
 

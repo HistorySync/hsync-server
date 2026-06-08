@@ -13,7 +13,9 @@ import (
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 
+	"github.com/historysync/hsync-server/migrations"
 	"github.com/historysync/hsync-server/pkg/config"
+	"github.com/historysync/hsync-server/pkg/migrate"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 )
@@ -60,6 +62,7 @@ func RunCE(ctx context.Context, cfg *config.Config, opts CEOptions) Report {
 	checkS3(ctx, &report, cfg)
 	report.Append(checkMetrics(cfg)...)
 	report.Append(checkSMTP(cfg), checkOpsAlerts(cfg))
+	checkMigrationReadiness(ctx, &report, pool, dbOK)
 	checkRuntimeSettings(ctx, &report, pool, dbOK)
 	return report
 }
@@ -494,6 +497,118 @@ func checkRuntimeSettings(ctx context.Context, report *Report, pool *pgxpool.Poo
 		"Self-service signups are disabled.",
 		"Confirm this is intended for the launch window; enable signups if public registration should be open."))
 	checkPasskey(ctx, report, settingsSvc)
+}
+
+func checkMigrationReadiness(ctx context.Context, report *Report, pool *pgxpool.Pool, dbOK bool) {
+	if !dbOK || pool == nil {
+		report.Add(Check{
+			ID:       "migration_readiness",
+			Scope:    "database",
+			Severity: SeverityWarn,
+			Message:  "Migration readiness could not be checked because PostgreSQL is unavailable.",
+			Action:   "Fix PostgreSQL connectivity, then run `hsync-server migrate status --json`.",
+		})
+		return
+	}
+	status, err := migrate.Status(ctx, pool, migrations.FS, "schema_migrations", "community")
+	if err != nil {
+		report.Add(Check{
+			ID:       "migration_readiness",
+			Scope:    "database",
+			Severity: SeverityError,
+			Message:  "Migration readiness could not be inspected.",
+			Action:   "Verify database permissions and rerun doctor.",
+			Details:  map[string]any{"error": err.Error()},
+		})
+		return
+	}
+	severity := SeverityOK
+	message := "Database migration tracking matches embedded CE migrations."
+	action := ""
+	if !status.Consistent {
+		severity = SeverityError
+		message = "Database migration tracking does not match embedded CE migrations."
+		action = "Deploy matching code and database versions before applying more migrations."
+	} else if len(status.Pending) > 0 {
+		severity = SeverityWarn
+		message = "CE migrations are pending."
+		action = "Run `hsync-server migrate up` during the upgrade window before starting normal traffic."
+	} else if !status.TrackingTableOk {
+		severity = SeverityWarn
+		message = "CE migration tracking table does not exist."
+		action = "Run `hsync-server migrate up` before starting the server."
+	}
+	report.Add(Check{
+		ID:       "migration_readiness",
+		Scope:    "database",
+		Severity: severity,
+		Message:  message,
+		Action:   action,
+		Details:  map[string]any{"status": status},
+	})
+
+	findings, err := migrate.Drift(ctx, pool, CEDriftRequirements())
+	if err != nil {
+		report.Add(Check{
+			ID:       "schema_drift",
+			Scope:    "database",
+			Severity: SeverityError,
+			Message:  "Schema drift could not be inspected.",
+			Action:   "Verify database permissions and rerun doctor.",
+			Details:  map[string]any{"error": err.Error()},
+		})
+		return
+	}
+	if len(findings) == 0 {
+		report.Add(Check{
+			ID:       "schema_drift",
+			Scope:    "database",
+			Severity: SeverityOK,
+			Message:  "Required CE tables, columns, and indexes are present.",
+		})
+		return
+	}
+	driftSeverity := SeverityWarn
+	for _, finding := range findings {
+		if finding.Severity == "error" {
+			driftSeverity = SeverityError
+			break
+		}
+	}
+	report.Add(Check{
+		ID:       "schema_drift",
+		Scope:    "database",
+		Severity: driftSeverity,
+		Message:  "Required CE schema objects are missing.",
+		Action:   "Run `hsync-server migrate up`; if drift remains, restore from a matching backup or repair the schema manually.",
+		Details:  map[string]any{"findings": findings},
+	})
+}
+
+func CEDriftRequirements() []migrate.SchemaRequirement {
+	return []migrate.SchemaRequirement{
+		{Kind: migrate.SchemaRequirementTable, Table: "users", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "bundles", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "snapshots", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "system_settings", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "notification_outbox", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "passkey_credentials", Severity: "error"},
+		{Kind: migrate.SchemaRequirementTable, Table: "ops_check_runs", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "users", Name: "email", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "users", Name: "password_hash", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "users", Name: "deleted_at", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "bundles", Name: "bundle_id", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "bundles", Name: "key_generation", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "snapshots", Name: "snapshot_id", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "system_settings", Name: "key", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "notification_outbox", Name: "status", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "passkey_credentials", Name: "credential_id", Severity: "error"},
+		{Kind: migrate.SchemaRequirementColumn, Table: "ops_check_runs", Name: "run_type", Severity: "error"},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_users_email_lower_unique", Severity: "error"},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_bundles_device_lamport", Severity: "warn", Action: "Run migrate up or recreate the index before accepting high-volume sync traffic."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_notification_outbox_due", Severity: "warn", Action: "Run migrate up or recreate the index before enabling notification workers."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_ops_check_runs_recent", Severity: "warn", Action: "Run migrate up or recreate the index before relying on ops history queries."},
+	}
 }
 
 func settingBoolCheck(id, scope string, value bool, err error, okMessage, warnMessage, action string) Check {

@@ -141,3 +141,83 @@ func TestValidateTrackingTable(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildStatusPlansPendingAndRollback(t *testing.T) {
+	all := []Migration{
+		{Version: 1, Name: "initial"},
+		{Version: 2, Name: "settings"},
+		{Version: 3, Name: "passkeys"},
+	}
+	applied := []AppliedMigration{
+		{Version: 1, Name: "initial"},
+		{Version: 2, Name: "settings"},
+	}
+
+	status := BuildStatus(all, applied, "schema_migrations", "community", true)
+	if !status.Consistent {
+		t.Fatalf("Consistent = false, problems = %#v", status.Problems)
+	}
+	if len(status.Pending) != 1 || status.Pending[0].Version != 3 {
+		t.Fatalf("Pending = %#v, want version 3", status.Pending)
+	}
+	if len(status.RollbackAvailable) != 2 || status.RollbackAvailable[0].Version != 2 || status.RollbackAvailable[1].Version != 1 {
+		t.Fatalf("RollbackAvailable = %#v, want versions 2,1", status.RollbackAvailable)
+	}
+}
+
+func TestBuildStatusDetectsUnknownAppliedMigration(t *testing.T) {
+	status := BuildStatus(
+		[]Migration{{Version: 1, Name: "initial"}},
+		[]AppliedMigration{{Version: 1, Name: "initial"}, {Version: 2, Name: "future"}},
+		"schema_migrations",
+		"community",
+		true,
+	)
+	if status.Consistent {
+		t.Fatal("Consistent = true, want false for unknown applied migration")
+	}
+	if len(status.Problems) != 1 || status.Problems[0].Severity != "error" {
+		t.Fatalf("Problems = %#v, want one error", status.Problems)
+	}
+	if len(status.RollbackAvailable) != 1 || status.RollbackAvailable[0].Version != 1 {
+		t.Fatalf("RollbackAvailable = %#v, want only known version 1", status.RollbackAvailable)
+	}
+}
+
+func TestBuildStatusDetectsNameMismatch(t *testing.T) {
+	status := BuildStatus(
+		[]Migration{{Version: 1, Name: "initial"}},
+		[]AppliedMigration{{Version: 1, Name: "renamed"}},
+		"schema_migrations",
+		"community",
+		true,
+	)
+	if status.Consistent {
+		t.Fatal("Consistent = true, want false for migration name mismatch")
+	}
+	if len(status.Problems) != 1 {
+		t.Fatalf("Problems = %#v, want one problem", status.Problems)
+	}
+}
+
+func TestBuildStatusTrackingTableMissingPlansAllPending(t *testing.T) {
+	status := BuildStatus(
+		[]Migration{{Version: 1, Name: "initial"}, {Version: 2, Name: "settings"}},
+		nil,
+		"schema_migrations",
+		"community",
+		false,
+	)
+	if status.TrackingTableOk {
+		t.Fatal("TrackingTableOk = true, want false")
+	}
+	if len(status.Pending) != 2 {
+		t.Fatalf("Pending = %#v, want all migrations", status.Pending)
+	}
+	if len(status.RollbackAvailable) != 0 {
+		t.Fatalf("RollbackAvailable = %#v, want empty", status.RollbackAvailable)
+	}
+	if len(status.Problems) != 1 || status.Problems[0].Severity != "warn" {
+		t.Fatalf("Problems = %#v, want one warn", status.Problems)
+	}
+}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"time"
 
@@ -20,6 +22,8 @@ import (
 //
 //	hsync-server migrate up             Apply all pending migrations
 //	hsync-server migrate down [n]       Roll back the last n migrations (default 1)
+//	hsync-server migrate status [--json] Show applied, pending, and rollback plans
+//	hsync-server migrate plan            Show the upgrade plan without applying it
 //	hsync-server migrate create <name>  Create a new up/down migration file pair
 func runMigrate(args []string) int {
 	if len(args) == 0 {
@@ -41,6 +45,10 @@ func runMigrate(args []string) int {
 			n = parsed
 		}
 		return migrateUpOrDown(false, n)
+	case "status":
+		return migrateStatus(args[1:], false)
+	case "plan":
+		return migrateStatus(args[1:], true)
 	case "create":
 		if len(args) < 2 {
 			log.Error().Msg("migrate create: missing migration name")
@@ -59,6 +67,58 @@ func runMigrate(args []string) int {
 		printMigrateUsage()
 		return 2
 	}
+}
+
+func migrateStatus(args []string, forceHuman bool) int {
+	jsonOutput := false
+	for _, arg := range args {
+		switch arg {
+		case "--json", "-json":
+			jsonOutput = true
+		default:
+			log.Error().Msgf("migrate status: unknown argument %q", arg)
+			return 2
+		}
+	}
+	if forceHuman {
+		jsonOutput = false
+	}
+
+	cfg, err := config.LoadForMigrations()
+	if err != nil {
+		log.Error().Err(err).Msg("failed to load config")
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := repository.NewPGXPool(ctx, cfg.DatabaseURL)
+	if err != nil {
+		log.Error().Err(err).Msg("failed to connect to postgresql")
+		return 1
+	}
+	defer pool.Close()
+
+	status, err := migrate.Status(ctx, pool, migrations.FS, "schema_migrations", "community")
+	if err != nil {
+		log.Error().Err(err).Msg("migrate status failed")
+		return 1
+	}
+	if jsonOutput {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(status); err != nil {
+			log.Error().Err(err).Msg("write migrate status failed")
+			return 1
+		}
+		return 0
+	}
+	printMigrationStatus(status)
+	if !status.Consistent {
+		return 1
+	}
+	return 0
 }
 
 func migrateUpOrDown(up bool, n int) int {
@@ -111,5 +171,39 @@ func printMigrateUsage() {
 	fmt.Println("usage:")
 	fmt.Println("  hsync-server migrate up             Apply all pending migrations")
 	fmt.Println("  hsync-server migrate down [n]       Roll back the last n migrations (default 1)")
+	fmt.Println("  hsync-server migrate status [--json] Show applied, pending, and rollback plans")
+	fmt.Println("  hsync-server migrate plan            Show the upgrade plan without applying it")
 	fmt.Println("  hsync-server migrate create <name>  Create a new up/down migration file pair")
+}
+
+func printMigrationStatus(status migrate.StatusReport) {
+	fmt.Printf("Migration status for %s (%s)\n", status.Scope, status.TrackingTable)
+	fmt.Printf("tracking_table_ok=%v consistent=%v applied=%d pending=%d rollback_available=%d\n",
+		status.TrackingTableOk,
+		status.Consistent,
+		len(status.Applied),
+		len(status.Pending),
+		len(status.RollbackAvailable),
+	)
+	if len(status.Pending) > 0 {
+		fmt.Println("\npending:")
+		for _, m := range status.Pending {
+			fmt.Printf("  %03d_%s\n", m.Version, m.Name)
+		}
+	}
+	if len(status.RollbackAvailable) > 0 {
+		fmt.Println("\nrollback_available:")
+		for _, m := range status.RollbackAvailable {
+			fmt.Printf("  %03d_%s\n", m.Version, m.Name)
+		}
+	}
+	if len(status.Problems) > 0 {
+		fmt.Println("\nproblems:")
+		for _, problem := range status.Problems {
+			fmt.Printf("  [%s] %s\n", problem.Severity, problem.Message)
+			if problem.Action != "" {
+				fmt.Printf("    action: %s\n", problem.Action)
+			}
+		}
+	}
 }

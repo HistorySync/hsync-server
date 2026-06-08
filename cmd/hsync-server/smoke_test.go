@@ -30,6 +30,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/migrate"
 	"github.com/historysync/hsync-server/pkg/observability"
+	"github.com/historysync/hsync-server/pkg/preflight"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -54,6 +55,7 @@ func TestCEProductionReadinessSmoke(t *testing.T) {
 		t.Fatalf("applied migrations = %d, want %d", len(applied), len(allMigrations))
 	}
 	assertSmokeMigrationRows(t, ctx, pool, len(allMigrations))
+	assertSmokeMigrationStatus(t, ctx, pool)
 
 	app := newCESmokeApp(t, pool)
 
@@ -208,6 +210,24 @@ func assertSmokeMigrationRows(t *testing.T, ctx context.Context, pool *pgxpool.P
 	}
 	if got != want {
 		t.Fatalf("schema_migrations rows = %d, want %d", got, want)
+	}
+}
+
+func assertSmokeMigrationStatus(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
+	t.Helper()
+	status, err := migrate.Status(ctx, pool, migrations.FS, "schema_migrations", "community")
+	if err != nil {
+		t.Fatalf("migrate status: %v", err)
+	}
+	if !status.Consistent || len(status.Pending) != 0 || len(status.Applied) == 0 {
+		t.Fatalf("unexpected migration status: %#v", status)
+	}
+	findings, err := migrate.Drift(ctx, pool, preflight.CEDriftRequirements())
+	if err != nil {
+		t.Fatalf("schema drift: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("schema drift findings: %#v", findings)
 	}
 }
 

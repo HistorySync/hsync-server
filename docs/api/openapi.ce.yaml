@@ -38,7 +38,7 @@ components:
       in: header
       name: X-Admin-Key
       description: Self-hosted CE admin bootstrap key for `/admin/*` and `/api/v1/admin/*`.
-    operatorStepUp:
+    stepUpVerification:
       type: apiKey
       in: header
       name: X-HSync-Verification
@@ -414,6 +414,117 @@ components:
         webhook_url:
           type: string
           format: uri
+    PrivacyExport:
+      type: object
+      required:
+        - generated_at
+        - includes_blob_contents
+        - parses_bundle_or_snapshots
+        - account
+        - devices
+        - quota
+        - bundles
+        - snapshots
+        - notification_preferences
+        - audit
+        - retention
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        includes_blob_contents:
+          type: boolean
+          const: false
+        parses_bundle_or_snapshots:
+          type: boolean
+          const: false
+        account:
+          type: object
+          additionalProperties: true
+        devices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        quota:
+          type: object
+          additionalProperties: true
+        bundles:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        snapshots:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        notification_preferences:
+          type: object
+          additionalProperties: true
+        audit:
+          type: object
+          additionalProperties: true
+        retention:
+          type: object
+          required: [grace_period_seconds]
+          properties:
+            grace_period_seconds:
+              type: integer
+              format: int64
+    AccountDeletionPolicyReason:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        review:
+          type: boolean
+    AccountDeletionResult:
+      type: object
+      required:
+        - status
+        - retention_grace_seconds
+        - policy
+        - revoked_refresh_tokens
+        - revoked_device_tokens
+        - removed_two_factor
+        - removed_passkeys
+        - expired_session_challenges
+      properties:
+        status:
+          type: string
+          enum: [deleted, blocked, review_required, pending]
+        deleted_at:
+          type: string
+          format: date-time
+        retention_grace_seconds:
+          type: integer
+          format: int64
+        policy:
+          type: object
+          required: [allowed, requires_review]
+          properties:
+            allowed:
+              type: boolean
+            requires_review:
+              type: boolean
+            reasons:
+              type: array
+              items:
+                $ref: '#/components/schemas/AccountDeletionPolicyReason'
+        revoked_refresh_tokens:
+          type: boolean
+        revoked_device_tokens:
+          type: boolean
+        removed_two_factor:
+          type: boolean
+        removed_passkeys:
+          type: boolean
+        expired_session_challenges:
+          type: boolean
     Device:
       type: object
       required:
@@ -1891,6 +2002,55 @@ paths:
         '204':
           $ref: '#/components/responses/NoContent'
         '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/privacy-export:
+    get:
+      tags: [Account Security]
+      summary: Export current account privacy metadata
+      operationId: ceExportPrivacyMetadata
+      description: |
+        Returns account metadata, devices, quota, bundle and snapshot metadata,
+        notification preferences, and a bounded audit summary. CE does not
+        include encrypted blob contents or parse bundle/snapshot payloads.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Account privacy metadata export.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyExport'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/account:
+    delete:
+      tags: [Account Security]
+      summary: Delete the current account
+      operationId: ceDeleteAccount
+      description: |
+        Requires a bearer token and an `X-HSync-Verification` step-up token.
+        CE owns the generic soft-delete workflow: it soft-deletes the user,
+        revokes refresh tokens and device tokens, removes 2FA/passkeys, expires
+        passkey session challenges, and writes request/result audit events. Blob
+        hard deletion remains retention-cleanup work. Enterprise deployments may
+        inject an account deletion policy that blocks or requires operator review
+        without adding payment or team logic to CE.
+      security:
+        - bearerAuth: []
+          stepUpVerification: []
+      responses:
+        '200':
+          description: Account deletion completed or scheduled under retention.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeletionResult'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
           $ref: '#/components/responses/ErrorResponse'
         '404':
           $ref: '#/components/responses/ErrorResponse'

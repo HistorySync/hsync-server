@@ -87,6 +87,8 @@ CE preflight checks cover:
 - JWT signing key and `security_secret` decoding.
 - `admin_key` presence for admin and ops routes.
 - PostgreSQL connectivity and Redis optional degraded mode.
+- Rate-limit fixed-window mode, limiter error fail mode, and Redis-unavailable
+  fallback risk.
 - CE migration readiness: `schema_migrations` consistency with embedded
   migrations, pending migration count, and rollback availability.
 - CE schema drift for required tables, columns, and indexes used by auth, sync,
@@ -358,6 +360,8 @@ The route only exists when `metrics_enabled=true`.
 - `hsync_notification_delivery_total`
 - `hsync_idempotency_events_total`
 - `hsync_readiness_dependency_status`
+- `hsync_rate_limit_errors_total`
+- `hsync_rate_limit_redis_fallback_active`
 - `hsync_websocket_connections_active`
 - `hsync_websocket_upgrade_rejections_total`
 
@@ -387,7 +391,40 @@ The route only exists when `metrics_enabled=true`.
 4. Check scheduler metrics if the symptom involves periodic work.
 5. Check notification delivery metrics if the symptom involves outbox failures.
 
-## 6. WebSocket Push Hardening
+## 6. Rate-Limit Degradation
+
+CE uses the shared fixed-window limiter for public auth and authenticated API
+budgets. With Redis available, counters are shared across server instances.
+Without Redis, `rate_limit_redis_unavailable_fallback` controls the startup
+fallback:
+
+- `memory`: use in-process fixed-window buckets. This preserves local throttling
+  for a single instance, but each instance counts independently in a fleet.
+- `deny`: fail closed for rate-limited routes until Redis is restored.
+- `disable`: remove limiter enforcement. Use only when a trusted gateway owns
+  equivalent rate limiting.
+
+Limiter backend errors during request handling follow fail-mode settings:
+
+- `rate_limit_fail_mode` is the default bucket behavior.
+- `rate_limit_public_auth_fail_mode` applies to public auth buckets such as
+  login, register, password reset, and verification-send limits.
+- `fail_open` allows the request and logs a warning.
+- `fail_closed` rejects the request with `RATE_LIMITED`.
+
+Doctor reports the active policy, the fixed-window algorithm, Redis-backed
+versus memory-backed scope, and whether fail-open or memory fallback creates a
+multi-instance risk. Metrics expose:
+
+- `hsync_rate_limit_errors_total{policy,fail_mode,action}` for limiter backend
+  errors.
+- `hsync_rate_limit_redis_fallback_active{mode}` when the process starts without
+  Redis and activates `memory`, `deny`, or `disable`.
+
+When Redis is down, do not assume fleet-wide rate limiting still exists unless
+the fallback is `deny` or an external gateway enforces the same budget.
+
+## 7. WebSocket Push Hardening
 
 The push endpoint is `GET /ws/push`. It authenticates with the per-device
 WebSocket token, preferably in `Authorization: Bearer <device_token>`. The

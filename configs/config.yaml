@@ -29,8 +29,21 @@ log_level: "info"
 # PostgreSQL connection
 database_url: "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable"
 
-# Redis connection (optional — rate limiting is disabled if unavailable)
+# Redis connection. When Redis is unavailable, rate limiting follows the
+# rate_limit_redis_unavailable_fallback setting below.
 redis_url: "redis://localhost:6379/0"
+
+# Rate-limit degradation policy. The limiter is fixed-window. Redis-backed
+# counters are shared across instances; memory fallback counters are per process.
+# fail_open preserves availability on limiter errors; fail_closed rejects
+# affected rate-limited requests with RATE_LIMITED.
+rate_limit_fail_mode: "fail_open"
+rate_limit_public_auth_fail_mode: "fail_open"
+# Enterprise reads these CE config keys when running hsync-enterprise.
+rate_limit_enterprise_admin_fail_mode: "fail_open"
+rate_limit_enterprise_billing_fail_mode: "fail_open"
+# Redis unavailable fallback: memory, deny, or disable.
+rate_limit_redis_unavailable_fallback: "memory"
 
 # S3-compatible object storage
 s3_endpoint: "localhost:9000"

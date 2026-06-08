@@ -28,6 +28,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/middleware"
 	"github.com/historysync/hsync-server/pkg/model"
@@ -48,6 +49,7 @@ type Deps struct {
 	Redis        *redis.Client // may be nil if Redis is unavailable
 	BlobStore    storage.BlobStorage
 	AdminKey     string
+	BuildInfo    buildinfo.Info
 	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
 	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
 	Turnstile    middleware.TurnstileConfig
@@ -321,7 +323,12 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 
 	// WebSocket
 	app.Get("/ws/push", h.WebSocketUpgrade)
-	app.Get("/api/meta/overview", h.WebOverview)
+	if !h.routeExcluded(fiber.MethodGet, "/api/meta/version") {
+		app.Get("/api/meta/version", h.MetaVersion)
+	}
+	if !h.routeExcluded(fiber.MethodGet, "/api/meta/overview") {
+		app.Get("/api/meta/overview", h.WebOverview)
+	}
 
 	// Admin
 	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
@@ -612,8 +619,9 @@ func (h *Handlers) WebOverview(c fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"status": status,
-		"checks": checks,
+		"status":     status,
+		"checks":     checks,
+		"build_info": h.buildInfo(),
 		"summary": fiber.Map{
 			"total_users":            len(users),
 			"active_devices":         activeDevices,
@@ -635,6 +643,21 @@ func (h *Handlers) WebOverview(c fiber.Ctx) error {
 			"admin":     "/admin/stats",
 		},
 	})
+}
+
+func (h *Handlers) MetaVersion(c fiber.Ctx) error {
+	return c.JSON(fiber.Map{"build_info": h.buildInfo()})
+}
+
+func (h *Handlers) buildInfo() buildinfo.Info {
+	if h.deps.BuildInfo.Version == "" && h.deps.BuildInfo.Commit == "" && h.deps.BuildInfo.BuildTime == "" && h.deps.BuildInfo.Edition == "" && h.deps.BuildInfo.SchemaVersion == 0 {
+		return buildinfo.Current()
+	}
+	info := h.deps.BuildInfo
+	if info.SchemaVersion == 0 {
+		info.SchemaVersion = buildinfo.LatestSchemaVersion()
+	}
+	return info
 }
 
 func (h *Handlers) ErrorHandler(c fiber.Ctx, err error) error {

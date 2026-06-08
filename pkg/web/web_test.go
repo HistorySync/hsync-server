@@ -166,6 +166,12 @@ func TestLandingPageIncludesRuntimeShell(t *testing.T) {
 	if !strings.Contains(body, `adminPath+"/ops/summary"`) {
 		t.Fatal("landing page missing ops summary endpoint")
 	}
+	if !strings.Contains(body, "/api/meta/version") {
+		t.Fatal("landing page missing version metadata endpoint")
+	}
+	if !strings.Contains(body, "Build info") {
+		t.Fatal("landing page missing build info panel")
+	}
 	if !strings.Contains(body, "/admin/notifications/failures") {
 		t.Fatal("landing page missing notification failures endpoint")
 	}

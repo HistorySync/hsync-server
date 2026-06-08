@@ -189,6 +189,9 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	if len(summary.Backup.Components) == 0 {
 		t.Fatal("summary backup guidance is empty")
 	}
+	if summary.BuildInfo.Edition != "community" || summary.BuildInfo.SchemaVersion == 0 {
+		t.Fatalf("summary build info = %+v, want community with schema version", summary.BuildInfo)
+	}
 
 	checkReq := httptest.NewRequest("POST", "/admin/ops/check", nil)
 	checkReq.Header.Set("X-Admin-Key", "secret")

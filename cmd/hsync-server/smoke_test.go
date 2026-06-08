@@ -24,6 +24,7 @@ import (
 
 	"github.com/historysync/hsync-server/migrations"
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/handler"
 	"github.com/historysync/hsync-server/pkg/middleware"
@@ -63,8 +64,9 @@ func TestCEProductionReadinessSmoke(t *testing.T) {
 	}{
 		{name: "health", path: "/healthz", assert: assertSmokeJSONField("status", "ok")},
 		{name: "readiness", path: "/readyz", assert: assertSmokeReadyz},
+		{name: "version", path: "/api/meta/version", assert: assertSmokeVersion},
 		{name: "overview", path: "/api/meta/overview", assert: assertSmokeOverview},
-		{name: "console", path: "/console", assert: assertSmokeBodyContains("HistorySync CE")},
+		{name: "console", path: "/console", assert: assertSmokeBodyContains("Build info")},
 		{name: "metrics", path: "/metrics", assert: assertSmokeBodyContains("hsync_http_requests_total")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -116,6 +118,7 @@ func newCESmokeApp(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 		DB:           pool,
 		BlobStore:    blobStore,
 		AdminKey:     "smoke-admin-key",
+		BuildInfo:    buildinfo.WithEdition("community"),
 		RateLimiter:  middleware.NewMemoryLimiter(),
 		Metrics: handler.MetricsConfig{
 			Enabled: true,
@@ -138,10 +141,30 @@ func newCESmokeApp(t *testing.T, pool *pgxpool.Pool) *fiber.App {
 		AppName:     "HistorySync CE",
 		ConsolePath: "/console",
 		Edition:     "community",
+		BuildInfo:   buildinfo.WithEdition("community"),
 		APIPrefix:   "/api/v1",
 		AdminPath:   "/admin",
 	})
 	return app
+}
+
+func assertSmokeVersion(t *testing.T, status int, body string) {
+	t.Helper()
+	if status != fiber.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", status, body)
+	}
+	var payload struct {
+		BuildInfo buildinfo.Info `json:"build_info"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("unmarshal version: %v; body=%s", err, body)
+	}
+	if payload.BuildInfo.Edition != "community" {
+		t.Fatalf("edition = %q, want community; body=%s", payload.BuildInfo.Edition, body)
+	}
+	if payload.BuildInfo.SchemaVersion == 0 {
+		t.Fatalf("schema_version = 0; body=%s", body)
+	}
 }
 
 func newSmokePostgresPool(t *testing.T, ctx context.Context) *pgxpool.Pool {

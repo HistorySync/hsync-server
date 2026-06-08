@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/provider"
@@ -70,6 +71,7 @@ type OpsAlertConfig struct {
 // Enterprise wrappers can provide narrow fakes.
 type OpsDeps struct {
 	Config           *config.Config
+	BuildInfo        buildinfo.Info
 	Repos            *repository.Repos
 	BlobStore        storage.BlobStorage
 	DatabasePing     PingFunc
@@ -86,6 +88,7 @@ type OpsDeps struct {
 // OpsService builds operator-facing summaries and dependency probes.
 type OpsService struct {
 	cfg          *config.Config
+	buildInfo    buildinfo.Info
 	repos        *repository.Repos
 	blobStore    storage.BlobStorage
 	databasePing PingFunc
@@ -123,6 +126,7 @@ func NewOpsService(deps OpsDeps) *OpsService {
 	}
 	return &OpsService{
 		cfg:          deps.Config,
+		buildInfo:    normalizeBuildInfo(deps.BuildInfo),
 		repos:        deps.Repos,
 		blobStore:    deps.BlobStore,
 		databasePing: deps.DatabasePing,
@@ -137,6 +141,16 @@ func NewOpsService(deps OpsDeps) *OpsService {
 	}
 }
 
+func normalizeBuildInfo(info buildinfo.Info) buildinfo.Info {
+	if info.Version == "" && info.Commit == "" && info.BuildTime == "" && info.Edition == "" && info.SchemaVersion == 0 {
+		return buildinfo.Current()
+	}
+	if info.SchemaVersion == 0 {
+		info.SchemaVersion = buildinfo.LatestSchemaVersion()
+	}
+	return info
+}
+
 type MaskedValue struct {
 	Set   bool   `json:"set"`
 	Value string `json:"value,omitempty"`
@@ -144,6 +158,7 @@ type MaskedValue struct {
 
 type OpsSummary struct {
 	GeneratedAt time.Time           `json:"generated_at"`
+	BuildInfo   buildinfo.Info      `json:"build_info"`
 	Config      OpsConfigSummary    `json:"config"`
 	Readiness   OpsReadinessSummary `json:"readiness"`
 	Backup      OpsBackupGuidance   `json:"backup"`
@@ -257,6 +272,7 @@ func (s *OpsService) Summary(ctx context.Context) OpsSummary {
 	}
 	return OpsSummary{
 		GeneratedAt: s.now().UTC(),
+		BuildInfo:   s.buildInfo,
 		Config:      s.configSummary(),
 		Readiness: OpsReadinessSummary{
 			LastDependencyCheck:  last,

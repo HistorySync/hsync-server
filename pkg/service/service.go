@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/argon2"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/observability"
@@ -288,6 +289,7 @@ func New(deps Deps) *Services {
 	}
 	opsSvc := NewOpsService(OpsDeps{
 		Config:       deps.Config,
+		BuildInfo:    buildinfo.Current(),
 		Repos:        deps.Repos,
 		BlobStore:    deps.BlobStore,
 		DatabasePing: deps.DatabasePing,

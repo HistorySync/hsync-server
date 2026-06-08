@@ -5,12 +5,17 @@ APP_NAME    := hsync-server
 BUILD_DIR   := ./build
 CMD_DIR     := ./cmd/hsync-server
 DOCKER_IMAGE:= historysync/server
+BUILD_PKG   := github.com/historysync/hsync-server/pkg/buildinfo
+VERSION     := $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+COMMIT      := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME  := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
 # Go build flags
 LDFLAGS := -s -w \
-	-X main.version=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev") \
-	-X main.commit=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown") \
-	-X main.buildDate=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+	-X $(BUILD_PKG).version=$(VERSION) \
+	-X $(BUILD_PKG).commit=$(COMMIT) \
+	-X $(BUILD_PKG).buildTime=$(BUILD_TIME) \
+	-X $(BUILD_PKG).edition=community
 
 # Targets
 

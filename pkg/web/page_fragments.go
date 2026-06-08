@@ -1,6 +1,9 @@
 package web
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 func pageHead(opts Options) string {
 	return "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>" + htmlEscape(opts.AppName) + " Admin Console</title><style>" + pageStyles() + "</style></head><body><main class=\"console-shell\">"
@@ -107,9 +110,15 @@ func pageOverviewCards(opts Options) string {
 		"<div class=\"stat\"><span>Snapshots</span><strong id=\"metric-snapshots\">pending</strong></div>" +
 		"<div class=\"stat\"><span>Storage</span><strong id=\"metric-storage\">pending</strong></div>" +
 		"<div class=\"stat\"><span>WebSocket</span><strong id=\"metric-websocket\">pending</strong></div>" +
+		"</div><div class=\"subgrid\" style=\"margin-top:14px\">" +
+		"<div class=\"stat\"><span>Version</span><strong class=\"mono\" id=\"build-version\">" + htmlEscape(opts.BuildInfo.Version) + "</strong></div>" +
+		"<div class=\"stat\"><span>Commit</span><strong class=\"mono\" id=\"build-commit\">" + htmlEscape(opts.BuildInfo.Commit) + "</strong></div>" +
+		"<div class=\"stat\"><span>Build time</span><strong class=\"mono\" id=\"build-time\">" + htmlEscape(opts.BuildInfo.BuildTime) + "</strong></div>" +
+		"<div class=\"stat\"><span>Schema version</span><strong class=\"mono\" id=\"build-schema-version\">" + htmlEscape(monoNumber(opts.BuildInfo.SchemaVersion)) + "</strong></div>" +
 		"</div><div class=\"two-col\" style=\"margin-top:14px\">" +
 		"<div class=\"panel\"><h3>Users by status</h3><div id=\"users-status-breakdown\" class=\"muted\">pending</div></div>" +
-		"<div class=\"panel\"><h3>Recent users</h3><div class=\"table-wrap\"><table><thead><tr><th>Email</th><th>Tier</th><th>Status</th><th>Created</th></tr></thead><tbody id=\"recent-users\"><tr><td colspan=\"4\" class=\"muted\">pending</td></tr></tbody></table></div></div>" +
+		"<div class=\"panel\"><h3>Build info</h3><div id=\"build-info-detail\" class=\"muted\">pending</div></div>" +
+		"</div><div class=\"panel\" style=\"margin-top:14px\"><h3>Recent users</h3><div class=\"table-wrap\"><table><thead><tr><th>Email</th><th>Tier</th><th>Status</th><th>Created</th></tr></thead><tbody id=\"recent-users\"><tr><td colspan=\"4\" class=\"muted\">pending</td></tr></tbody></table></div></div>" +
 		"</div></section>"
 }
 
@@ -131,5 +140,12 @@ func pageConsoleLayout(opts Options) string {
 }
 
 func pageFooter(opts Options) string {
-	return "<footer><small>Support contact: " + htmlEscape(opts.SupportEmail) + " - <a href=\"/api/meta/web\">Web metadata</a> - <a href=\"" + htmlEscape(opts.ConsolePath) + "\">Console route</a></small></footer></main>"
+	return "<footer><small>Support contact: " + htmlEscape(opts.SupportEmail) + " - <a href=\"/api/meta/web\">Web metadata</a> - <a href=\"/api/meta/version\">Version metadata</a> - <a href=\"" + htmlEscape(opts.ConsolePath) + "\">Console route</a></small></footer></main>"
+}
+
+func monoNumber(value int64) string {
+	if value == 0 {
+		return "0"
+	}
+	return strconv.FormatInt(value, 10)
 }

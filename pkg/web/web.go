@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 )
 
 // Options configures the lightweight web surface mounted on top of the API.
@@ -15,6 +16,7 @@ type Options struct {
 	ConsolePath       string
 	SupportEmail      string
 	Edition           string
+	BuildInfo         buildinfo.Info
 	APIPrefix         string
 	AdminPath         string
 	OverviewPath      string
@@ -63,6 +65,9 @@ func normalizeOptions(opts Options) Options {
 	if strings.TrimSpace(opts.Edition) == "" {
 		opts.Edition = "community"
 	}
+	if opts.BuildInfo.Version == "" && opts.BuildInfo.Commit == "" && opts.BuildInfo.BuildTime == "" && opts.BuildInfo.Edition == "" && opts.BuildInfo.SchemaVersion == 0 {
+		opts.BuildInfo = buildinfo.WithEdition(opts.Edition)
+	}
 	if strings.TrimSpace(opts.APIPrefix) == "" {
 		opts.APIPrefix = "/api/v1"
 	}
@@ -97,6 +102,7 @@ func metaPayload(opts Options) fiber.Map {
 	return fiber.Map{
 		"app_name":      opts.AppName,
 		"edition":       opts.Edition,
+		"build_info":    opts.BuildInfo,
 		"console_path":  opts.ConsolePath,
 		"api_prefix":    opts.APIPrefix,
 		"admin_path":    opts.AdminPath,
@@ -115,6 +121,7 @@ func consoleScript(opts Options) string {
 const apiPrefix=%s;
 const adminPath=%s;
 const overviewPath=%s;
+const versionPath="/api/meta/version";
 const adminKeyInput=document.getElementById("admin-key");
 const statusText=document.getElementById("console-status");
 const banner=document.getElementById("status-banner");
@@ -228,6 +235,21 @@ pill.textContent=entry[0]+": "+numberValue(entry[1]);
 container.appendChild(pill);
 container.appendChild(document.createTextNode(" "));
 }
+}
+
+async function loadBuildInfo(){
+const response=await requestJSON(versionPath);
+renderBuildInfo(response.body&&response.body.build_info||{});
+}
+
+function renderBuildInfo(info){
+text("build-version",info.version||"dev");
+text("build-commit",shortID(info.commit));
+text("build-time",dateValue(info.build_time));
+text("build-edition",info.edition||"community");
+text("build-schema-version",numberValue(info.schema_version));
+const root=document.getElementById("build-info-detail");
+if(root){renderKeyValues(root,info);}
 }
 
 async function loadOverview(){
@@ -612,6 +634,7 @@ async function loadAll(){
 setStatus("Loading");
 setBanner("","");
 const tasks=[
+["build info",loadBuildInfo],
 ["overview",loadOverview],
 ["settings",loadSettings],
 ["audit logs",loadAuditLogs],
@@ -656,6 +679,7 @@ if(event.key==="Enter"){event.preventDefault();loadAll();}
 
 bindExtraConsoleEvents();
 loadHealth();
+loadBuildInfo().catch(function(error){setBanner("Version metadata failed: "+error.message,"warn");});
 setBanner("Enter an admin key and refresh to load protected admin panels.","warn");
 })();`, jsStringLiteral(opts.APIPrefix), jsStringLiteral(opts.AdminPath), jsStringLiteral(opts.OverviewPath), opts.ExtraScript)
 }

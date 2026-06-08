@@ -16,6 +16,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/historysync/hsync-server/pkg/auth"
+	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/handler"
 	"github.com/historysync/hsync-server/pkg/middleware"
@@ -327,6 +328,7 @@ func main() {
 		Redis:        redisClient,
 		BlobStore:    blobStore,
 		AdminKey:     cfg.AdminKey,
+		BuildInfo:    buildinfo.Current(),
 		RateLimiter:  rateLimiter,
 		OptionStore:  optionStore,
 		Turnstile:    turnstile,
@@ -359,6 +361,7 @@ func main() {
 		ConsolePath:  cfg.WebConsolePath,
 		SupportEmail: cfg.WebSupportEmail,
 		Edition:      "community",
+		BuildInfo:    buildinfo.Current(),
 		APIPrefix:    "/api/v1",
 		AdminPath:    "/admin",
 	})

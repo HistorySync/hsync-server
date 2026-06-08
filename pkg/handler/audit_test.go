@@ -120,6 +120,7 @@ func TestAdminSetSettingRecordsAuditEvent(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/admin/settings/api_token", strings.NewReader(`{"value":"shh"}`))
 	req.Header.Set("X-Admin-Key", "secret")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "audit-setting-write")
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("app.Test() error = %v", err)

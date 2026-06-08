@@ -105,6 +105,32 @@ func TestCheckRateLimitReportsInvalidPolicies(t *testing.T) {
 	}
 }
 
+func TestCheckAdminKeyWarnsOnWeakFormat(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.AdminKey = "admin-secret"
+
+	check := checkAdminKey(cfg)
+	if check.Severity != SeverityWarn {
+		t.Fatalf("admin key severity = %s, want warn", check.Severity)
+	}
+	if check.Details["state"] != "present" {
+		t.Fatalf("admin key details = %#v, want present state", check.Details)
+	}
+	if _, ok := check.Details["weak_reasons"]; !ok {
+		t.Fatalf("admin key details = %#v, want weak_reasons", check.Details)
+	}
+}
+
+func TestCheckAdminKeyAcceptsStrongFormat(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.AdminKey = "v1_9YyR0h6Nq3xV7mK2pL5sD8fG1jH4zC6b"
+
+	check := checkAdminKey(cfg)
+	if check.Severity != SeverityOK {
+		t.Fatalf("admin key severity = %s, want ok", check.Severity)
+	}
+}
+
 func findCheck(checks []Check, id string) *Check {
 	for i := range checks {
 		if checks[i].ID == id {

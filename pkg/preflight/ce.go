@@ -122,8 +122,11 @@ func checkSecuritySecret(cfg *config.Config) Check {
 }
 
 func checkAdminKey(cfg *config.Config) Check {
-	details := SecretState(cfg.AdminKey)
-	if strings.TrimSpace(cfg.AdminKey) == "" {
+	adminKey := strings.TrimSpace(cfg.AdminKey)
+	details := SecretState(adminKey)
+	details["protected_routes"] = []string{"/admin/*", "/api/v1/admin/*"}
+	details["deployment_guidance"] = "Expose admin routes only on a private network, VPN, or trusted reverse proxy path."
+	if adminKey == "" {
 		return Check{
 			ID:       "admin_key",
 			Scope:    "security",
@@ -133,13 +136,57 @@ func checkAdminKey(cfg *config.Config) Check {
 			Details:  details,
 		}
 	}
+	if weak := weakAdminKeyReasons(adminKey); len(weak) > 0 {
+		details["weak_reasons"] = weak
+		return Check{
+			ID:       "admin_key",
+			Scope:    "security",
+			Severity: SeverityWarn,
+			Message:  "Admin key is configured but appears weak.",
+			Action:   "Use a long randomly generated admin key and expose CE admin routes only on trusted networks.",
+			Details:  details,
+		}
+	}
 	return Check{
 		ID:       "admin_key",
 		Scope:    "security",
 		Severity: SeverityOK,
-		Message:  "Admin key is configured.",
+		Message:  "Admin key is configured and not obviously weak.",
+		Action:   "Keep admin routes restricted to internal networks or a trusted reverse proxy.",
 		Details:  details,
 	}
+}
+
+func weakAdminKeyReasons(adminKey string) []string {
+	reasons := []string{}
+	if len(adminKey) < 32 {
+		reasons = append(reasons, "shorter_than_32_chars")
+	}
+	lower := strings.ToLower(adminKey)
+	for _, marker := range []string{"admin", "secret", "password", "changeme", "example", "test"} {
+		if strings.Contains(lower, marker) {
+			reasons = append(reasons, "contains_"+marker)
+			break
+		}
+	}
+	if allSameRune(adminKey) {
+		reasons = append(reasons, "repeated_single_character")
+	}
+	return reasons
+}
+
+func allSameRune(value string) bool {
+	var first rune
+	for i, r := range value {
+		if i == 0 {
+			first = r
+			continue
+		}
+		if r != first {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func checkPostgres(ctx context.Context, report *Report, cfg *config.Config) (*pgxpool.Pool, bool) {

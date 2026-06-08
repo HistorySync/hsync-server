@@ -70,6 +70,7 @@ func TestAdminSetAndListSettings(t *testing.T) {
 	put := httptest.NewRequest("PUT", "/admin/settings/api_token", strings.NewReader(`{"value":"shh"}`))
 	put.Header.Set("X-Admin-Key", "secret")
 	put.Header.Set("Content-Type", "application/json")
+	put.Header.Set("Idempotency-Key", "settings-write")
 	resp, err := app.Test(put)
 	if err != nil {
 		t.Fatalf("app.Test(PUT): %v", err)
@@ -176,6 +177,7 @@ func TestMaintenanceModeBlocksNormalWritesAndKeepsOpsEntrypoints(t *testing.T) {
 	put := httptest.NewRequest("PUT", "/admin/settings/maintenance_mode", strings.NewReader(`{"value":"false"}`))
 	put.Header.Set("X-Admin-Key", "secret")
 	put.Header.Set("Content-Type", "application/json")
+	put.Header.Set("Idempotency-Key", "maintenance-write")
 	resp, err = app.Test(put)
 	if err != nil {
 		t.Fatalf("app.Test(admin setting): %v", err)
@@ -191,6 +193,7 @@ func TestAdminSetSettingUnknownKey(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/admin/settings/nope", strings.NewReader(`{"value":"x"}`))
 	req.Header.Set("X-Admin-Key", "secret")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "unknown-setting")
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)
@@ -209,6 +212,7 @@ func TestAdminSetSettingInvalidValue(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/admin/settings/feature_enabled", strings.NewReader(`{"value":"maybe"}`))
 	req.Header.Set("X-Admin-Key", "secret")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "invalid-setting")
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatalf("app.Test: %v", err)

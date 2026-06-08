@@ -195,6 +195,7 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 
 	checkReq := httptest.NewRequest("POST", "/admin/ops/check", nil)
 	checkReq.Header.Set("X-Admin-Key", "secret")
+	checkReq.Header.Set("Idempotency-Key", "ops-check")
 	checkResp, err := app.Test(checkReq)
 	if err != nil {
 		t.Fatalf("check app.Test: %v", err)
@@ -212,6 +213,7 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 
 	consistencyReq := httptest.NewRequest("POST", "/admin/ops/consistency?limit=10", nil)
 	consistencyReq.Header.Set("X-Admin-Key", "secret")
+	consistencyReq.Header.Set("Idempotency-Key", "ops-consistency")
 	consistencyResp, err := app.Test(consistencyReq)
 	if err != nil {
 		t.Fatalf("consistency app.Test: %v", err)

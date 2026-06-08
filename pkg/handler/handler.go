@@ -99,6 +99,9 @@ const (
 	rateLimitWindow = time.Minute
 	// publicAuthRPM caps unauthenticated auth requests per client IP per minute.
 	publicAuthRPM = 30
+	// adminRPM caps CE admin route attempts per client IP per minute. It runs
+	// before X-Admin-Key validation so brute-force attempts are throttled too.
+	adminRPM = 60
 
 	authLoginIPLimit       = 10
 	authLoginEmailLimit    = 5
@@ -131,6 +134,15 @@ func perIPRateDecision(limit int) func(fiber.Ctx) middleware.RateDecision {
 	}
 }
 
+func adminRateDecision(c fiber.Ctx) middleware.RateDecision {
+	return middleware.RateDecision{
+		Key:      "admin:ip:" + c.IP(),
+		Limit:    adminRPM,
+		Policy:   "ce_admin",
+		FailMode: middleware.RateLimitFailClosed,
+	}
+}
+
 func authRateLimit(limiter middleware.Limiter, runtime middleware.RateLimitRuntimeConfig, window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
 	return middleware.RateLimit(middleware.RateLimitConfig{
 		Limiter:  limiter,
@@ -157,6 +169,15 @@ func (h *Handlers) enforceTurnstile(c fiber.Ctx, token string) error {
 		observability.RecordAuthFailure("turnstile", "rejected")
 	}
 	return err
+}
+
+func requireIdempotencyKey() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		if strings.TrimSpace(c.Get("Idempotency-Key")) == "" {
+			return apierrors.New(apierrors.CodeIdempotencyKeyMissing, "idempotency key is required")
+		}
+		return c.Next()
+	}
 }
 
 func (h *Handlers) recordAudit(c fiber.Ctx, input service.AuditEventInput) {
@@ -222,6 +243,14 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		FailMode: h.deps.RateLimit.PublicAuthFailMode(),
 		Classify: perIPRateDecision(publicAuthRPM),
 	})
+	adminRL := middleware.RateLimit(middleware.RateLimitConfig{
+		Limiter:  h.deps.RateLimiter,
+		Window:   rateLimitWindow,
+		Policy:   "ce_admin",
+		FailMode: middleware.RateLimitFailClosed,
+		Classify: adminRateDecision,
+	})
+	requireAdminIdempotency := requireIdempotencyKey()
 	authRL := func(window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
 		return authRateLimit(h.deps.RateLimiter, h.deps.RateLimit, window, classify)
 	}
@@ -310,7 +339,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	get(v1, "/api/v1/quota", "/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
 
 	// Admin security stats for the v1 API surface.
-	v1Admin := v1.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
+	v1Admin := v1.Group("/admin", adminRL, auth.AdminMiddleware(h.deps.AdminKey))
 	get(v1Admin, "/api/v1/admin/security/stats", "/security/stats", h.AdminSecurityStats)
 	get(v1Admin, "/api/v1/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
@@ -319,8 +348,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/discard", "/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	get(v1Admin, "/api/v1/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
 	get(v1Admin, "/api/v1/admin/ops/history", "/ops/history", h.AdminOpsHistory)
-	post(v1Admin, "/api/v1/admin/ops/check", "/ops/check", h.AdminOpsCheck)
-	post(v1Admin, "/api/v1/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency)
+	post(v1Admin, "/api/v1/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
+	post(v1Admin, "/api/v1/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
 	get(v1Admin, "/api/v1/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 
 	// Billing (JWT-protected, except webhook)
@@ -342,14 +371,14 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	}
 
 	// Admin
-	admin := app.Group("/admin", auth.AdminMiddleware(h.deps.AdminKey))
+	admin := app.Group("/admin", adminRL, auth.AdminMiddleware(h.deps.AdminKey))
 	get(admin, "/admin/users", "/users", h.AdminListUsers)
 	get(admin, "/admin/stats", "/stats", h.AdminStats)
-	post(admin, "/admin/users/:id/recalculate-quota", "/users/:id/recalculate-quota", h.AdminRecalculateQuota)
+	post(admin, "/admin/users/:id/recalculate-quota", "/users/:id/recalculate-quota", h.AdminRecalculateQuota, requireAdminIdempotency)
 	get(admin, "/admin/options", "/options", h.AdminListOptions)
-	put(admin, "/admin/options/:key", "/options/:key", h.AdminSetOption)
+	put(admin, "/admin/options/:key", "/options/:key", h.AdminSetOption, requireAdminIdempotency)
 	get(admin, "/admin/settings", "/settings", h.AdminListSettings)
-	put(admin, "/admin/settings/:key", "/settings/:key", h.AdminSetSetting)
+	put(admin, "/admin/settings/:key", "/settings/:key", h.AdminSetSetting, requireAdminIdempotency)
 	get(admin, "/admin/audit-logs", "/audit-logs", h.AdminListAuditLogs)
 	get(admin, "/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
 	post(admin, "/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
@@ -359,8 +388,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	get(admin, "/admin/error-codes", "/error-codes", h.AdminErrorCodes)
 	get(admin, "/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
 	get(admin, "/admin/ops/history", "/ops/history", h.AdminOpsHistory)
-	post(admin, "/admin/ops/check", "/ops/check", h.AdminOpsCheck)
-	post(admin, "/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency)
+	post(admin, "/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
+	post(admin, "/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
 	get(admin, "/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 }
 

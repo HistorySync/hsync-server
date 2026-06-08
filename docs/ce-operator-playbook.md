@@ -93,6 +93,7 @@ CE preflight checks cover:
   settings, passkeys, notifications, and ops history.
 - S3-compatible storage config and a read-only bucket/list probe.
 - Metrics path and CIDR/address parsing.
+- WebSocket origin policy and connection caps.
 - SMTP and ops alert destination structure.
 - Runtime settings for `maintenance_mode`, `signups_enabled`, and passkey
   WebAuthn origins/RP ID when PostgreSQL settings are reachable.
@@ -357,6 +358,8 @@ The route only exists when `metrics_enabled=true`.
 - `hsync_notification_delivery_total`
 - `hsync_idempotency_events_total`
 - `hsync_readiness_dependency_status`
+- `hsync_websocket_connections_active`
+- `hsync_websocket_upgrade_rejections_total`
 
 ### Common states
 
@@ -384,7 +387,51 @@ The route only exists when `metrics_enabled=true`.
 4. Check scheduler metrics if the symptom involves periodic work.
 5. Check notification delivery metrics if the symptom involves outbox failures.
 
-## 6. Recommended incident flow
+## 6. WebSocket Push Hardening
+
+The push endpoint is `GET /ws/push`. It authenticates with the per-device
+WebSocket token, preferably in `Authorization: Bearer <device_token>`. The
+legacy `?token=` query parameter remains available for older clients.
+
+Origin policy:
+
+- `websocket_origin_check_disabled=false` by default.
+- Requests without an `Origin` header are allowed and rely on device-token auth.
+- Browser requests with `Origin` are allowed only when the origin matches the
+  request host, unless `websocket_allowed_origins` is configured.
+- `websocket_allowed_origins` entries must be full `http` or `https` origins
+  with no path, query, or fragment, such as `https://app.example.com`.
+
+Connection caps:
+
+- Multiple tabs and multiple devices for the same user are allowed.
+- `websocket_max_connections_per_user` caps the total active WebSocket
+  connections for one user across devices and tabs.
+- `websocket_max_connections` caps active WebSocket connections for the process.
+- Set either cap to `0` only when intentionally disabling that limit.
+
+Rejected upgrades:
+
+- Bad browser origins are rejected with 403 and counted as
+  `hsync_websocket_upgrade_rejections_total{reason="origin"}`.
+- Global or per-user capacity rejections return 429 and are counted as
+  `hsync_websocket_upgrade_rejections_total{reason="capacity"}`.
+- Active connections are exported as `hsync_websocket_connections_active`.
+
+In multi-instance deployments these caps are per process. There is no Redis or
+cluster-wide WebSocket connection counter in CE, so size per-instance limits
+with the load balancer topology in mind.
+
+### Recommended troubleshooting order
+
+1. Check `/metrics` for active WebSocket connections and rejection reasons.
+2. Confirm browser `Origin` exactly matches one of `websocket_allowed_origins`
+   or the public request host.
+3. Confirm the device token is fresh and the device has not been revoked.
+4. Raise per-user caps only when expected multi-tab/device behavior needs it.
+5. Raise global caps only after checking CPU, memory, and file descriptor headroom.
+
+## 7. Recommended incident flow
 
 When an operator or AI agent is dropped into a CE incident, use this order:
 
@@ -406,7 +453,7 @@ That order usually tells you whether the issue is:
 - config drift
 - normal degraded mode because Redis is optional
 
-## 7. CE / EE boundary reminders
+## 8. CE / EE boundary reminders
 
 Keep these lines hard:
 

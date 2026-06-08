@@ -63,6 +63,19 @@ turnstile_enabled: false
 # turnstile_site_key: ""
 turnstile_timeout: "3s"
 
+# WebSocket push hardening.
+# Browser connections with an Origin header are accepted only when the origin
+# matches the request host, unless websocket_allowed_origins is set. Non-browser
+# clients that do not send Origin continue to rely on device-token auth.
+websocket_origin_check_disabled: false
+# websocket_allowed_origins:
+#   - "https://app.example.com"
+#   - "https://admin.example.com"
+# Use 0 to disable a cap. Multiple tabs/devices for one user are allowed within
+# websocket_max_connections_per_user.
+websocket_max_connections: 10000
+websocket_max_connections_per_user: 16
+
 # Background maintenance tasks
 # Periodic jobs run on a single instance at a time (leader-elected via a Postgres
 # advisory lock). Set background_tasks_enabled: false to disable all of them.

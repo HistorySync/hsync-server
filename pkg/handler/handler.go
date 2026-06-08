@@ -352,6 +352,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	get(v1Admin, "/api/v1/admin/ops/history", "/ops/history", h.AdminOpsHistory)
 	post(v1Admin, "/api/v1/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
 	post(v1Admin, "/api/v1/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
+	post(v1Admin, "/api/v1/admin/ops/restore-rehearsal", "/ops/restore-rehearsal", h.AdminOpsRestoreRehearsal, requireAdminIdempotency)
 	get(v1Admin, "/api/v1/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 
 	// Billing (JWT-protected, except webhook)
@@ -393,6 +394,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	get(admin, "/admin/ops/history", "/ops/history", h.AdminOpsHistory)
 	post(admin, "/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
 	post(admin, "/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
+	post(admin, "/admin/ops/restore-rehearsal", "/ops/restore-rehearsal", h.AdminOpsRestoreRehearsal, requireAdminIdempotency)
 	get(admin, "/admin/exports/operational-records", "/exports/operational-records", h.AdminExportOperationalRecords)
 }
 
@@ -2273,6 +2275,49 @@ func (h *Handlers) AdminOpsConsistency(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 	defer cancel()
 	return c.JSON(ops.CheckConsistency(ctx, limit))
+}
+
+type adminOpsRestoreRehearsalRequest struct {
+	Mode     service.OpsRestoreMode     `json:"mode"`
+	Limit    int32                      `json:"limit"`
+	Manifest service.OpsRestoreManifest `json:"manifest"`
+}
+
+func (h *Handlers) AdminOpsRestoreRehearsal(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	req := adminOpsRestoreRehearsalRequest{
+		Mode:  service.OpsRestoreModeBaseline,
+		Limit: service.DefaultOpsRestoreLimit,
+	}
+	if len(c.Body()) > 0 {
+		if err := json.Unmarshal(c.Body(), &req); err != nil {
+			return apierrors.NewBadRequest("invalid restore rehearsal request")
+		}
+	}
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			req.Limit = int32(parsed)
+		}
+	}
+	if raw := strings.TrimSpace(c.Query("mode")); raw != "" {
+		req.Mode = service.OpsRestoreMode(raw)
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 60*time.Second)
+	defer cancel()
+	switch req.Mode {
+	case "", service.OpsRestoreModeBaseline:
+		return c.JSON(ops.GenerateRestoreBaseline(ctx, req.Limit))
+	case service.OpsRestoreModeVerify:
+		if req.Manifest.Version == 0 && req.Manifest.GeneratedAt.IsZero() && len(req.Manifest.Artifacts) == 0 && len(req.Manifest.Objects) == 0 {
+			return apierrors.NewBadRequest("manifest is required for restore verification")
+		}
+		return c.JSON(ops.VerifyRestore(ctx, req.Manifest, req.Limit))
+	default:
+		return apierrors.NewBadRequest("mode must be baseline or verify")
+	}
 }
 
 func (h *Handlers) AdminExportOperationalRecords(c fiber.Ctx) error {

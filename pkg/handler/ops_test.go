@@ -84,6 +84,10 @@ func (m handlerOpsBundleMetadata) ListForOpsConsistency(_ context.Context, _ int
 	return append([]model.BundleMeta(nil), m.rows...), nil
 }
 
+func (m handlerOpsBundleMetadata) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.BundleMeta, error) {
+	return m.ListForOpsConsistency(ctx, limit)
+}
+
 type handlerOpsSnapshotMetadata struct {
 	rows []model.SnapshotMeta
 }
@@ -102,6 +106,10 @@ func (m handlerOpsSnapshotMetadata) SumSizeAll(context.Context) (int64, error) {
 
 func (m handlerOpsSnapshotMetadata) ListForOpsConsistency(_ context.Context, _ int32) ([]model.SnapshotMeta, error) {
 	return append([]model.SnapshotMeta(nil), m.rows...), nil
+}
+
+func (m handlerOpsSnapshotMetadata) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.SnapshotMeta, error) {
+	return m.ListForOpsConsistency(ctx, limit)
 }
 
 type handlerOpsHistoryStore struct {
@@ -228,6 +236,25 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	}
 	if consistency.Overall != service.OpsStatusOK {
 		t.Fatalf("consistency overall = %q, want ok: %+v", consistency.Overall, consistency.Artifacts)
+	}
+
+	restoreReq := httptest.NewRequest("POST", "/admin/ops/restore-rehearsal", strings.NewReader(`{"mode":"baseline","limit":10}`))
+	restoreReq.Header.Set("X-Admin-Key", "secret")
+	restoreReq.Header.Set("Idempotency-Key", "ops-restore")
+	restoreReq.Header.Set("Content-Type", "application/json")
+	restoreResp, err := app.Test(restoreReq)
+	if err != nil {
+		t.Fatalf("restore rehearsal app.Test: %v", err)
+	}
+	if restoreResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("restore rehearsal status = %d, want %d", restoreResp.StatusCode, fiber.StatusOK)
+	}
+	var restoreReport service.OpsRestoreReport
+	if err := json.NewDecoder(restoreResp.Body).Decode(&restoreReport); err != nil {
+		t.Fatalf("decode restore rehearsal: %v", err)
+	}
+	if restoreReport.Overall != service.OpsStatusOK || restoreReport.Manifest == nil || len(restoreReport.Manifest.Objects) != 2 {
+		t.Fatalf("restore report = %+v, want ok with two manifest objects", restoreReport)
 	}
 	if len(historyStore.runs) != 2 {
 		t.Fatalf("history store runs = %d, want 2", len(historyStore.runs))

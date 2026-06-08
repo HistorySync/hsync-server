@@ -36,6 +36,8 @@ const (
 const (
 	DefaultOpsConsistencyLimit int32 = 1000
 	maxOpsConsistencyIssues          = 50
+	DefaultOpsRestoreLimit     int32 = 1000
+	maxOpsRestoreFindings            = 50
 )
 
 // PingFunc verifies one runtime dependency without exposing the concrete client.
@@ -45,12 +47,14 @@ type opsBundleMetadataStore interface {
 	CountAll(ctx context.Context) (int64, error)
 	SumSizeAll(ctx context.Context) (int64, error)
 	ListForOpsConsistency(ctx context.Context, limit int32) ([]model.BundleMeta, error)
+	ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.BundleMeta, error)
 }
 
 type opsSnapshotMetadataStore interface {
 	CountAll(ctx context.Context) (int64, error)
 	SumSizeAll(ctx context.Context) (int64, error)
 	ListForOpsConsistency(ctx context.Context, limit int32) ([]model.SnapshotMeta, error)
+	ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.SnapshotMeta, error)
 }
 
 type opsHistoryStore interface {
@@ -257,6 +261,78 @@ type OpsConsistencyIssue struct {
 	ErrorClass   string `json:"error_class,omitempty"`
 }
 
+type OpsRestoreMode string
+
+const (
+	OpsRestoreModeBaseline OpsRestoreMode = "baseline"
+	OpsRestoreModeVerify   OpsRestoreMode = "verify"
+)
+
+type OpsRestoreManifest struct {
+	Version               int                  `json:"version"`
+	GeneratedAt           time.Time            `json:"generated_at"`
+	ZeroKnowledgeBoundary string               `json:"zero_knowledge_boundary"`
+	Artifacts             []OpsRestoreArtifact `json:"artifacts"`
+	Objects               []OpsRestoreObject   `json:"objects"`
+}
+
+type OpsRestoreArtifact struct {
+	Kind              string `json:"kind"`
+	Status            string `json:"status"`
+	MetadataTotal     int64  `json:"metadata_total"`
+	MetadataBytes     int64  `json:"metadata_bytes"`
+	ManifestObjects   int    `json:"manifest_objects"`
+	ManifestBytes     int64  `json:"manifest_bytes"`
+	MetadataTruncated bool   `json:"metadata_truncated"`
+	Message           string `json:"message"`
+	Action            string `json:"action,omitempty"`
+	ErrorClass        string `json:"error_class,omitempty"`
+}
+
+type OpsRestoreObject struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Size int64  `json:"size"`
+}
+
+type OpsRestoreReport struct {
+	Overall               string                   `json:"overall"`
+	Mode                  OpsRestoreMode           `json:"mode"`
+	CheckedAt             time.Time                `json:"checked_at"`
+	DurationMillis        int64                    `json:"duration_millis"`
+	Limit                 int32                    `json:"limit"`
+	ZeroKnowledgeBoundary string                   `json:"zero_knowledge_boundary"`
+	Manifest              *OpsRestoreManifest      `json:"manifest,omitempty"`
+	Artifacts             []OpsRestoreArtifact     `json:"artifacts"`
+	Summary               OpsRestoreFindingSummary `json:"summary"`
+	Findings              []OpsRestoreFinding      `json:"findings,omitempty"`
+	Checks                []OpsRestoreCheck        `json:"checks,omitempty"`
+	Recommendations       []string                 `json:"recommendations"`
+}
+
+type OpsRestoreFindingSummary struct {
+	MissingObjects     int `json:"missing_objects"`
+	SizeMismatches     int `json:"size_mismatch"`
+	OrphanObjects      int `json:"orphan_objects"`
+	MetadataMismatches int `json:"metadata_mismatch"`
+	CheckFailures      int `json:"check_failures"`
+}
+
+type OpsRestoreFinding struct {
+	Kind         string `json:"kind"`
+	ID           string `json:"id,omitempty"`
+	Key          string `json:"key"`
+	Status       string `json:"status"`
+	Message      string `json:"message"`
+	Action       string `json:"action"`
+	ExpectedSize *int64 `json:"expected_size,omitempty"`
+	ActualSize   *int64 `json:"actual_size,omitempty"`
+	ErrorClass   string `json:"error_class,omitempty"`
+}
+
+type OpsRestoreCheck = provider.OpsRestoreCheck
+
 type OpsHistoryView struct {
 	RecentRuns     []model.OpsCheckRun `json:"recent_runs"`
 	RecentFailures []model.OpsCheckRun `json:"recent_failures"`
@@ -342,6 +418,73 @@ func (s *OpsService) CheckConsistency(ctx context.Context, limit int32) OpsConsi
 	s.mu.Unlock()
 
 	s.persistConsistencyRun(ctx, report)
+	return report
+}
+
+func (s *OpsService) GenerateRestoreBaseline(ctx context.Context, limit int32) OpsRestoreReport {
+	return s.restoreRehearsal(ctx, OpsRestoreModeBaseline, nil, limit)
+}
+
+func (s *OpsService) VerifyRestore(ctx context.Context, manifest OpsRestoreManifest, limit int32) OpsRestoreReport {
+	return s.restoreRehearsal(ctx, OpsRestoreModeVerify, &manifest, limit)
+}
+
+func (s *OpsService) restoreRehearsal(ctx context.Context, mode OpsRestoreMode, baseline *OpsRestoreManifest, limit int32) OpsRestoreReport {
+	if limit <= 0 || limit > DefaultOpsRestoreLimit {
+		limit = DefaultOpsRestoreLimit
+	}
+	start := s.now()
+	report := OpsRestoreReport{
+		Overall:               OpsStatusOK,
+		Mode:                  mode,
+		CheckedAt:             start.UTC(),
+		Limit:                 limit,
+		ZeroKnowledgeBoundary: "Restore rehearsal compares PostgreSQL metadata, object existence, and object size only; it never downloads, parses, or decrypts bundle or snapshot blobs.",
+	}
+
+	var manifest OpsRestoreManifest
+	if baseline == nil {
+		manifest = OpsRestoreManifest{
+			Version:               1,
+			GeneratedAt:           start.UTC(),
+			ZeroKnowledgeBoundary: report.ZeroKnowledgeBoundary,
+		}
+		bundleArtifact, bundleObjects, bundleFindings := s.restoreBundleManifest(ctx, limit, true)
+		snapshotArtifact, snapshotObjects, snapshotFindings := s.restoreSnapshotManifest(ctx, limit, true)
+		manifest.Artifacts = []OpsRestoreArtifact{bundleArtifact, snapshotArtifact}
+		manifest.Objects = append(manifest.Objects, bundleObjects...)
+		manifest.Objects = append(manifest.Objects, snapshotObjects...)
+		report.Artifacts = cloneRestoreArtifacts(manifest.Artifacts)
+		report.Manifest = &manifest
+		report.Findings = append(report.Findings, bundleFindings...)
+		report.Findings = append(report.Findings, snapshotFindings...)
+	} else {
+		manifest = normalizeRestoreManifest(*baseline)
+		report.Manifest = &manifest
+		report.Artifacts = cloneRestoreArtifacts(manifest.Artifacts)
+	}
+
+	verifyLimit := limit
+	if mode == OpsRestoreModeVerify && int32(len(manifest.Objects)) > verifyLimit && len(manifest.Objects) <= int(DefaultOpsRestoreLimit) {
+		verifyLimit = int32(len(manifest.Objects))
+	}
+	if mode == OpsRestoreModeVerify {
+		currentBundleArtifact, currentBundleObjects, _ := s.restoreBundleManifest(ctx, verifyLimit, false)
+		currentSnapshotArtifact, currentSnapshotObjects, _ := s.restoreSnapshotManifest(ctx, verifyLimit, false)
+		report.Artifacts = []OpsRestoreArtifact{currentBundleArtifact, currentSnapshotArtifact}
+		currentObjects := append(currentBundleObjects, currentSnapshotObjects...)
+		if !restoreArtifactsTruncated(report.Artifacts) {
+			report.Findings = append(report.Findings, compareRestoreMetadata(manifest.Objects, currentObjects)...)
+		}
+		report.Findings = append(report.Findings, s.verifyRestoreObjects(ctx, manifest.Objects)...)
+	}
+	manifestTruncated := restoreArtifactsTruncated(report.Artifacts) || restoreArtifactsTruncated(manifest.Artifacts)
+	report.Findings = append(report.Findings, s.findRestoreOrphans(ctx, manifest.Objects, manifestTruncated)...)
+	report.Summary = summarizeRestoreFindings(report.Findings)
+	report.Checks = s.restoreChecks(ctx)
+	report.Recommendations = restoreRecommendations(report.Summary, report.Checks)
+	report.Overall = restoreOverall(report.Summary, report.Artifacts, report.Checks)
+	report.DurationMillis = millisSince(start, s.now)
 	return report
 }
 
@@ -1095,6 +1238,237 @@ func (s *OpsService) checkSnapshotConsistency(ctx context.Context, limit int32) 
 	return finalizeConsistencyArtifact(artifact), issues
 }
 
+func (s *OpsService) restoreBundleManifest(ctx context.Context, limit int32, checkObjects bool) (OpsRestoreArtifact, []OpsRestoreObject, []OpsRestoreFinding) {
+	artifact := OpsRestoreArtifact{Kind: "bundle"}
+	if s.bundles == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Bundle metadata store is not configured; bundle restore manifest cannot be generated."
+		artifact.Action = "Verify PostgreSQL repository wiring and rerun the restore rehearsal."
+		return artifact, nil, nil
+	}
+	total, err := s.bundles.CountAll(ctx)
+	if err != nil {
+		return restoreMetadataFailure("bundle", "Bundle metadata count failed.", "Verify PostgreSQL health and bundle table access.", err), nil, nil
+	}
+	artifact.MetadataTotal = total
+	bytes, err := s.bundles.SumSizeAll(ctx)
+	if err != nil {
+		return restoreMetadataFailure("bundle", "Bundle metadata byte summary failed.", "Verify PostgreSQL health and bundle table access.", err), nil, nil
+	}
+	artifact.MetadataBytes = bytes
+	metas, err := s.bundles.ListForOpsRestoreManifest(ctx, limit)
+	if err != nil {
+		return restoreMetadataFailure("bundle", "Bundle restore metadata could not be loaded.", "Verify PostgreSQL health and bundle table access.", err), nil, nil
+	}
+	artifact.MetadataTruncated = total > int64(len(metas))
+
+	objects := make([]OpsRestoreObject, 0, len(metas))
+	findings := make([]OpsRestoreFinding, 0)
+	for _, meta := range metas {
+		key := storage.BundleKey(meta.UserID.String(), meta.BundleID)
+		objects = append(objects, OpsRestoreObject{
+			Kind: "bundle",
+			ID:   bundleIssueID(meta),
+			Key:  key,
+			Size: meta.SizeBytes,
+		})
+		artifact.ManifestObjects++
+		artifact.ManifestBytes += meta.SizeBytes
+		if checkObjects {
+			findings = appendLimitedRestoreFinding(findings, s.verifyRestoreObject(ctx, "bundle", bundleIssueID(meta), key, meta.SizeBytes)...)
+		}
+	}
+	return finalizeRestoreArtifact(artifact), objects, findings
+}
+
+func (s *OpsService) restoreSnapshotManifest(ctx context.Context, limit int32, checkObjects bool) (OpsRestoreArtifact, []OpsRestoreObject, []OpsRestoreFinding) {
+	artifact := OpsRestoreArtifact{Kind: "snapshot"}
+	if s.snapshots == nil {
+		artifact.Status = OpsStatusNotConfigured
+		artifact.Message = "Snapshot metadata store is not configured; snapshot restore manifest cannot be generated."
+		artifact.Action = "Verify PostgreSQL repository wiring and rerun the restore rehearsal."
+		return artifact, nil, nil
+	}
+	total, err := s.snapshots.CountAll(ctx)
+	if err != nil {
+		return restoreMetadataFailure("snapshot", "Snapshot metadata count failed.", "Verify PostgreSQL health and snapshot table access.", err), nil, nil
+	}
+	artifact.MetadataTotal = total
+	bytes, err := s.snapshots.SumSizeAll(ctx)
+	if err != nil {
+		return restoreMetadataFailure("snapshot", "Snapshot metadata byte summary failed.", "Verify PostgreSQL health and snapshot table access.", err), nil, nil
+	}
+	artifact.MetadataBytes = bytes
+	metas, err := s.snapshots.ListForOpsRestoreManifest(ctx, limit)
+	if err != nil {
+		return restoreMetadataFailure("snapshot", "Snapshot restore metadata could not be loaded.", "Verify PostgreSQL health and snapshot table access.", err), nil, nil
+	}
+	artifact.MetadataTruncated = total > int64(len(metas))
+
+	objects := make([]OpsRestoreObject, 0, len(metas))
+	findings := make([]OpsRestoreFinding, 0)
+	for _, meta := range metas {
+		key := storage.SnapshotKey(meta.UserID.String(), meta.SnapshotID)
+		objects = append(objects, OpsRestoreObject{
+			Kind: "snapshot",
+			ID:   snapshotIssueID(meta),
+			Key:  key,
+			Size: meta.SizeBytes,
+		})
+		artifact.ManifestObjects++
+		artifact.ManifestBytes += meta.SizeBytes
+		if checkObjects {
+			findings = appendLimitedRestoreFinding(findings, s.verifyRestoreObject(ctx, "snapshot", snapshotIssueID(meta), key, meta.SizeBytes)...)
+		}
+	}
+	return finalizeRestoreArtifact(artifact), objects, findings
+}
+
+func (s *OpsService) verifyRestoreObjects(ctx context.Context, objects []OpsRestoreObject) []OpsRestoreFinding {
+	findings := make([]OpsRestoreFinding, 0)
+	for _, obj := range objects {
+		findings = appendLimitedRestoreFinding(findings, s.verifyRestoreObject(ctx, obj.Kind, obj.ID, obj.Key, obj.Size)...)
+	}
+	return findings
+}
+
+func (s *OpsService) verifyRestoreObject(ctx context.Context, kind, id, key string, expectedSize int64) []OpsRestoreFinding {
+	if s.blobStore == nil {
+		return []OpsRestoreFinding{restoreFinding(kind, id, key, "check_failed", "Blob storage is not configured; object metadata cannot be checked.", "Verify S3 storage wiring before declaring the restore usable.", int64Value(expectedSize), nil, "not_configured")}
+	}
+	size, exists, err := s.blobStore.Size(ctx, key)
+	if err != nil {
+		return []OpsRestoreFinding{restoreFinding(kind, id, key, "check_failed", "Object metadata could not be checked.", "Verify S3 stat/head permission and rerun restore verification.", int64Value(expectedSize), nil, classifyOpsError(err))}
+	}
+	if !exists {
+		return []OpsRestoreFinding{restoreFinding(kind, id, key, "missing_object", "The restore manifest references an object that is missing from storage.", "Restore this object from the object-store backup before cutting traffic over.", int64Value(expectedSize), nil, "missing")}
+	}
+	if size != expectedSize {
+		return []OpsRestoreFinding{restoreFinding(kind, id, key, "size_mismatch", "The restored object size does not match the restore manifest.", "Restore the expected object version from backup; do not parse or mutate the encrypted blob.", int64Value(expectedSize), int64Value(size), "metadata_mismatch")}
+	}
+	return nil
+}
+
+func (s *OpsService) findRestoreOrphans(ctx context.Context, objects []OpsRestoreObject, manifestTruncated bool) []OpsRestoreFinding {
+	if s.blobStore == nil || manifestTruncated {
+		return nil
+	}
+	expected := make(map[string]OpsRestoreObject, len(objects))
+	for _, obj := range objects {
+		expected[obj.Key] = obj
+	}
+	findings := make([]OpsRestoreFinding, 0)
+	for _, prefix := range []string{"bundles/", "snapshots/"} {
+		listed, err := s.blobStore.List(ctx, prefix)
+		if err != nil {
+			kind := strings.TrimSuffix(prefix, "s/")
+			findings = appendLimitedRestoreFinding(findings, restoreFinding(kind, "", prefix, "check_failed", "Storage objects could not be listed for orphan detection.", "Verify S3 list permission and rerun restore verification.", nil, nil, classifyOpsError(err)))
+			continue
+		}
+		for _, obj := range listed {
+			if _, ok := expected[obj.Key]; ok {
+				continue
+			}
+			kind := "object"
+			if strings.HasPrefix(obj.Key, "bundles/") {
+				kind = "bundle"
+			} else if strings.HasPrefix(obj.Key, "snapshots/") {
+				kind = "snapshot"
+			}
+			findings = appendLimitedRestoreFinding(findings, restoreFinding(kind, "", obj.Key, "orphan_object", "Storage contains an object that is not referenced by the restore manifest.", "Do not delete automatically; inspect backup timing, retention windows, and metadata restore point before deciding whether to keep or remove it.", nil, int64Value(obj.Size), "orphan"))
+		}
+	}
+	return findings
+}
+
+func compareRestoreMetadata(expected, current []OpsRestoreObject) []OpsRestoreFinding {
+	expectedByKey := make(map[string]OpsRestoreObject, len(expected))
+	for _, obj := range expected {
+		expectedByKey[obj.Key] = obj
+	}
+	currentByKey := make(map[string]OpsRestoreObject, len(current))
+	for _, obj := range current {
+		currentByKey[obj.Key] = obj
+	}
+	findings := make([]OpsRestoreFinding, 0)
+	for _, expectedObj := range expected {
+		currentObj, ok := currentByKey[expectedObj.Key]
+		if !ok {
+			findings = appendLimitedRestoreFinding(findings, restoreFinding(expectedObj.Kind, expectedObj.ID, expectedObj.Key, "metadata_mismatch", "PostgreSQL metadata is missing a row from the restore manifest.", "Restore the expected PostgreSQL backup point before accepting sync traffic.", int64Value(expectedObj.Size), nil, "missing_metadata"))
+			continue
+		}
+		if currentObj.Size != expectedObj.Size {
+			findings = appendLimitedRestoreFinding(findings, restoreFinding(expectedObj.Kind, expectedObj.ID, expectedObj.Key, "metadata_mismatch", "PostgreSQL metadata size does not match the restore manifest.", "Restore the expected PostgreSQL backup point or investigate metadata drift before cutover.", int64Value(expectedObj.Size), int64Value(currentObj.Size), "metadata_mismatch"))
+		}
+	}
+	for _, currentObj := range current {
+		if _, ok := expectedByKey[currentObj.Key]; ok {
+			continue
+		}
+		findings = appendLimitedRestoreFinding(findings, restoreFinding(currentObj.Kind, currentObj.ID, currentObj.Key, "metadata_mismatch", "PostgreSQL contains active metadata not present in the restore manifest.", "Confirm the manifest and database backup were captured from the same restore point before cutover.", nil, int64Value(currentObj.Size), "unexpected_metadata"))
+	}
+	return findings
+}
+
+func (s *OpsService) restoreChecks(ctx context.Context) []OpsRestoreCheck {
+	checks := []OpsRestoreCheck{
+		s.restorePostgresCheck(ctx),
+		s.restoreRedisCheck(ctx),
+	}
+	if registry := provider.Registry(); registry != nil && registry.OpsRestore != nil {
+		checks = append(checks, registry.OpsRestore.RestoreChecks(ctx)...)
+	}
+	return checks
+}
+
+func (s *OpsService) restorePostgresCheck(ctx context.Context) OpsRestoreCheck {
+	if s.databasePing == nil {
+		if s.bundles != nil || s.snapshots != nil {
+			return OpsRestoreCheck{Name: "postgresql", Required: true, Status: OpsStatusOK, Message: "PostgreSQL metadata repositories are configured."}
+		}
+		return OpsRestoreCheck{Name: "postgresql", Required: true, Status: OpsStatusNotConfigured, Message: "PostgreSQL metadata repositories are not configured.", Action: "Verify database_url and repository wiring before declaring the restore usable.", ErrorClass: "not_configured"}
+	}
+	if err := s.databasePing(ctx); err != nil {
+		return OpsRestoreCheck{Name: "postgresql", Required: true, Status: OpsStatusUnhealthy, Message: "PostgreSQL restore target is not reachable.", Action: "Restore or repair PostgreSQL before checking object availability.", ErrorClass: classifyOpsError(err)}
+	}
+	return OpsRestoreCheck{Name: "postgresql", Required: true, Status: OpsStatusOK, Message: "PostgreSQL restore target is reachable."}
+}
+
+func (s *OpsService) restoreRedisCheck(ctx context.Context) OpsRestoreCheck {
+	if s.redisPing == nil {
+		return OpsRestoreCheck{Name: "redis", Required: false, Status: OpsStatusDisabled, Message: "Redis is not configured; CE treats Redis as an optional cache/rate-limit dependency.", Action: "Warm caches naturally after cutover or restore Redis separately if your deployment relies on Redis-backed rate limiting."}
+	}
+	if err := s.redisPing(ctx); err != nil {
+		return OpsRestoreCheck{Name: "redis", Required: false, Status: OpsStatusDegraded, Message: "Redis is unavailable, but PostgreSQL remains authoritative for restore validation.", Action: "Restore Redis if you need cached quota/rate-limit continuity; otherwise allow caches to repopulate after cutover.", ErrorClass: classifyOpsError(err)}
+	}
+	return OpsRestoreCheck{Name: "redis", Required: false, Status: OpsStatusOK, Message: "Redis is reachable; restore validation still treats PostgreSQL and object storage as authoritative."}
+}
+
+func restoreMetadataFailure(kind, message, action string, err error) OpsRestoreArtifact {
+	return OpsRestoreArtifact{
+		Kind:       kind,
+		Status:     OpsStatusUnhealthy,
+		Message:    message,
+		Action:     action,
+		ErrorClass: classifyOpsError(err),
+	}
+}
+
+func finalizeRestoreArtifact(artifact OpsRestoreArtifact) OpsRestoreArtifact {
+	switch {
+	case artifact.Status == OpsStatusUnhealthy || artifact.Status == OpsStatusNotConfigured:
+		return artifact
+	case artifact.MetadataTruncated:
+		artifact.Status = OpsStatusDegraded
+		artifact.Message = fmt.Sprintf("%s restore manifest was generated for the bounded sample; more metadata exists outside this manifest.", artifact.Kind)
+		artifact.Action = "Increase restore rehearsal coverage or run an external full manifest workflow before relying on orphan detection."
+	default:
+		artifact.Status = OpsStatusOK
+		artifact.Message = fmt.Sprintf("%s restore manifest covers active metadata in scope.", artifact.Kind)
+	}
+	return artifact
+}
+
 func consistencyMetadataFailure(kind, message, action string, err error) OpsArtifactConsistency {
 	return OpsArtifactConsistency{
 		Kind:       kind,
@@ -1165,11 +1539,151 @@ func consistencyIssue(kind, id, key, status, message, action string, expectedSiz
 	}
 }
 
+func restoreFinding(kind, id, key, status, message, action string, expectedSize, actualSize *int64, errorClass string) OpsRestoreFinding {
+	return OpsRestoreFinding{
+		Kind:         kind,
+		ID:           id,
+		Key:          key,
+		Status:       status,
+		Message:      message,
+		Action:       action,
+		ExpectedSize: expectedSize,
+		ActualSize:   actualSize,
+		ErrorClass:   errorClass,
+	}
+}
+
 func appendLimitedIssue(issues []OpsConsistencyIssue, issue OpsConsistencyIssue) []OpsConsistencyIssue {
 	if len(issues) >= maxOpsConsistencyIssues {
 		return issues
 	}
 	return append(issues, issue)
+}
+
+func appendLimitedRestoreFinding(findings []OpsRestoreFinding, next ...OpsRestoreFinding) []OpsRestoreFinding {
+	for _, finding := range next {
+		if len(findings) >= maxOpsRestoreFindings {
+			return findings
+		}
+		findings = append(findings, finding)
+	}
+	return findings
+}
+
+func summarizeRestoreFindings(findings []OpsRestoreFinding) OpsRestoreFindingSummary {
+	var summary OpsRestoreFindingSummary
+	for _, finding := range findings {
+		switch finding.Status {
+		case "missing_object":
+			summary.MissingObjects++
+		case "size_mismatch":
+			summary.SizeMismatches++
+		case "orphan_object":
+			summary.OrphanObjects++
+		case "metadata_mismatch":
+			summary.MetadataMismatches++
+		case "check_failed":
+			summary.CheckFailures++
+		}
+	}
+	return summary
+}
+
+func restoreRecommendations(summary OpsRestoreFindingSummary, checks []OpsRestoreCheck) []string {
+	recommendations := []string{}
+	if summary.MissingObjects > 0 {
+		recommendations = append(recommendations, "Restore missing bundle or snapshot objects from the object-store backup before accepting sync traffic.")
+	}
+	if summary.SizeMismatches > 0 {
+		recommendations = append(recommendations, "Replace mismatched objects with the expected backup version; keep blobs opaque and do not parse or mutate contents.")
+	}
+	if summary.OrphanObjects > 0 {
+		recommendations = append(recommendations, "Investigate orphan objects against backup timing and retention policy; do not delete them automatically from this report.")
+	}
+	if summary.MetadataMismatches > 0 {
+		recommendations = append(recommendations, "Restore PostgreSQL to the expected backup point or regenerate the manifest from the intended source before cutover.")
+	}
+	if summary.CheckFailures > 0 {
+		recommendations = append(recommendations, "Fix dependency permissions or timeouts, then rerun restore verification.")
+	}
+	for _, check := range checks {
+		if check.Status == OpsStatusOK || check.Status == OpsStatusDisabled {
+			continue
+		}
+		if check.Action != "" {
+			recommendations = append(recommendations, check.Action)
+		}
+	}
+	if len(recommendations) == 0 {
+		recommendations = append(recommendations, "Restore rehearsal passed within the manifest scope; proceed to smoke tests and controlled cutover.")
+	}
+	return recommendations
+}
+
+func restoreOverall(summary OpsRestoreFindingSummary, artifacts []OpsRestoreArtifact, checks []OpsRestoreCheck) string {
+	if summary.MissingObjects > 0 || summary.SizeMismatches > 0 || summary.MetadataMismatches > 0 || summary.CheckFailures > 0 {
+		return OpsStatusUnhealthy
+	}
+	overall := OpsStatusOK
+	if summary.OrphanObjects > 0 {
+		overall = OpsStatusDegraded
+	}
+	for _, artifact := range artifacts {
+		switch artifact.Status {
+		case OpsStatusOK:
+			continue
+		case OpsStatusDegraded:
+			if overall == OpsStatusOK {
+				overall = OpsStatusDegraded
+			}
+		default:
+			return OpsStatusUnhealthy
+		}
+	}
+	for _, check := range checks {
+		switch check.Status {
+		case OpsStatusOK, OpsStatusDisabled:
+			continue
+		case OpsStatusDegraded:
+			if overall == OpsStatusOK {
+				overall = OpsStatusDegraded
+			}
+		default:
+			if check.Required {
+				return OpsStatusUnhealthy
+			}
+			if overall == OpsStatusOK {
+				overall = OpsStatusDegraded
+			}
+		}
+	}
+	return overall
+}
+
+func normalizeRestoreManifest(manifest OpsRestoreManifest) OpsRestoreManifest {
+	if manifest.Version == 0 {
+		manifest.Version = 1
+	}
+	if manifest.Objects == nil {
+		manifest.Objects = []OpsRestoreObject{}
+	}
+	if manifest.Artifacts == nil {
+		manifest.Artifacts = []OpsRestoreArtifact{}
+	}
+	return manifest
+}
+
+func cloneRestoreArtifacts(artifacts []OpsRestoreArtifact) []OpsRestoreArtifact {
+	return append([]OpsRestoreArtifact(nil), artifacts...)
+}
+
+func restoreArtifactsTruncated(artifacts []OpsRestoreArtifact) bool {
+	for _, artifact := range artifacts {
+		if artifact.MetadataTruncated {
+			return true
+		}
+	}
+	return false
 }
 
 func int64Value(v int64) *int64 {

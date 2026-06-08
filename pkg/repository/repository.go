@@ -667,6 +667,13 @@ func (r *BundleRepo) ListForOpsConsistency(ctx context.Context, limit int32) ([]
 	return scanBundles(rows)
 }
 
+// ListForOpsRestoreManifest returns active bundle metadata for restore
+// rehearsal manifests. It exposes object keys and sizes only; callers must not
+// read or decrypt blob contents.
+func (r *BundleRepo) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.BundleMeta, error) {
+	return r.ListForOpsConsistency(ctx, limit)
+}
+
 // ListDeletedBefore returns bundles soft-deleted before the given time (for cleanup).
 func (r *BundleRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error) {
 	const q = `
@@ -882,6 +889,13 @@ func (r *SnapshotRepo) ListForOpsConsistency(ctx context.Context, limit int32) (
 		snapshots = append(snapshots, s)
 	}
 	return snapshots, rows.Err()
+}
+
+// ListForOpsRestoreManifest returns active snapshot metadata for restore
+// rehearsal manifests. It exposes object keys and sizes only; callers must not
+// read or decrypt blob contents.
+func (r *SnapshotRepo) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.SnapshotMeta, error) {
+	return r.ListForOpsConsistency(ctx, limit)
 }
 
 // PruneOldest marks the oldest snapshots beyond the given limit as deleted and returns them.

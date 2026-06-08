@@ -77,6 +77,14 @@ type ReadinessProvider interface {
 	ReadinessChecks(ctx context.Context) []ReadinessCheck
 }
 
+// OpsRestoreProvider contributes edition-specific restore rehearsal checks.
+// CE registers a no-op default; Enterprise can add schema/table validation
+// without CE knowing commercial table names.
+type OpsRestoreProvider interface {
+	// RestoreChecks returns named validation checks for restored environments.
+	RestoreChecks(ctx context.Context) []OpsRestoreCheck
+}
+
 // ReadinessCheck is one named dependency check surfaced by /readyz.
 type ReadinessCheck struct {
 	// Name is a short key, e.g. "ee_schema" or "stripe".
@@ -87,6 +95,16 @@ type ReadinessCheck struct {
 	Healthy bool
 	// Critical, when true and the check is not Healthy, makes /readyz unhealthy.
 	Critical bool
+}
+
+// OpsRestoreCheck is one edition-specific restore validation item.
+type OpsRestoreCheck struct {
+	Name       string `json:"name"`
+	Required   bool   `json:"required"`
+	Status     string `json:"status"`
+	Message    string `json:"message"`
+	Action     string `json:"action,omitempty"`
+	ErrorClass string `json:"error_class,omitempty"`
 }
 
 // Shared Types
@@ -134,22 +152,24 @@ type QuotaUsageInfo struct {
 // ProviderRegistry holds the active provider implementations.
 // Enterprise packages call Register*() in their init() to replace defaults.
 type ProviderRegistry struct {
-	Auth      AuthProvider
-	Billing   BillingProvider
-	Quota     QuotaProvider
-	Readiness ReadinessProvider
-	Notifier  Notifier
-	Webhook   WebhookProvider
+	Auth       AuthProvider
+	Billing    BillingProvider
+	Quota      QuotaProvider
+	Readiness  ReadinessProvider
+	OpsRestore OpsRestoreProvider
+	Notifier   Notifier
+	Webhook    WebhookProvider
 }
 
 var (
 	registry = &ProviderRegistry{
-		Auth:      defaultAuthProvider,
-		Billing:   defaultBillingProvider,
-		Quota:     defaultQuotaProvider,
-		Readiness: defaultReadinessProvider,
-		Notifier:  NewLogNotifier(),
-		Webhook:   NewWebhookNotifier(WebhookConfig{}),
+		Auth:       defaultAuthProvider,
+		Billing:    defaultBillingProvider,
+		Quota:      defaultQuotaProvider,
+		Readiness:  defaultReadinessProvider,
+		OpsRestore: defaultOpsRestoreProvider,
+		Notifier:   NewLogNotifier(),
+		Webhook:    NewWebhookNotifier(WebhookConfig{}),
 	}
 	regMu sync.RWMutex
 )
@@ -187,6 +207,13 @@ func RegisterReadiness(p ReadinessProvider) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.Readiness = p
+}
+
+// RegisterOpsRestore replaces the current OpsRestoreProvider.
+func RegisterOpsRestore(p OpsRestoreProvider) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.OpsRestore = p
 }
 
 // RegisterNotifier replaces the current notification provider.

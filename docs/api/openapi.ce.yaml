@@ -965,6 +965,77 @@ components:
           items:
             type: object
             additionalProperties: true
+    OpsRestoreRehearsalRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [baseline, verify]
+          default: baseline
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+        manifest:
+          type: object
+          additionalProperties: true
+      description: Use `baseline` to generate a metadata/object-size manifest, then submit that manifest with `verify` in the restored environment.
+    OpsRestoreReport:
+      type: object
+      required: [overall, mode, checked_at, duration_millis, limit, zero_knowledge_boundary, artifacts, summary, recommendations]
+      properties:
+        overall:
+          type: string
+        mode:
+          type: string
+          enum: [baseline, verify]
+        checked_at:
+          type: string
+          format: date-time
+        duration_millis:
+          type: integer
+          format: int64
+        limit:
+          type: integer
+          format: int32
+        zero_knowledge_boundary:
+          type: string
+        manifest:
+          type: object
+          additionalProperties: true
+        artifacts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        summary:
+          type: object
+          required: [missing_objects, size_mismatch, orphan_objects, metadata_mismatch, check_failures]
+          properties:
+            missing_objects:
+              type: integer
+            size_mismatch:
+              type: integer
+            orphan_objects:
+              type: integer
+            metadata_mismatch:
+              type: integer
+            check_failures:
+              type: integer
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        recommendations:
+          type: array
+          items:
+            type: string
     OperationalRecordsExport:
       type: object
       required: [record_type, source, format, count, records]
@@ -2086,6 +2157,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpsConsistencyReport'
+  /api/v1/admin/ops/restore-rehearsal:
+    post:
+      tags: [Admin Ops]
+      summary: Generate or verify a restore rehearsal manifest
+      operationId: ceAdminOpsRestoreRehearsalV1
+      description: Requires `X-Admin-Key`. The report compares PostgreSQL metadata, object existence, and object size only; it never reads or decrypts blob contents.
+      security:
+        - adminKey: []
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [baseline, verify]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpsRestoreRehearsalRequest'
+      responses:
+        '200':
+          description: Restore rehearsal report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsRestoreReport'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
   /api/v1/admin/exports/operational-records:
     get:
       tags: [Admin Ops]

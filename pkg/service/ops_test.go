@@ -151,6 +151,10 @@ func (f fakeOpsBundleMetadata) ListForOpsConsistency(_ context.Context, limit in
 	return rows, nil
 }
 
+func (f fakeOpsBundleMetadata) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.BundleMeta, error) {
+	return f.ListForOpsConsistency(ctx, limit)
+}
+
 type fakeOpsSnapshotMetadata struct {
 	rows     []model.SnapshotMeta
 	countErr error
@@ -185,6 +189,10 @@ func (f fakeOpsSnapshotMetadata) ListForOpsConsistency(_ context.Context, limit 
 		rows = rows[:limit]
 	}
 	return rows, nil
+}
+
+func (f fakeOpsSnapshotMetadata) ListForOpsRestoreManifest(ctx context.Context, limit int32) ([]model.SnapshotMeta, error) {
+	return f.ListForOpsConsistency(ctx, limit)
 }
 
 type fakeOpsHistoryStore struct {
@@ -491,6 +499,73 @@ func TestOpsConsistencyFindsMissingAndSizeMismatchedObjects(t *testing.T) {
 	}
 	if store.gets != 0 {
 		t.Fatalf("consistency check read %d blob(s), want 0", store.gets)
+	}
+}
+
+func TestOpsRestoreBaselineAndVerifyReportsZeroKnowledgeFindings(t *testing.T) {
+	user := uuid.New()
+	bundles := []model.BundleMeta{
+		{UserID: user, BundleID: "ok", SizeBytes: 3},
+		{UserID: user, BundleID: "wrong-size", SizeBytes: 5},
+	}
+	snapshots := []model.SnapshotMeta{
+		{UserID: user, SnapshotID: "missing", SizeBytes: 7},
+	}
+	store := newFakeOpsBlobStore()
+	store.setObject(storage.BundleKey(user.String(), "ok"), 3)
+	store.setObject(storage.BundleKey(user.String(), "wrong-size"), 5)
+	store.setObject(storage.SnapshotKey(user.String(), "missing"), 7)
+	svc := NewOpsService(OpsDeps{
+		BlobStore:        store,
+		DatabasePing:     func(context.Context) error { return nil },
+		BundleMetadata:   fakeOpsBundleMetadata{rows: bundles},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{rows: snapshots},
+	})
+
+	baseline := svc.GenerateRestoreBaseline(context.Background(), 100)
+	if baseline.Overall != OpsStatusOK {
+		t.Fatalf("baseline overall = %q, want ok: %+v", baseline.Overall, baseline.Findings)
+	}
+	if baseline.Manifest == nil || len(baseline.Manifest.Objects) != 3 {
+		t.Fatalf("baseline manifest = %+v, want 3 objects", baseline.Manifest)
+	}
+	if store.gets != 0 {
+		t.Fatalf("restore baseline read %d blob(s), want 0", store.gets)
+	}
+
+	restoreStore := newFakeOpsBlobStore()
+	restoreStore.setObject(storage.BundleKey(user.String(), "ok"), 3)
+	restoreStore.setObject(storage.BundleKey(user.String(), "wrong-size"), 4)
+	restoreStore.setObject(storage.BundleKey(user.String(), "orphan"), 11)
+	verifySvc := NewOpsService(OpsDeps{
+		BlobStore:        restoreStore,
+		DatabasePing:     func(context.Context) error { return nil },
+		RedisPing:        func(context.Context) error { return errors.New("redis down") },
+		BundleMetadata:   fakeOpsBundleMetadata{rows: []model.BundleMeta{bundles[0]}},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{rows: snapshots},
+	})
+
+	report := verifySvc.VerifyRestore(context.Background(), *baseline.Manifest, 100)
+	if report.Overall != OpsStatusUnhealthy {
+		t.Fatalf("verify overall = %q, want unhealthy: %+v", report.Overall, report)
+	}
+	if report.Summary.MissingObjects != 1 || report.Summary.SizeMismatches != 1 || report.Summary.OrphanObjects != 1 || report.Summary.MetadataMismatches != 1 {
+		t.Fatalf("summary = %+v, want missing/size/orphan/metadata all 1", report.Summary)
+	}
+	statuses := map[string]bool{}
+	for _, finding := range report.Findings {
+		statuses[finding.Status] = true
+		if finding.Action == "" {
+			t.Fatalf("finding missing action: %+v", finding)
+		}
+	}
+	for _, want := range []string{"missing_object", "size_mismatch", "orphan_object", "metadata_mismatch"} {
+		if !statuses[want] {
+			t.Fatalf("finding statuses = %+v, missing %s", statuses, want)
+		}
+	}
+	if restoreStore.gets != 0 {
+		t.Fatalf("restore verify read %d blob(s), want 0", restoreStore.gets)
 	}
 }
 

@@ -174,6 +174,123 @@ go run ./cmd/hsync-server doctor --format human
 go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server
 ```
 
+### Disaster recovery rehearsal
+
+Use a restore rehearsal before relying on a backup set for production recovery.
+The built-in report stays inside the zero-knowledge boundary: it compares
+PostgreSQL metadata, S3 object existence, and object size only. It never
+downloads, parses, or decrypts bundle or snapshot blobs.
+
+#### 1. Backup
+
+Capture PostgreSQL and the object bucket from the same intended restore point.
+Redis is optional in CE; treat it as cache/rate-limit state rather than the
+authoritative source for user data.
+
+For the full Docker stack, the PostgreSQL service mounts
+`deployments/postgres/backup` as `/backup`. A typical operator-managed backup is:
+
+```bash
+docker compose -f deployments/docker-compose.full.yml exec postgres \
+  pg_dump -U hsync -d hsync -Fc -f /backup/hsync-$(date +%Y%m%d%H%M%S).dump
+
+mc mirror --overwrite <minio-or-s3-alias>/hsync-bundles ./backup/hsync-bundles
+```
+
+Use the S3 tool and consistency mode appropriate for your provider. The server
+does not create cross-cloud backups and does not delete objects during backup.
+
+After backup capture, generate a baseline manifest from the source environment:
+
+```bash
+curl -sS -X POST "https://<source>/admin/ops/restore-rehearsal" \
+  -H "X-Admin-Key: $HSYNC_ADMIN_KEY" \
+  -H "Idempotency-Key: restore-baseline-$(date +%s)" \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"baseline","limit":1000}' \
+  > restore-baseline.json
+```
+
+The `manifest` field in the response is the portable restore target. If the
+report is `degraded` because metadata was truncated, raise `limit` or use an
+external full manifest workflow before depending on orphan detection.
+
+#### 2. Restore
+
+Restore into an isolated environment first, not directly into the production
+traffic target.
+
+1. Restore PostgreSQL from the chosen dump or database snapshot.
+2. Restore or mirror the object bucket/prefix for `bundles/` and `snapshots/`.
+3. Start the server against the restored PostgreSQL and bucket.
+4. Run `migrate status --json`, `migrate plan`, and `doctor --format human` to
+   confirm the restored database and binary are a safe pair.
+5. Restore Redis only if your deployment needs warm rate-limit/cache continuity;
+   otherwise let Redis repopulate after cutover.
+
+#### 3. Verify
+
+Run dependency and consistency checks first:
+
+```bash
+curl -sS -X POST "https://<restore>/admin/ops/check" \
+  -H "X-Admin-Key: $HSYNC_ADMIN_KEY" \
+  -H "Idempotency-Key: restore-check-$(date +%s)"
+
+curl -sS -X POST "https://<restore>/admin/ops/consistency?limit=1000" \
+  -H "X-Admin-Key: $HSYNC_ADMIN_KEY" \
+  -H "Idempotency-Key: restore-consistency-$(date +%s)"
+```
+
+Then submit the baseline manifest to the restored environment:
+
+```bash
+jq '{mode:"verify", limit:1000, manifest:.manifest}' restore-baseline.json \
+  | curl -sS -X POST "https://<restore>/admin/ops/restore-rehearsal" \
+      -H "X-Admin-Key: $HSYNC_ADMIN_KEY" \
+      -H "Idempotency-Key: restore-verify-$(date +%s)" \
+      -H "Content-Type: application/json" \
+      --data-binary @- \
+  > restore-verify.json
+```
+
+Review these fields before cutover:
+
+- `summary.missing_objects`: restore referenced PostgreSQL metadata but the S3
+  object is absent. Restore the object backup before accepting sync traffic.
+- `summary.size_mismatch`: object size differs from the baseline manifest.
+  Restore the expected object version; do not inspect or mutate blob contents.
+- `summary.orphan_objects`: object storage contains keys not referenced by the
+  manifest. Investigate backup timing and retention; do not delete
+  automatically from this report.
+- `summary.metadata_mismatch`: restored PostgreSQL active metadata differs from
+  the manifest. Restore the intended database backup point or regenerate the
+  baseline from the source of truth.
+- `checks.redis`: Redis failures are degraded, not fatal, because PostgreSQL and
+  object storage are authoritative for CE restore validation.
+- `recommendations`: operator actions to complete before cutover.
+
+Enterprise deployments add restore checks for commercial entitlement tables,
+`payment_orders`, AI credit ledger/reservation tables, and
+`payment_provider_instances`. Missing Enterprise tables mean the restored
+environment is not ready for billing, fulfillment, credit-consuming features, or
+provider routing even when CE blob metadata is intact.
+
+#### 4. Cutover
+
+Cut traffic over only after restore verification is `ok`, or after every
+`degraded` item is understood and accepted by the operator.
+
+1. Keep source writes paused or in maintenance mode.
+2. Run smoke tests against the restored target, including `/healthz`, `/readyz`,
+   `/api/meta/overview`, `/admin/ops/summary`, and a representative authenticated
+   read flow.
+3. Point DNS/load balancer traffic to the restored target.
+4. Watch `/metrics`, notification failures, WebSocket connections, and new
+   `ops` reports for the first sync cycle.
+5. Keep the source backup and baseline manifest until the new environment has
+   passed its retention and rollback window.
+
 ## 2. Admin console
 
 The CE console is a lightweight operator shell, not a separate frontend app.
@@ -210,6 +327,7 @@ to the public internet.
 - `GET /admin/ops/summary`
 - `POST /admin/ops/check`
 - `POST /admin/ops/consistency`
+- `POST /admin/ops/restore-rehearsal`
 
 ### Mutation safeguards
 
@@ -220,7 +338,7 @@ High-risk admin mutations require an `Idempotency-Key` header in addition to
 - System setting writes.
 - User quota recalculation.
 - Notification retry, requeue, and discard actions.
-- Ops dependency and consistency checks.
+- Ops dependency, consistency, and restore rehearsal checks.
 
 Notification outbox actions use the server idempotency store to replay matching
 requests. Other CE admin mutations require the header as an operator safety

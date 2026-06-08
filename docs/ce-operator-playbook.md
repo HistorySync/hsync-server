@@ -55,6 +55,16 @@ That sequence quickly separates "process is up" from "dependencies are healthy"
 from "admin surface is reachable" from "the server sees its own config and
 storage shape the way operators expect".
 
+### Prometheus alerts
+
+Deployable CE alert rules live in
+`deploy/observability/ce-alert-rules.yaml`. The P0/P1/P2 incident severity
+definitions live in `docs/observability/incident-severities.md`.
+
+Each alert includes `severity`, `summary`, `runbook_url`, and `first_action`
+annotations. Use `first_action` for the first operator move, then follow the
+section linked by `runbook_url`.
+
 ### Redacted support bundle
 
 When a user reports an issue that needs support review, generate a support
@@ -569,6 +579,20 @@ The route only exists when `metrics_enabled=true`.
 3. Check `/readyz` for the same dependency family.
 4. Check scheduler metrics if the symptom involves periodic work.
 5. Check notification delivery metrics if the symptom involves outbox failures.
+
+### Alert coverage
+
+The CE rule file covers these operator-facing alerts:
+
+- `HSyncCEReadyzCritical`: critical database or storage readiness failure.
+- `HSyncCES3Unavailable`: S3-compatible object storage readiness failure.
+- `HSyncCENotificationFailureSpike`: notification delivery failure spike.
+- `HSyncCEQuotaReservationRollbackSpike`: upload quota reservation rollback spike.
+- `HSyncCESchedulerStale`: selected scheduler tasks have not reported a recent run.
+
+Keep additional alert labels low-cardinality. Dependency, task, category,
+result, and severity are acceptable; user, device, bundle, snapshot, request,
+email, and object ids are not.
 
 ## 6. Rate-Limit Degradation
 

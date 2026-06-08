@@ -564,6 +564,26 @@ func (r *BundleRepo) ListByUser(ctx context.Context, userID uuid.UUID, cursor st
 	return scanBundles(rows)
 }
 
+// ListAllByUser returns all non-deleted bundle metadata for a user ordered by
+// upload time descending for privacy export and support workflows.
+func (r *BundleRepo) ListAllByUser(ctx context.Context, userID uuid.UUID) ([]model.BundleMeta, error) {
+	const q = `
+		SELECT bundle_id, user_id, uploader_device_uuid,
+		       lamport_lo, lamport_hi, event_count, size_bytes,
+		       cipher_id, key_generation, uploaded_at, deleted_at
+		FROM bundles
+		WHERE user_id = $1 AND deleted_at IS NULL
+		ORDER BY uploaded_at DESC, bundle_id DESC`
+
+	rows, err := r.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list all bundles: %w", err)
+	}
+	defer rows.Close()
+
+	return scanBundles(rows)
+}
+
 // SoftDelete marks a bundle as deleted and returns the deleted metadata.
 func (r *BundleRepo) SoftDelete(ctx context.Context, userID uuid.UUID, bundleID string) (*model.BundleMeta, error) {
 	now := time.Now()
@@ -756,6 +776,33 @@ func (r *SnapshotRepo) GetByID(ctx context.Context, userID uuid.UUID, snapshotID
 		return nil, fmt.Errorf("get snapshot: %w", err)
 	}
 	return s, nil
+}
+
+// ListAllByUser returns all non-deleted snapshot metadata for a user ordered
+// by creation time descending for privacy export and support workflows.
+func (r *SnapshotRepo) ListAllByUser(ctx context.Context, userID uuid.UUID) ([]model.SnapshotMeta, error) {
+	const q = `
+		SELECT snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
+		FROM snapshots
+		WHERE user_id = $1 AND deleted_at IS NULL
+		ORDER BY created_at DESC, snapshot_id DESC`
+
+	rows, err := r.pool.Query(ctx, q, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list all snapshots: %w", err)
+	}
+	defer rows.Close()
+
+	var snapshots []model.SnapshotMeta
+	for rows.Next() {
+		var s model.SnapshotMeta
+		if err := rows.Scan(&s.SnapshotID, &s.UserID, &s.BaseHLC, &s.SizeBytes,
+			&s.CipherID, &s.KeyGeneration, &s.CreatedAt, &s.DeletedAt); err != nil {
+			return nil, fmt.Errorf("scan snapshot: %w", err)
+		}
+		snapshots = append(snapshots, s)
+	}
+	return snapshots, rows.Err()
 }
 
 // SoftDelete marks a snapshot as deleted and returns the deleted metadata.

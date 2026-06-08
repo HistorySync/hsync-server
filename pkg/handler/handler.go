@@ -289,6 +289,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Post("/passkeys/registration/begin", h.BeginPasskeyRegistration)
 	me.Post("/passkeys/registration/finish", h.RequirePasskeyRegistrationStepUp, h.FinishPasskeyRegistration)
 	me.Delete("/passkeys/:id", h.DeletePasskey, stepUp)
+	me.Get("/privacy-export", h.ExportPrivacyMetadata)
 	me.Get("/notification-preferences", h.GetNotificationPreferences)
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
@@ -1667,6 +1668,32 @@ func (h *Handlers) UpdateNotificationPreferences(c fiber.Ctx) error {
 		}
 	}
 	return c.JSON(prefs)
+}
+
+func (h *Handlers) ExportPrivacyMetadata(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Account == nil {
+		return apierrors.NewInternal("account service is not configured")
+	}
+	userID := auth.UserID(c)
+	exported, err := h.deps.Services.Account.ExportPrivacyMetadata(c.Context(), userID)
+	if err != nil {
+		if errors.Is(err, service.ErrUserNotFound) {
+			return apierrors.New(apierrors.CodeNotFound, err.Error())
+		}
+		return apierrors.NewInternal(err.Error())
+	}
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(userID),
+		EventType:   model.AuditEventPrivacyExport,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+		Metadata: map[string]any{
+			"bundle_count":   len(exported.Bundles),
+			"snapshot_count": len(exported.Snapshots),
+			"device_count":   len(exported.Devices),
+		},
+	})
+	return c.JSON(exported)
 }
 
 // TwoFactorStatus returns the authenticated user's 2FA state.

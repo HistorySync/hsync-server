@@ -117,6 +117,25 @@ func (r *AuditRepo) SecurityEventCounts(ctx context.Context, since24h, since7d, 
 	return counts, rows.Err()
 }
 
+func (r *AuditRepo) ListVisibleByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AuditLog, error) {
+	if limit <= 0 || limit > maxAuditListLimit {
+		limit = defaultAuditListLimit
+	}
+	const q = `
+		SELECT id, actor_user_id, event_type, target_type, target_id, ip, user_agent, metadata, created_at
+		FROM audit_logs
+		WHERE actor_user_id = $1 OR (target_type = 'user' AND target_id = $2)
+		ORDER BY created_at DESC, id DESC
+		LIMIT $3`
+	rows, err := r.pool.Query(ctx, q, userID, userID.String(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list visible audit logs: %w", err)
+	}
+	defer rows.Close()
+
+	return scanAuditLogs(rows)
+}
+
 func normalizeAuditListFilter(filter model.AuditListFilter) model.AuditListFilter {
 	if filter.Limit <= 0 || filter.Limit > maxAuditListLimit {
 		filter.Limit = defaultAuditListLimit

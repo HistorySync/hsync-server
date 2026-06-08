@@ -192,6 +192,7 @@ func reservationCategory(req ReservationRequest) string {
 // Services aggregates all business service instances.
 type Services struct {
 	Repos         *repository.Repos
+	Account       *AccountService
 	Auth          *AuthService
 	Bundle        *BundleService
 	Snapshot      *SnapshotService
@@ -300,9 +301,34 @@ func New(deps Deps) *Services {
 		Notifier: deps.Notifier,
 		Webhook:  deps.Webhook,
 	})
+	var accountUsers accountUserStore
+	var accountDevices accountDeviceStore
+	var accountBundles accountBundleStore
+	var accountSnapshots accountSnapshotStore
+	var accountQuota accountQuotaStore
+	var accountAudit accountAuditStore
+	if deps.Repos != nil {
+		accountUsers = deps.Repos.Users
+		accountDevices = deps.Repos.Devices
+		accountBundles = deps.Repos.Bundles
+		accountSnapshots = deps.Repos.Snapshots
+		accountQuota = deps.Repos.Quota
+		accountAudit = deps.Repos.AuditLogs
+	}
+	accountSvc := NewAccountService(AccountDeps{
+		Users:                accountUsers,
+		Devices:              accountDevices,
+		Bundles:              accountBundles,
+		Snapshots:            accountSnapshots,
+		Quota:                accountQuota,
+		Notifications:        notifSvc,
+		Audit:                accountAudit,
+		RetentionGracePeriod: retentionGracePeriod(deps.Config),
+	})
 
 	return &Services{
 		Repos:         deps.Repos,
+		Account:       accountSvc,
 		Auth:          authSvc,
 		Bundle:        bundleSvc,
 		Snapshot:      snapshotSvc,
@@ -351,6 +377,13 @@ func opsAlertAppName(cfg *config.Config) string {
 		return ""
 	}
 	return cfg.WebAppName
+}
+
+func retentionGracePeriod(cfg *config.Config) time.Duration {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.RetentionGracePeriod
 }
 
 type RetentionService struct {

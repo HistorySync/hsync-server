@@ -55,6 +55,39 @@ That sequence quickly separates "process is up" from "dependencies are healthy"
 from "admin surface is reachable" from "the server sees its own config and
 storage shape the way operators expect".
 
+### Redacted support bundle
+
+When a user reports an issue that needs support review, generate a support
+bundle instead of sending separate screenshots or raw admin responses:
+
+```bash
+curl -H "X-Admin-Key: $HSYNC_ADMIN_KEY" \
+  "https://<server>/admin/support-bundle?since=2026-06-08T00:00:00Z"
+```
+
+The console mirror is also available at
+`GET /api/v1/admin/support-bundle?since=<RFC3339>`. The optional `since` query
+limits recent scheduler history to the requested time window.
+
+The bundle includes build info, the CE doctor report, readiness summary, ops
+summary, recent scheduler runs, config presence, and the OpenAPI contract
+version/path. It is designed to be safe for operator-to-support sharing after
+review:
+
+- Encrypted bundle and snapshot blob contents are never exported.
+- Raw webhook payloads are not exported.
+- Tokens, webhook secrets, license keys, private keys, API keys, cookies, and
+  authorization values are redacted.
+- Email addresses are masked with a stable hash prefix rather than shown in
+  plaintext.
+- Audit metadata is not exported as a raw sensitive-value dump; values matching
+  the redaction policy are masked.
+
+The bundle still reveals operational posture, dependency health, feature
+enablement, counts, and timing. Review it before forwarding outside the
+operator/support channel, especially if your deployment names, bucket names, or
+internal hostnames are sensitive in your organization.
+
 ### Deployment preflight doctor
 
 Run the offline preflight doctor before starting a new deployment or after

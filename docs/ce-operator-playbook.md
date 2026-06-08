@@ -53,6 +53,50 @@ That sequence quickly separates "process is up" from "dependencies are healthy"
 from "admin surface is reachable" from "the server sees its own config and
 storage shape the way operators expect".
 
+### Deployment preflight doctor
+
+Run the offline preflight doctor before starting a new deployment or after
+changing infrastructure config:
+
+```bash
+go run ./cmd/hsync-server doctor --format human
+go run ./cmd/hsync-server preflight --format json
+```
+
+The command loads the same CE config files and `HSYNC_` environment variables as
+the server, but it does not start Fiber, register HTTP routes, run migrations, or
+modify config. It exits with `0` when there are no `error` checks, `1` when any
+`error` check is present, and `2` for command usage/output errors.
+
+Supported output formats:
+
+- `human`: grouped operator-readable lines with actions.
+- `json`: structured report for CI/CD gates and deployment automation.
+
+Severity meanings:
+
+- `ok`: the check passed or the disabled state is explicitly supported.
+- `warn`: deployment can run, but the operator should confirm the posture.
+- `error`: fix before declaring the deployment ready.
+
+The report never prints secret values. Secrets are shown only as `present`,
+`missing`, or a short fingerprint prefix where useful.
+
+CE preflight checks cover:
+
+- JWT signing key and `security_secret` decoding.
+- `admin_key` presence for admin and ops routes.
+- PostgreSQL connectivity and Redis optional degraded mode.
+- S3-compatible storage config and a read-only bucket/list probe.
+- Metrics path and CIDR/address parsing.
+- SMTP and ops alert destination structure.
+- Runtime settings for `maintenance_mode`, `signups_enabled`, and passkey
+  WebAuthn origins/RP ID when PostgreSQL settings are reachable.
+
+Use `--timeout` to bound dependency probes in CI or during an outage, for
+example `--timeout 2s`. A timeout produces diagnostics instead of starting the
+server and failing later.
+
 ## 2. Admin console
 
 The CE console is a lightweight operator shell, not a separate frontend app.

@@ -1,0 +1,52 @@
+groups:
+  - name: hsync-ce-alerts
+    rules:
+      - alert: HSyncCEReadyzCritical
+        expr: max(hsync_readiness_dependency_status{result="error",dependency=~"database|storage"}) > 0
+        for: 2m
+        labels:
+          severity: p0
+        annotations:
+          summary: "CE readiness has a critical dependency failure"
+          runbook_url: "docs/ce-operator-playbook.md#recommended-incident-flow"
+          first_action: "Open /readyz, identify the failing critical dependency, then keep writes stopped until PostgreSQL or storage is healthy."
+
+      - alert: HSyncCES3Unavailable
+        expr: hsync_readiness_dependency_status{dependency="storage",result="error"} == 1
+        for: 2m
+        labels:
+          severity: p0
+        annotations:
+          summary: "CE S3-compatible object storage is unavailable"
+          runbook_url: "docs/ce-operator-playbook.md#deployment-preflight-doctor"
+          first_action: "Run the read-only doctor or /admin/ops/check, verify s3_endpoint, bucket, credentials, and provider reachability before accepting upload traffic."
+
+      - alert: HSyncCENotificationFailureSpike
+        expr: sum(rate(hsync_notification_delivery_total{result="failure"}[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: p1
+        annotations:
+          summary: "CE notification delivery failures are spiking"
+          runbook_url: "docs/ce-operator-playbook.md#4-notification-outbox"
+          first_action: "Inspect /admin/notifications/failures, confirm SMTP or webhook configuration, and requeue only after the delivery path is fixed."
+
+      - alert: HSyncCEQuotaReservationRollbackSpike
+        expr: sum(rate(hsync_quota_reservations_total{result="rollback"}[10m])) > 0.02
+        for: 10m
+        labels:
+          severity: p1
+        annotations:
+          summary: "CE quota reservations are rolling back more often than expected"
+          runbook_url: "docs/ce-operator-playbook.md#recommended-incident-flow"
+          first_action: "Check recent upload failures, storage readiness, and quota reservation errors before retrying affected clients."
+
+      - alert: HSyncCESchedulerStale
+        expr: time() - max by (task) (timestamp(hsync_scheduler_runs_total{task=~"notification-outbox|ops-dependency-check|ops-consistency-check"})) > 21600
+        for: 15m
+        labels:
+          severity: p1
+        annotations:
+          summary: "CE scheduler task has not reported a recent run"
+          runbook_url: "docs/ce-operator-playbook.md#recommended-incident-flow"
+          first_action: "Confirm background_tasks_enabled, PostgreSQL advisory-lock access, and the configured interval for the stale task."

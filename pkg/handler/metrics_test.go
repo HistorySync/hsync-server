@@ -90,3 +90,35 @@ func TestReadyzRecordsDependencyMetricLabels(t *testing.T) {
 		t.Fatalf("metrics body missing readiness label %q:\n%s", want, text)
 	}
 }
+
+func TestMetricsEndpointExposesWebSocketHardeningMetrics(t *testing.T) {
+	app := fiber.New(fiber.Config{ErrorHandler: New(Deps{}).ErrorHandler})
+	h := New(Deps{Metrics: MetricsConfig{
+		Enabled: true,
+		Path:    "/metrics",
+	}})
+	h.RegisterRoutes(app)
+
+	observability.SetWebSocketActiveConnections(7)
+	observability.RecordWebSocketUpgradeRejected("origin")
+	observability.RecordWebSocketUpgradeRejected("capacity")
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/metrics", nil))
+	if err != nil {
+		t.Fatalf("metrics app.Test() error = %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`hsync_websocket_connections_active 7`,
+		`hsync_websocket_upgrade_rejections_total{reason="origin"}`,
+		`hsync_websocket_upgrade_rejections_total{reason="capacity"}`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, text)
+		}
+	}
+}

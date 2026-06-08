@@ -62,6 +62,16 @@ var (
 		Name: "hsync_readiness_dependency_status",
 		Help: "Readiness dependency status, set to 1 for the current result and 0 for the other known results.",
 	}, []string{"dependency", "result"})
+
+	websocketConnectionsActive = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "hsync_websocket_connections_active",
+		Help: "Current active WebSocket connections.",
+	})
+
+	websocketUpgradeRejections = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "hsync_websocket_upgrade_rejections_total",
+		Help: "Total WebSocket upgrade rejections by reason.",
+	}, []string{"reason"})
 )
 
 func init() {
@@ -76,6 +86,8 @@ func init() {
 		notificationDeliveries,
 		idempotencyEvents,
 		readinessDependencyStatus,
+		websocketConnectionsActive,
+		websocketUpgradeRejections,
 	)
 }
 
@@ -129,6 +141,14 @@ func RecordReadinessDependency(dependency, result string) {
 		}
 		readinessDependencyStatus.WithLabelValues(dependency, candidate).Set(value)
 	}
+}
+
+func SetWebSocketActiveConnections(count int) {
+	websocketConnectionsActive.Set(float64(count))
+}
+
+func RecordWebSocketUpgradeRejected(reason string) {
+	websocketUpgradeRejections.WithLabelValues(normalizeLabel(reason, "unknown")).Inc()
 }
 
 func normalizeRoute(route string) string {

@@ -22,6 +22,7 @@ import (
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/repository"
 )
 
@@ -190,7 +191,9 @@ func (h *Hub) Run() {
 				h.clients[client.userID] = make(map[*Client]bool)
 			}
 			h.clients[client.userID][client] = true
+			active := h.activeConnectionCountLocked()
 			h.mu.Unlock()
+			observability.SetWebSocketActiveConnections(active)
 			log.Debug().
 				Str("user_id", client.userID.String()).
 				Str("device_id", client.deviceID.String()).
@@ -208,7 +211,9 @@ func (h *Hub) Run() {
 					}
 				}
 			}
+			active := h.activeConnectionCountLocked()
 			h.mu.Unlock()
+			observability.SetWebSocketActiveConnections(active)
 			log.Debug().
 				Str("user_id", client.userID.String()).
 				Msg("ws client disconnected")
@@ -406,6 +411,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !h.checkOrigin(r) {
+		observability.RecordWebSocketUpgradeRejected("origin")
 		http.Error(w, "websocket origin is not allowed", http.StatusForbidden)
 		return
 	}
@@ -429,6 +435,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.reserveSlot(device.UserID) {
+		observability.RecordWebSocketUpgradeRejected("capacity")
 		http.Error(w, "websocket connection capacity exceeded", http.StatusTooManyRequests)
 		return
 	}

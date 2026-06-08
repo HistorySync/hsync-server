@@ -174,6 +174,12 @@ func Load() (*Config, error) {
 	return cfg, cfg.Validate()
 }
 
+// LoadUnchecked reads configuration from file and environment without running
+// validation so tooling can inspect incomplete deployment configs.
+func LoadUnchecked() (*Config, error) {
+	return load(nil)
+}
+
 // LoadWithExtraFiles loads the base CE configuration and then merges any extra
 // YAML config files by name before environment variables are applied. Enterprise
 // uses this to layer configs/config.ee.yaml over the CE defaults.
@@ -183,6 +189,13 @@ func LoadWithExtraFiles(extraNames ...string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, cfg.Validate()
+}
+
+// LoadUncheckedWithExtraFiles reads configuration with optional layered files
+// but skips validation so tooling can report missing settings instead of
+// exiting early.
+func LoadUncheckedWithExtraFiles(extraNames ...string) (*Config, error) {
+	return load(extraNames)
 }
 
 // LoadForMigrations loads configuration for the `migrate` subcommand. It

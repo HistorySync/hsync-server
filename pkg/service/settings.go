@@ -339,3 +339,13 @@ func defaultSettingDefinitions() []SettingDefinition {
 		},
 	}
 }
+
+// DefaultSettingDefinitions returns a copy of the built-in CE system setting
+// whitelist so offline tooling can inspect effective runtime settings without
+// duplicating the canonical definitions.
+func DefaultSettingDefinitions() []SettingDefinition {
+	defs := defaultSettingDefinitions()
+	out := make([]SettingDefinition, len(defs))
+	copy(out, defs)
+	return out
+}

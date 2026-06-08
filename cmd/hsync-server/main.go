@@ -38,8 +38,13 @@ func main() {
 
 	// Subcommands
 	// "migrate" runs database migrations and exits; anything else starts the server.
-	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		os.Exit(runMigrate(os.Args[2:]))
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "migrate":
+			os.Exit(runMigrate(os.Args[2:]))
+		case "doctor", "preflight":
+			os.Exit(runDoctor(os.Args[2:]))
+		}
 	}
 
 	// Config

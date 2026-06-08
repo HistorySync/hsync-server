@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,14 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/historysync/hsync-server/pkg/apierrors"
 )
+
+type errorLimiter struct {
+	err error
+}
+
+func (l errorLimiter) Allow(context.Context, string, int, time.Duration) (Result, error) {
+	return Result{}, l.err
+}
 
 func TestMemoryLimiterAllowsUpToLimit(t *testing.T) {
 	cur := time.Unix(1_000_000, 0)
@@ -77,6 +86,43 @@ func TestMemoryLimiterNonPositiveLimitAllows(t *testing.T) {
 	}
 }
 
+func TestDenyLimiterRejectsPositiveLimit(t *testing.T) {
+	limiter := NewDenyLimiter()
+	res, err := limiter.Allow(context.Background(), "k", 1, time.Minute)
+	if err != nil {
+		t.Fatalf("Allow() error = %v", err)
+	}
+	if res.Allowed {
+		t.Fatal("DenyLimiter allowed positive limit request, want denied")
+	}
+}
+
+func TestNewLimiterForRedisUnavailableFallbackModes(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	mem := NewLimiterForRedisUnavailable(ctx, RedisFallbackMemory)
+	if mem.Mode != RedisFallbackMemory || mem.Limiter == nil {
+		t.Fatalf("memory fallback = %#v, want memory limiter", mem)
+	}
+	if _, ok := mem.Limiter.(*MemoryLimiter); !ok {
+		t.Fatalf("memory fallback limiter = %T, want *MemoryLimiter", mem.Limiter)
+	}
+
+	deny := NewLimiterForRedisUnavailable(ctx, RedisFallbackDeny)
+	if deny.Mode != RedisFallbackDeny || deny.Limiter == nil {
+		t.Fatalf("deny fallback = %#v, want deny limiter", deny)
+	}
+	if _, ok := deny.Limiter.(*DenyLimiter); !ok {
+		t.Fatalf("deny fallback limiter = %T, want *DenyLimiter", deny.Limiter)
+	}
+
+	disabled := NewLimiterForRedisUnavailable(ctx, RedisFallbackDisable)
+	if disabled.Mode != RedisFallbackDisable || disabled.Limiter != nil {
+		t.Fatalf("disable fallback = %#v, want nil limiter", disabled)
+	}
+}
+
 func TestMemoryLimiterSweepEvictsExpired(t *testing.T) {
 	cur := time.Unix(1_000_000, 0)
 	m := NewMemoryLimiter()
@@ -134,6 +180,69 @@ func TestAuthTokenRateDecisionForValueHashesToken(t *testing.T) {
 	}
 	if d.Limit != 5 {
 		t.Fatalf("limit = %d, want 5", d.Limit)
+	}
+}
+
+func TestRateLimitFailsOpenOnLimiterErrorByDefault(t *testing.T) {
+	app := fiber.New()
+	calls := 0
+	app.Post("/", func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	}, RateLimit(RateLimitConfig{
+		Limiter: errorLimiter{err: errors.New("redis unavailable")},
+		Window:  time.Minute,
+		Classify: func(fiber.Ctx) RateDecision {
+			return RateDecision{Key: "auth:login:ip:127.0.0.1", Limit: 1, Policy: "public_auth"}
+		},
+	}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusNoContent)
+	}
+	if calls != 1 {
+		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+}
+
+func TestRateLimitFailsClosedOnLimiterError(t *testing.T) {
+	app := fiber.New()
+	calls := 0
+	app.Post("/", func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	}, RateLimit(RateLimitConfig{
+		Limiter:  errorLimiter{err: errors.New("redis unavailable")},
+		Window:   time.Minute,
+		Policy:   "public_auth",
+		FailMode: RateLimitFailClosed,
+		Classify: func(fiber.Ctx) RateDecision {
+			return RateDecision{Key: "auth:login:ip:127.0.0.1", Limit: 1}
+		},
+	}))
+
+	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusTooManyRequests {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusTooManyRequests)
+	}
+	if calls != 0 {
+		t.Fatalf("handler calls = %d, want 0", calls)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if !strings.Contains(string(body), string(apierrors.CodeRateLimited)) {
+		t.Fatalf("body = %s, want %s", body, apierrors.CodeRateLimited)
 	}
 }
 

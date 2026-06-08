@@ -51,6 +51,7 @@ type Deps struct {
 	AdminKey     string
 	BuildInfo    buildinfo.Info
 	RateLimiter  middleware.Limiter // may be nil to disable rate limiting
+	RateLimit    middleware.RateLimitRuntimeConfig
 	OptionStore  config.OptionStore // may be nil if dynamic options are disabled
 	Turnstile    middleware.TurnstileConfig
 	Metrics      MetricsConfig
@@ -130,15 +131,23 @@ func perIPRateDecision(limit int) func(fiber.Ctx) middleware.RateDecision {
 	}
 }
 
-func authRateLimit(limiter middleware.Limiter, window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
+func authRateLimit(limiter middleware.Limiter, runtime middleware.RateLimitRuntimeConfig, window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
 	return middleware.RateLimit(middleware.RateLimitConfig{
 		Limiter:  limiter,
 		Window:   window,
+		Policy:   "public_auth",
+		FailMode: runtime.PublicAuthFailMode(),
 		Classify: classify,
 	})
 }
 
 func (h *Handlers) enforceAuthRateLimit(c fiber.Ctx, window time.Duration, decision middleware.RateDecision) (bool, error) {
+	if decision.Policy == "" {
+		decision.Policy = "public_auth"
+	}
+	if decision.FailMode == "" {
+		decision.FailMode = h.deps.RateLimit.PublicAuthFailMode()
+	}
 	return middleware.EnforceRateLimit(c, h.deps.RateLimiter, window, decision)
 }
 
@@ -209,10 +218,12 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	publicAuthRL := middleware.RateLimit(middleware.RateLimitConfig{
 		Limiter:  h.deps.RateLimiter,
 		Window:   rateLimitWindow,
+		Policy:   "public_auth",
+		FailMode: h.deps.RateLimit.PublicAuthFailMode(),
 		Classify: perIPRateDecision(publicAuthRPM),
 	})
 	authRL := func(window time.Duration, classify func(fiber.Ctx) middleware.RateDecision) fiber.Handler {
-		return authRateLimit(h.deps.RateLimiter, window, classify)
+		return authRateLimit(h.deps.RateLimiter, h.deps.RateLimit, window, classify)
 	}
 	stepUp := auth.StepUpMiddleware(h.deps.TokenManager)
 	get := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {

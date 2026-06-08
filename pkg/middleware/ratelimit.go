@@ -4,6 +4,7 @@ package middleware
 import (
 	"context"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,163 @@ type Limiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (Result, error)
 }
 
+// RateLimitFailMode controls how middleware behaves when the backing limiter
+// returns an error. The default remains fail-open for compatibility.
+type RateLimitFailMode string
+
+const (
+	RateLimitFailOpen   RateLimitFailMode = "fail_open"
+	RateLimitFailClosed RateLimitFailMode = "fail_closed"
+)
+
+// NormalizeRateLimitFailMode returns a supported fail mode, defaulting to
+// fail-open when unset.
+func NormalizeRateLimitFailMode(raw string) RateLimitFailMode {
+	switch RateLimitFailMode(strings.ToLower(strings.TrimSpace(raw))) {
+	case RateLimitFailClosed:
+		return RateLimitFailClosed
+	default:
+		return RateLimitFailOpen
+	}
+}
+
+// ValidRateLimitFailMode reports whether raw names a supported fail mode.
+func ValidRateLimitFailMode(raw string) bool {
+	switch RateLimitFailMode(strings.ToLower(strings.TrimSpace(raw))) {
+	case RateLimitFailOpen, RateLimitFailClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+// RedisUnavailableFallback controls startup behavior when Redis is configured
+// but cannot be reached.
+type RedisUnavailableFallback string
+
+const (
+	RedisFallbackMemory  RedisUnavailableFallback = "memory"
+	RedisFallbackDeny    RedisUnavailableFallback = "deny"
+	RedisFallbackDisable RedisUnavailableFallback = "disable"
+)
+
+// NormalizeRedisUnavailableFallback returns a supported Redis fallback mode.
+func NormalizeRedisUnavailableFallback(raw string) RedisUnavailableFallback {
+	switch RedisUnavailableFallback(strings.ToLower(strings.TrimSpace(raw))) {
+	case RedisFallbackDeny:
+		return RedisFallbackDeny
+	case RedisFallbackDisable:
+		return RedisFallbackDisable
+	default:
+		return RedisFallbackMemory
+	}
+}
+
+// ValidRedisUnavailableFallback reports whether raw names a supported Redis
+// fallback mode.
+func ValidRedisUnavailableFallback(raw string) bool {
+	switch RedisUnavailableFallback(strings.ToLower(strings.TrimSpace(raw))) {
+	case RedisFallbackMemory, RedisFallbackDeny, RedisFallbackDisable:
+		return true
+	default:
+		return false
+	}
+}
+
+// RateLimitRuntimeConfig is the normalized operational policy passed to
+// middleware at runtime.
+type RateLimitRuntimeConfig struct {
+	FailMode                 RateLimitFailMode
+	PublicAuthMode           RateLimitFailMode
+	EnterpriseAdminMode      RateLimitFailMode
+	EnterpriseBillingMode    RateLimitFailMode
+	RedisUnavailableFallback RedisUnavailableFallback
+}
+
+// NewRateLimitRuntimeConfig normalizes string config values into runtime
+// policies. Empty bucket-specific fail modes inherit the default fail mode.
+func NewRateLimitRuntimeConfig(defaultFailMode, publicAuthFailMode, enterpriseAdminFailMode, enterpriseBillingFailMode, redisFallback string) RateLimitRuntimeConfig {
+	cfg := RateLimitRuntimeConfig{
+		FailMode:                 NormalizeRateLimitFailMode(defaultFailMode),
+		RedisUnavailableFallback: NormalizeRedisUnavailableFallback(redisFallback),
+	}
+	cfg.PublicAuthMode = normalizeBucketFailMode(publicAuthFailMode, cfg.FailMode)
+	cfg.EnterpriseAdminMode = normalizeBucketFailMode(enterpriseAdminFailMode, cfg.FailMode)
+	cfg.EnterpriseBillingMode = normalizeBucketFailMode(enterpriseBillingFailMode, cfg.FailMode)
+	return cfg
+}
+
+func normalizeBucketFailMode(raw string, fallback RateLimitFailMode) RateLimitFailMode {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return fallback
+	}
+	return NormalizeRateLimitFailMode(raw)
+}
+
+func (cfg RateLimitRuntimeConfig) DefaultFailMode() RateLimitFailMode {
+	if cfg.FailMode == "" {
+		return RateLimitFailOpen
+	}
+	return cfg.FailMode
+}
+
+func (cfg RateLimitRuntimeConfig) PublicAuthFailMode() RateLimitFailMode {
+	if cfg.PublicAuthMode == "" {
+		return cfg.DefaultFailMode()
+	}
+	return cfg.PublicAuthMode
+}
+
+func (cfg RateLimitRuntimeConfig) EnterpriseAdminFailModeValue() RateLimitFailMode {
+	if cfg.EnterpriseAdminMode == "" {
+		return cfg.DefaultFailMode()
+	}
+	return cfg.EnterpriseAdminMode
+}
+
+func (cfg RateLimitRuntimeConfig) EnterpriseBillingFailModeValue() RateLimitFailMode {
+	if cfg.EnterpriseBillingMode == "" {
+		return cfg.DefaultFailMode()
+	}
+	return cfg.EnterpriseBillingMode
+}
+
+func (cfg RateLimitRuntimeConfig) RedisFallback() RedisUnavailableFallback {
+	if cfg.RedisUnavailableFallback == "" {
+		return RedisFallbackMemory
+	}
+	return cfg.RedisUnavailableFallback
+}
+
+// LimiterFallbackResult describes the limiter selected when Redis is absent.
+type LimiterFallbackResult struct {
+	Limiter Limiter
+	Mode    RedisUnavailableFallback
+}
+
+// NewLimiterForRedisUnavailable applies the configured startup fallback when
+// Redis is configured but unavailable. Memory is per process, deny fails all
+// positive-limit buckets closed, and disable removes limiter enforcement.
+func NewLimiterForRedisUnavailable(ctx context.Context, fallback RedisUnavailableFallback) LimiterFallbackResult {
+	mode := fallback
+	if mode == "" {
+		mode = RedisFallbackMemory
+	}
+	switch mode {
+	case RedisFallbackDeny:
+		return LimiterFallbackResult{Limiter: NewDenyLimiter(), Mode: mode}
+	case RedisFallbackDisable:
+		return LimiterFallbackResult{Mode: mode}
+	default:
+		memLimiter := NewMemoryLimiter()
+		if ctx != nil {
+			go memLimiter.Run(ctx)
+		}
+		return LimiterFallbackResult{Limiter: memLimiter, Mode: RedisFallbackMemory}
+	}
+}
+
 // decide builds a Result from the post-increment count for a fixed window.
 func decide(count, limit int, bucket, windowSecs int64, now time.Time) Result {
 	resetAtUnix := (bucket + 1) * windowSecs
@@ -47,6 +205,24 @@ func decide(count, limit int, bucket, windowSecs int64, now time.Time) Result {
 		Remaining:  remaining,
 		RetryAfter: retryAfter,
 	}
+}
+
+// DenyLimiter rejects every positive-limit request. It is used when operators
+// choose redis_unavailable_fallback=deny so rate-limited routes fail closed
+// until shared Redis is restored.
+type DenyLimiter struct{}
+
+// NewDenyLimiter creates a limiter that denies all positive-limit checks.
+func NewDenyLimiter() *DenyLimiter {
+	return &DenyLimiter{}
+}
+
+// Allow implements Limiter.
+func (d *DenyLimiter) Allow(_ context.Context, _ string, limit int, window time.Duration) (Result, error) {
+	if limit <= 0 || window <= 0 {
+		return Result{Allowed: true, Limit: limit}, nil
+	}
+	return Result{Allowed: false, Limit: limit, Remaining: 0, RetryAfter: window}, nil
 }
 
 func windowSeconds(window time.Duration) int64 {
@@ -167,29 +343,35 @@ func (r *RedisLimiter) Allow(ctx context.Context, key string, limit int, window 
 // RateDecision describes how to limit a single request. A zero Limit, empty
 // Key, or Skip means the request is not rate limited.
 type RateDecision struct {
-	Key   string
-	Limit int
-	Skip  bool
+	Key      string
+	Limit    int
+	Skip     bool
+	Policy   string
+	FailMode RateLimitFailMode
 }
 
 // RateLimitConfig configures the RateLimit middleware.
 type RateLimitConfig struct {
 	Limiter  Limiter
 	Window   time.Duration
+	Policy   string
+	FailMode RateLimitFailMode
 	Classify func(fiber.Ctx) RateDecision
 }
 
 // RateLimit returns middleware that enforces per-key request limits.
 //
-// On a limiter error it fails open (allows the request) so a backend blip does
-// not take down the API; on limit exhaustion it returns 429 in the standard
-// error shape with Retry-After and X-RateLimit-* headers.
+// On a limiter error it follows the configured fail mode; on limit exhaustion
+// it returns 429 in the standard error shape with Retry-After and
+// X-RateLimit-* headers. The fixed-window counter is global only when backed by
+// Redis; in-memory mode is per process.
 func RateLimit(cfg RateLimitConfig) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		if cfg.Limiter == nil || cfg.Classify == nil {
 			return c.Next()
 		}
 		d := cfg.Classify(c)
+		d = mergeRateDecisionDefaults(d, cfg.Policy, cfg.FailMode)
 		allowed, err := EnforceRateLimit(c, cfg.Limiter, cfg.Window, d)
 		if err != nil || !allowed {
 			return err
@@ -205,10 +387,18 @@ func EnforceRateLimit(c fiber.Ctx, limiter Limiter, window time.Duration, d Rate
 	if limiter == nil || d.Skip || d.Limit <= 0 || d.Key == "" {
 		return true, nil
 	}
+	d.Policy = normalizeRateLimitPolicy(d.Policy)
+	if d.FailMode == "" {
+		d.FailMode = RateLimitFailOpen
+	}
 
 	res, err := limiter.Allow(c.Context(), d.Key, d.Limit, window)
 	if err != nil {
-		log.Warn().Err(err).Str("key", d.Key).Msg("rate limiter error, allowing request")
+		if d.FailMode == RateLimitFailClosed {
+			log.Error().Err(err).Str("key", d.Key).Str("policy", d.Policy).Str("fail_mode", string(d.FailMode)).Msg("rate limiter error, denying request")
+			return false, rateLimitUnavailableResponse(c)
+		}
+		log.Warn().Err(err).Str("key", d.Key).Str("policy", d.Policy).Str("fail_mode", string(d.FailMode)).Msg("rate limiter error, allowing request")
 		return true, nil
 	}
 
@@ -229,6 +419,34 @@ func EnforceRateLimit(c fiber.Ctx, limiter Limiter, window time.Duration, d Rate
 		"error": fiber.Map{
 			"code":    string(apierrors.CodeRateLimited),
 			"message": "rate limit exceeded, retry later",
+		},
+	})
+}
+
+func mergeRateDecisionDefaults(d RateDecision, policy string, failMode RateLimitFailMode) RateDecision {
+	if d.Policy == "" {
+		d.Policy = policy
+	}
+	if d.FailMode == "" {
+		d.FailMode = failMode
+	}
+	return d
+}
+
+func normalizeRateLimitPolicy(policy string) string {
+	policy = strings.ToLower(strings.TrimSpace(policy))
+	if policy == "" {
+		return "default"
+	}
+	return policy
+}
+
+func rateLimitUnavailableResponse(c fiber.Ctx) error {
+	return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+		"request_id": GetRequestID(c),
+		"error": fiber.Map{
+			"code":    string(apierrors.CodeRateLimited),
+			"message": "rate limiter unavailable, request denied",
 		},
 	})
 }

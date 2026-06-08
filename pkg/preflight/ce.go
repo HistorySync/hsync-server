@@ -60,6 +60,7 @@ func RunCE(ctx context.Context, cfg *config.Config, opts CEOptions) Report {
 	}
 	checkRedis(ctx, &report, cfg)
 	checkS3(ctx, &report, cfg)
+	report.Append(checkRateLimit(cfg)...)
 	report.Append(checkMetrics(cfg)...)
 	report.Append(checkWebSocket(cfg)...)
 	report.Append(checkSMTP(cfg), checkOpsAlerts(cfg))
@@ -373,6 +374,113 @@ func checkMetrics(cfg *config.Config) []Check {
 		})
 	}
 	return checks
+}
+
+func checkRateLimit(cfg *config.Config) []Check {
+	details := map[string]any{
+		"algorithm":                    "fixed_window",
+		"redis_url":                    RedactURL(cfg.RedisURL),
+		"redis_unavailable_fallback":   strings.ToLower(strings.TrimSpace(cfg.RateLimitRedisUnavailableFallback)),
+		"default_fail_mode":            strings.ToLower(strings.TrimSpace(cfg.RateLimitFailMode)),
+		"public_auth_fail_mode":        strings.ToLower(strings.TrimSpace(cfg.RateLimitPublicAuthFailMode)),
+		"enterprise_admin_fail_mode":   strings.ToLower(strings.TrimSpace(cfg.RateLimitEnterpriseAdminFailMode)),
+		"enterprise_billing_fail_mode": strings.ToLower(strings.TrimSpace(cfg.RateLimitEnterpriseBillingFailMode)),
+		"memory_fallback_scope":        "per_process",
+		"redis_backed_scope":           "shared_across_instances",
+	}
+	invalidModes := invalidRateLimitModes(cfg)
+	if len(invalidModes) > 0 {
+		details["invalid"] = invalidModes
+		return []Check{{
+			ID:       "rate_limit_policy",
+			Scope:    "ratelimit",
+			Severity: SeverityError,
+			Message:  "One or more rate-limit degradation policy settings are invalid.",
+			Action:   "Use fail_open or fail_closed for fail modes, and memory, deny, or disable for Redis unavailable fallback.",
+			Details:  details,
+		}}
+	}
+
+	checks := []Check{{
+		ID:       "rate_limit_policy",
+		Scope:    "ratelimit",
+		Severity: SeverityOK,
+		Message:  "Rate-limit degradation policies are configured.",
+		Details:  details,
+	}}
+	switch strings.ToLower(strings.TrimSpace(cfg.RateLimitRedisUnavailableFallback)) {
+	case "memory":
+		checks = append(checks, Check{
+			ID:       "rate_limit_redis_fallback",
+			Scope:    "ratelimit",
+			Severity: SeverityWarn,
+			Message:  "Redis-unavailable rate limiting falls back to in-process fixed-window buckets.",
+			Action:   "Use this only for single-instance deployments, or set deny for fail-closed behavior when shared Redis is required.",
+			Details:  details,
+		})
+	case "deny":
+		checks = append(checks, Check{
+			ID:       "rate_limit_redis_fallback",
+			Scope:    "ratelimit",
+			Severity: SeverityOK,
+			Message:  "Redis-unavailable rate limiting fails closed for rate-limited routes.",
+			Details:  details,
+		})
+	case "disable":
+		checks = append(checks, Check{
+			ID:       "rate_limit_redis_fallback",
+			Scope:    "ratelimit",
+			Severity: SeverityWarn,
+			Message:  "Redis-unavailable fallback disables rate-limit enforcement.",
+			Action:   "Use disable only when another gateway owns rate limiting and alert on this mode.",
+			Details:  details,
+		})
+	}
+
+	if strings.ToLower(strings.TrimSpace(cfg.RateLimitFailMode)) == "fail_open" ||
+		strings.ToLower(strings.TrimSpace(cfg.RateLimitPublicAuthFailMode)) == "fail_open" ||
+		strings.ToLower(strings.TrimSpace(cfg.RateLimitEnterpriseAdminFailMode)) == "fail_open" ||
+		strings.ToLower(strings.TrimSpace(cfg.RateLimitEnterpriseBillingFailMode)) == "fail_open" {
+		checks = append(checks, Check{
+			ID:       "rate_limit_fail_mode",
+			Scope:    "ratelimit",
+			Severity: SeverityWarn,
+			Message:  "One or more rate-limit buckets fail open on limiter errors.",
+			Action:   "Consider fail_closed for public auth, Enterprise admin, and billing mutation buckets in production.",
+			Details:  details,
+		})
+	} else {
+		checks = append(checks, Check{
+			ID:       "rate_limit_fail_mode",
+			Scope:    "ratelimit",
+			Severity: SeverityOK,
+			Message:  "All configured rate-limit buckets fail closed on limiter errors.",
+			Details:  details,
+		})
+	}
+	return checks
+}
+
+func invalidRateLimitModes(cfg *config.Config) []string {
+	invalid := []string{}
+	for key, value := range map[string]string{
+		"rate_limit_fail_mode":                    cfg.RateLimitFailMode,
+		"rate_limit_public_auth_fail_mode":        cfg.RateLimitPublicAuthFailMode,
+		"rate_limit_enterprise_admin_fail_mode":   cfg.RateLimitEnterpriseAdminFailMode,
+		"rate_limit_enterprise_billing_fail_mode": cfg.RateLimitEnterpriseBillingFailMode,
+	} {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "fail_open", "fail_closed":
+		default:
+			invalid = append(invalid, key)
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.RateLimitRedisUnavailableFallback)) {
+	case "memory", "deny", "disable":
+	default:
+		invalid = append(invalid, "rate_limit_redis_unavailable_fallback")
+	}
+	return invalid
 }
 
 func checkWebSocket(cfg *config.Config) []Check {

@@ -16,7 +16,7 @@ func AuthIPRateDecision(prefix string, limit int) func(fiber.Ctx) RateDecision {
 		if prefix == "" || ip == "" {
 			return RateDecision{Skip: true}
 		}
-		return RateDecision{Key: prefix + ":" + ip, Limit: limit}
+		return RateDecision{Key: prefix + ":" + ip, Limit: limit, Policy: "public_auth"}
 	}
 }
 
@@ -27,7 +27,7 @@ func AuthEmailRateDecisionForValue(prefix string, limit int, email string) RateD
 	if prefix == "" || email == "" {
 		return RateDecision{Skip: true}
 	}
-	return RateDecision{Key: prefix + ":" + email, Limit: limit}
+	return RateDecision{Key: prefix + ":" + email, Limit: limit, Policy: "public_auth"}
 }
 
 // AuthTokenRateDecisionForValue limits an auth endpoint by a parsed token field.
@@ -39,5 +39,5 @@ func AuthTokenRateDecisionForValue(prefix string, limit int, token string) RateD
 		return RateDecision{Skip: true}
 	}
 	sum := sha256.Sum256([]byte(token))
-	return RateDecision{Key: prefix + ":" + hex.EncodeToString(sum[:]), Limit: limit}
+	return RateDecision{Key: prefix + ":" + hex.EncodeToString(sum[:]), Limit: limit, Policy: "public_auth"}
 }

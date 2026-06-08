@@ -35,6 +35,14 @@ type Config struct {
 	// Redis
 	RedisURL string `mapstructure:"redis_url"`
 
+	// Rate limiting. The limiter is fixed-window; Redis makes counters shared
+	// across instances, while memory fallback is per process.
+	RateLimitFailMode                  string `mapstructure:"rate_limit_fail_mode"`
+	RateLimitPublicAuthFailMode        string `mapstructure:"rate_limit_public_auth_fail_mode"`
+	RateLimitEnterpriseAdminFailMode   string `mapstructure:"rate_limit_enterprise_admin_fail_mode"`
+	RateLimitEnterpriseBillingFailMode string `mapstructure:"rate_limit_enterprise_billing_fail_mode"`
+	RateLimitRedisUnavailableFallback  string `mapstructure:"rate_limit_redis_unavailable_fallback"`
+
 	// S3 / MinIO
 	S3Endpoint  string `mapstructure:"s3_endpoint"`
 	S3Bucket    string `mapstructure:"s3_bucket"`
@@ -135,17 +143,22 @@ func DefaultConfig() *Config {
 			"172.16.0.0/12",
 			"192.168.0.0/16",
 		},
-		DatabaseURL:                    "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
-		RedisURL:                       "redis://localhost:6379/0",
-		S3Endpoint:                     "localhost:9000",
-		S3Bucket:                       "hsync-bundles",
-		S3UseSSL:                       false,
-		StripeDisabled:                 true,
-		OIDCProviderID:                 "default",
-		OIDCScopes:                     "openid profile email",
-		TurnstileTimeout:               3 * time.Second,
-		WebSocketMaxConnections:        10000,
-		WebSocketMaxConnectionsPerUser: 16,
+		DatabaseURL:                        "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
+		RedisURL:                           "redis://localhost:6379/0",
+		RateLimitFailMode:                  "fail_open",
+		RateLimitPublicAuthFailMode:        "fail_open",
+		RateLimitEnterpriseAdminFailMode:   "fail_open",
+		RateLimitEnterpriseBillingFailMode: "fail_open",
+		RateLimitRedisUnavailableFallback:  "memory",
+		S3Endpoint:                         "localhost:9000",
+		S3Bucket:                           "hsync-bundles",
+		S3UseSSL:                           false,
+		StripeDisabled:                     true,
+		OIDCProviderID:                     "default",
+		OIDCScopes:                         "openid profile email",
+		TurnstileTimeout:                   3 * time.Second,
+		WebSocketMaxConnections:            10000,
+		WebSocketMaxConnectionsPerUser:     16,
 
 		BackgroundTasksEnabled:      true,
 		QuotaReconcileInterval:      24 * time.Hour,
@@ -258,6 +271,11 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("metrics_allowed_cidrs", cfg.MetricsAllowedCIDRs)
 	v.SetDefault("database_url", cfg.DatabaseURL)
 	v.SetDefault("redis_url", cfg.RedisURL)
+	v.SetDefault("rate_limit_fail_mode", cfg.RateLimitFailMode)
+	v.SetDefault("rate_limit_public_auth_fail_mode", cfg.RateLimitPublicAuthFailMode)
+	v.SetDefault("rate_limit_enterprise_admin_fail_mode", cfg.RateLimitEnterpriseAdminFailMode)
+	v.SetDefault("rate_limit_enterprise_billing_fail_mode", cfg.RateLimitEnterpriseBillingFailMode)
+	v.SetDefault("rate_limit_redis_unavailable_fallback", cfg.RateLimitRedisUnavailableFallback)
 	v.SetDefault("s3_endpoint", cfg.S3Endpoint)
 	v.SetDefault("s3_bucket", cfg.S3Bucket)
 	v.SetDefault("s3_access_key", cfg.S3AccessKey)
@@ -387,6 +405,21 @@ func (c *Config) Validate() error {
 			errs = append(errs, "metrics_path must start with /")
 		}
 	}
+	if !validRateLimitFailMode(c.RateLimitFailMode) {
+		errs = append(errs, "rate_limit_fail_mode must be one of fail_open, fail_closed")
+	}
+	if !validRateLimitFailMode(c.RateLimitPublicAuthFailMode) {
+		errs = append(errs, "rate_limit_public_auth_fail_mode must be one of fail_open, fail_closed")
+	}
+	if !validRateLimitFailMode(c.RateLimitEnterpriseAdminFailMode) {
+		errs = append(errs, "rate_limit_enterprise_admin_fail_mode must be one of fail_open, fail_closed")
+	}
+	if !validRateLimitFailMode(c.RateLimitEnterpriseBillingFailMode) {
+		errs = append(errs, "rate_limit_enterprise_billing_fail_mode must be one of fail_open, fail_closed")
+	}
+	if !validRedisUnavailableFallback(c.RateLimitRedisUnavailableFallback) {
+		errs = append(errs, "rate_limit_redis_unavailable_fallback must be one of memory, deny, disable")
+	}
 	for _, origin := range c.WebSocketAllowedOrigins {
 		if !validWebSocketOrigin(origin) {
 			errs = append(errs, "websocket_allowed_origins must contain only http/https origins without path, query, or fragment")
@@ -459,6 +492,24 @@ func validWebSocketOrigin(raw string) bool {
 	}
 	scheme := strings.ToLower(parsed.Scheme)
 	return scheme == "http" || scheme == "https"
+}
+
+func validRateLimitFailMode(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "fail_open", "fail_closed":
+		return true
+	default:
+		return false
+	}
+}
+
+func validRedisUnavailableFallback(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "memory", "deny", "disable":
+		return true
+	default:
+		return false
+	}
 }
 
 // DecodeEd25519PrivateKey attempts to decode a private key from PEM or raw base64 seed.

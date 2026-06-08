@@ -154,6 +154,46 @@ func TestDefaultConfigSetsWebSocketCaps(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigSetsRateLimitDegradationDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.RateLimitFailMode != "fail_open" {
+		t.Fatalf("RateLimitFailMode = %q, want fail_open", cfg.RateLimitFailMode)
+	}
+	if cfg.RateLimitPublicAuthFailMode != "fail_open" {
+		t.Fatalf("RateLimitPublicAuthFailMode = %q, want fail_open", cfg.RateLimitPublicAuthFailMode)
+	}
+	if cfg.RateLimitRedisUnavailableFallback != "memory" {
+		t.Fatalf("RateLimitRedisUnavailableFallback = %q, want memory", cfg.RateLimitRedisUnavailableFallback)
+	}
+}
+
+func TestValidateRejectsInvalidRateLimitDegradationSettings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg.RateLimitFailMode = "open-ish"
+	cfg.RateLimitPublicAuthFailMode = "closed-ish"
+	cfg.RateLimitEnterpriseAdminFailMode = "maybe"
+	cfg.RateLimitEnterpriseBillingFailMode = "nope"
+	cfg.RateLimitRedisUnavailableFallback = "redis"
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want rate limit errors")
+	}
+	for _, want := range []string{
+		"rate_limit_fail_mode",
+		"rate_limit_public_auth_fail_mode",
+		"rate_limit_enterprise_admin_fail_mode",
+		"rate_limit_enterprise_billing_fail_mode",
+		"rate_limit_redis_unavailable_fallback",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want %s", err, want)
+		}
+	}
+}
+
 func TestValidateRejectsInvalidWebSocketSettings(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))

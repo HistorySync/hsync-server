@@ -80,15 +80,24 @@ func main() {
 	bgCtx, bgCancel := context.WithCancel(context.Background())
 	defer bgCancel()
 
+	rateLimitRuntime := middleware.NewRateLimitRuntimeConfig(
+		cfg.RateLimitFailMode,
+		cfg.RateLimitPublicAuthFailMode,
+		cfg.RateLimitEnterpriseAdminFailMode,
+		cfg.RateLimitEnterpriseBillingFailMode,
+		cfg.RateLimitRedisUnavailableFallback,
+	)
 	var rateLimiter middleware.Limiter
 	if redisClient != nil {
 		rateLimiter = middleware.NewRedisLimiter(redisClient)
 		log.Info().Msg("rate limiting backed by redis")
 	} else {
-		memLimiter := middleware.NewMemoryLimiter()
-		go memLimiter.Run(bgCtx)
-		rateLimiter = memLimiter
-		log.Info().Msg("rate limiting using in-memory limiter")
+		fallback := middleware.NewLimiterForRedisUnavailable(bgCtx, rateLimitRuntime.RedisFallback())
+		rateLimiter = fallback.Limiter
+		log.Warn().
+			Str("redis_unavailable_fallback", string(fallback.Mode)).
+			Str("default_fail_mode", string(rateLimitRuntime.DefaultFailMode())).
+			Msg("rate limiting running without redis")
 	}
 
 	// Turnstile bot protection for public auth routes.
@@ -335,6 +344,7 @@ func main() {
 		AdminKey:     cfg.AdminKey,
 		BuildInfo:    buildinfo.Current(),
 		RateLimiter:  rateLimiter,
+		RateLimit:    rateLimitRuntime,
 		OptionStore:  optionStore,
 		Turnstile:    turnstile,
 		Metrics: handler.MetricsConfig{

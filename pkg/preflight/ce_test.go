@@ -1,6 +1,10 @@
 package preflight
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/historysync/hsync-server/pkg/config"
+)
 
 func TestParsePasskeyOrigins(t *testing.T) {
 	origins, err := parsePasskeyOrigins("https://app.example.com, https://admin.example.com")
@@ -60,4 +64,52 @@ func TestInvalidWebSocketOrigins(t *testing.T) {
 	if len(invalid) != 3 {
 		t.Fatalf("invalid origins = %#v, want 3 invalid entries", invalid)
 	}
+}
+
+func TestCheckRateLimitReportsMemoryFallbackRisk(t *testing.T) {
+	cfg := config.DefaultConfig()
+	checks := checkRateLimit(cfg)
+
+	fallback := findCheck(checks, "rate_limit_redis_fallback")
+	if fallback == nil {
+		t.Fatal("rate_limit_redis_fallback check missing")
+	}
+	if fallback.Severity != SeverityWarn {
+		t.Fatalf("fallback severity = %s, want warn", fallback.Severity)
+	}
+	if fallback.Details["redis_unavailable_fallback"] != "memory" {
+		t.Fatalf("fallback details = %#v, want memory fallback", fallback.Details)
+	}
+
+	failMode := findCheck(checks, "rate_limit_fail_mode")
+	if failMode == nil {
+		t.Fatal("rate_limit_fail_mode check missing")
+	}
+	if failMode.Severity != SeverityWarn {
+		t.Fatalf("fail mode severity = %s, want warn for fail_open default", failMode.Severity)
+	}
+}
+
+func TestCheckRateLimitReportsInvalidPolicies(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.RateLimitFailMode = "open-ish"
+	cfg.RateLimitRedisUnavailableFallback = "redis"
+
+	checks := checkRateLimit(cfg)
+	policy := findCheck(checks, "rate_limit_policy")
+	if policy == nil {
+		t.Fatal("rate_limit_policy check missing")
+	}
+	if policy.Severity != SeverityError {
+		t.Fatalf("policy severity = %s, want error", policy.Severity)
+	}
+}
+
+func findCheck(checks []Check, id string) *Check {
+	for i := range checks {
+		if checks[i].ID == id {
+			return &checks[i]
+		}
+	}
+	return nil
 }

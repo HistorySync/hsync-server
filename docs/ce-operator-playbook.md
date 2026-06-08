@@ -87,6 +87,10 @@ CE preflight checks cover:
 - JWT signing key and `security_secret` decoding.
 - `admin_key` presence for admin and ops routes.
 - PostgreSQL connectivity and Redis optional degraded mode.
+- CE migration readiness: `schema_migrations` consistency with embedded
+  migrations, pending migration count, and rollback availability.
+- CE schema drift for required tables, columns, and indexes used by auth, sync,
+  settings, passkeys, notifications, and ops history.
 - S3-compatible storage config and a read-only bucket/list probe.
 - Metrics path and CIDR/address parsing.
 - SMTP and ops alert destination structure.
@@ -96,6 +100,40 @@ CE preflight checks cover:
 Use `--timeout` to bound dependency probes in CI or during an outage, for
 example `--timeout 2s`. A timeout produces diagnostics instead of starting the
 server and failing later.
+
+### Upgrade and rollback workflow
+
+Before an upgrade, inspect the target database without mutating it:
+
+```bash
+go run ./cmd/hsync-server migrate status --json
+go run ./cmd/hsync-server migrate plan
+go run ./cmd/hsync-server doctor --format human
+```
+
+Review `pending`, `applied`, and `rollback_available`. Unknown applied
+migrations, migration name mismatches, or schema drift `error` findings mean the
+database and binary are not a safe pair for the upgrade. Take the database backup
+outside the server tooling; the CE migration commands do not create backups.
+
+During the upgrade window, apply migrations:
+
+```bash
+go run ./cmd/hsync-server migrate up
+```
+
+If the upgrade fails, do not use the server to automatically roll back a
+production database. Prefer restoring the operator-managed backup when data
+integrity is uncertain. Use `go run ./cmd/hsync-server migrate down [n]` only
+after reviewing the newest-first `rollback_available` plan and confirming the
+down SQL is acceptable for the environment.
+
+After the upgrade, rerun:
+
+```bash
+go run ./cmd/hsync-server doctor --format human
+go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server
+```
 
 ## 2. Admin console
 

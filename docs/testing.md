@@ -53,12 +53,49 @@ On Windows:
 The CE smoke suite verifies that all CE migrations apply, the startup wiring can
 build a Fiber app with PostgreSQL and fake blob storage, and the public
 production probes/routes respond: `/healthz`, `/readyz`, `/api/meta/overview`,
-`/console`, and `/metrics`.
+`/console`, and `/metrics`. It also re-reads migration status after applying the
+embedded SQL and fails if `schema_migrations` is inconsistent, any CE migration
+is still pending, or the required CE schema drift checks report missing tables,
+columns, or indexes.
 
 Smoke tests do not use real external providers. Redis is intentionally left nil
 to exercise the supported degraded path, and blob storage uses an in-memory fake.
 If Docker cannot provide Linux containers locally, run this suite in CI or on a
 Linux workstation.
+
+## Upgrade Validation Flow
+
+Before applying a release to a persistent database, run the read-only migration
+plan and doctor checks against the target environment:
+
+```powershell
+go run ./cmd/hsync-server migrate status --json
+go run ./cmd/hsync-server migrate plan
+go run ./cmd/hsync-server doctor --format human
+```
+
+`pending` is what `migrate up` would apply, `applied` is what the database has
+already recorded, and `rollback_available` is the newest-first list that
+`migrate down` can use. Treat inconsistent tracking, unknown applied versions,
+or schema drift `error` findings as blockers until the database and binary match.
+
+Apply migrations during the upgrade window:
+
+```powershell
+go run ./cmd/hsync-server migrate up
+```
+
+Backups and production rollback are intentionally out of band. If an upgrade
+fails before traffic resumes, restore the operator-managed backup when that is
+the safest recovery path. Use `migrate down [n]` only for a deliberate rollback
+after reviewing `rollback_available` and the down SQL for data-loss effects.
+
+After the upgrade, rerun doctor and the CE smoke suite:
+
+```powershell
+go run ./cmd/hsync-server doctor --format human
+go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server
+```
 
 ## Integration Tests
 

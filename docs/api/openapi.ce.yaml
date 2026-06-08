@@ -814,6 +814,56 @@ components:
         backup:
           type: object
           additionalProperties: true
+    SupportBundle:
+      type: object
+      required:
+        - schema_version
+        - generated_at
+        - safe_to_share_boundary
+        - build_info
+        - doctor_report
+        - readyz
+        - ops_summary
+        - recent_scheduler_runs
+        - config_presence
+        - openapi
+      properties:
+        schema_version:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+        since:
+          type: string
+          format: date-time
+        safe_to_share_boundary:
+          type: object
+          additionalProperties: true
+        build_info:
+          type: object
+          additionalProperties: true
+        doctor_report:
+          type: object
+          additionalProperties: true
+        readyz:
+          type: object
+          additionalProperties: true
+        ops_summary:
+          $ref: '#/components/schemas/OpsSummary'
+        recent_scheduler_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpsCheckRun'
+        config_presence:
+          type: object
+          additionalProperties: true
+        openapi:
+          type: object
+          additionalProperties: true
+        extension:
+          type: object
+          additionalProperties: true
+      description: Redacted diagnostic bundle for operator-to-support sharing. It excludes blob contents and raw webhook payloads.
     OpsHistoryView:
       type: object
       required: [recent_runs, recent_failures]
@@ -1954,6 +2004,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpsSummary'
+  /api/v1/admin/support-bundle:
+    get:
+      tags: [Admin Ops]
+      summary: Generate a redacted support bundle
+      operationId: ceAdminSupportBundleV1
+      description: Requires `X-Admin-Key`. The bundle is redacted for support sharing and excludes encrypted blobs, raw webhook payloads, secrets, tokens, license keys, and plaintext email addresses.
+      security:
+        - adminKey: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Optional RFC3339 lower bound for recent scheduler/ops run summaries.
+      responses:
+        '200':
+          description: Redacted support bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportBundle'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
   /api/v1/admin/ops/history:
     get:
       tags: [Admin Ops]
@@ -2089,6 +2163,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OpsSummary'
+  /admin/support-bundle:
+    get:
+      tags: [Admin Ops]
+      summary: Legacy CE admin support bundle path
+      operationId: ceAdminSupportBundleLegacy
+      description: Same behavior as `/api/v1/admin/support-bundle`. Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Redacted support bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportBundle'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
   /admin/ops/check:
     post:
       tags: [Admin Ops]

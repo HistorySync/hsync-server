@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -269,5 +270,38 @@ func TestAdminOpsSummaryAndCheck(t *testing.T) {
 	}
 	if len(summary.Readiness.RecentRuns) != 2 {
 		t.Fatalf("summary recent runs = %d, want 2", len(summary.Readiness.RecentRuns))
+	}
+
+	bundleReq := httptest.NewRequest("GET", "/admin/support-bundle?since=2026-06-08T00:00:00Z", nil)
+	bundleReq.Header.Set("X-Admin-Key", "secret")
+	bundleResp, err := app.Test(bundleReq, fiber.TestConfig{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("support bundle app.Test: %v", err)
+	}
+	if bundleResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("support bundle status = %d, want %d", bundleResp.StatusCode, fiber.StatusOK)
+	}
+	body, err := io.ReadAll(bundleResp.Body)
+	if err != nil {
+		t.Fatalf("read support bundle: %v", err)
+	}
+	bodyText := string(body)
+	for _, forbidden := range []string{"hsync:secret", "admin_key\":\"secret"} {
+		if strings.Contains(bodyText, forbidden) {
+			t.Fatalf("support bundle contains forbidden %q: %s", forbidden, bodyText)
+		}
+	}
+	if !strings.Contains(bodyText, `"includes_blob_contents":false`) {
+		t.Fatalf("support bundle missing safe boundary: %s", bodyText)
+	}
+
+	badSinceReq := httptest.NewRequest("GET", "/admin/support-bundle?since=yesterday", nil)
+	badSinceReq.Header.Set("X-Admin-Key", "secret")
+	badSinceResp, err := app.Test(badSinceReq)
+	if err != nil {
+		t.Fatalf("bad since app.Test: %v", err)
+	}
+	if badSinceResp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("bad since status = %d, want %d", badSinceResp.StatusCode, fiber.StatusBadRequest)
 	}
 }

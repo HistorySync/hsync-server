@@ -37,6 +37,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/service"
 	"github.com/historysync/hsync-server/pkg/storage"
+	"github.com/historysync/hsync-server/pkg/supportbundle"
 	"github.com/historysync/hsync-server/pkg/ws"
 )
 
@@ -347,6 +348,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/requeue", "/notifications/failures/:id/requeue", h.AdminRequeueNotificationFailure)
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/discard", "/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	get(v1Admin, "/api/v1/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
+	get(v1Admin, "/api/v1/admin/support-bundle", "/support-bundle", h.AdminSupportBundle)
 	get(v1Admin, "/api/v1/admin/ops/history", "/ops/history", h.AdminOpsHistory)
 	post(v1Admin, "/api/v1/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
 	post(v1Admin, "/api/v1/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
@@ -387,6 +389,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	post(admin, "/admin/notifications/failures/:id/discard", "/notifications/failures/:id/discard", h.AdminDiscardNotificationFailure)
 	get(admin, "/admin/error-codes", "/error-codes", h.AdminErrorCodes)
 	get(admin, "/admin/ops/summary", "/ops/summary", h.AdminOpsSummary)
+	get(admin, "/admin/support-bundle", "/support-bundle", h.AdminSupportBundle)
 	get(admin, "/admin/ops/history", "/ops/history", h.AdminOpsHistory)
 	post(admin, "/admin/ops/check", "/ops/check", h.AdminOpsCheck, requireAdminIdempotency)
 	post(admin, "/admin/ops/consistency", "/ops/consistency", h.AdminOpsConsistency, requireAdminIdempotency)
@@ -2131,6 +2134,34 @@ func (h *Handlers) AdminOpsSummary(c fiber.Ctx) error {
 	return c.JSON(ops.Summary(c.Context()))
 }
 
+func (h *Handlers) AdminSupportBundle(c fiber.Ctx) error {
+	ops := h.opsService()
+	if ops == nil {
+		return apierrors.NewInternal("ops service is not configured")
+	}
+	since, err := parseSupportBundleSince(c.Query("since"))
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(c.Context(), 10*time.Second)
+	defer cancel()
+	bundle, err := supportbundle.Generate(ctx, supportbundle.Options{
+		Config:    ops.Config(),
+		BuildInfo: h.buildInfo(),
+		Ops:       ops,
+		Readyz:    h.supportBundleReadyz,
+		Since:     since,
+		OpenAPI: supportbundle.OpenAPIVersion{
+			Version: "1.0.0",
+			Path:    "docs/api/openapi.ce.yaml",
+		},
+	})
+	if err != nil {
+		return apierrors.NewInternal(err.Error())
+	}
+	return c.JSON(bundle)
+}
+
 func (h *Handlers) AdminOpsHistory(c fiber.Ctx) error {
 	ops := h.opsService()
 	if ops == nil {
@@ -2147,6 +2178,75 @@ func (h *Handlers) AdminOpsHistory(c fiber.Ctx) error {
 		return apierrors.NewInternal(err.Error())
 	}
 	return c.JSON(history)
+}
+
+func parseSupportBundleSince(raw string) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	parsed, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, apierrors.NewBadRequest("since must be an RFC3339 timestamp")
+	}
+	return parsed.UTC(), nil
+}
+
+func (h *Handlers) supportBundleReadyz(ctx context.Context) supportbundle.ReadyzSummary {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	status := "ok"
+	checks := map[string]string{}
+	if h.maintenanceModeEnabled(ctx) {
+		status = "unhealthy"
+		checks["maintenance_mode"] = "enabled"
+	}
+	if h.deps.DB == nil {
+		if status == "ok" {
+			status = "degraded"
+		}
+		checks["database"] = "not_configured"
+	} else if err := h.deps.DB.Ping(probeCtx); err != nil {
+		status = "unhealthy"
+		checks["database"] = "error: " + err.Error()
+	} else {
+		checks["database"] = "ok"
+	}
+	if h.deps.Redis == nil {
+		checks["redis"] = "disabled"
+	} else if err := h.deps.Redis.Ping(probeCtx).Err(); err != nil {
+		if status == "ok" {
+			status = "degraded"
+		}
+		checks["redis"] = "error: " + err.Error()
+	} else {
+		checks["redis"] = "ok"
+	}
+	if h.deps.BlobStore == nil {
+		status = "unhealthy"
+		checks["storage"] = "not_configured"
+	} else if _, err := h.deps.BlobStore.List(probeCtx, ""); err != nil {
+		status = "unhealthy"
+		checks["storage"] = "error: " + err.Error()
+	} else {
+		checks["storage"] = "ok"
+	}
+	for _, check := range provider.Registry().Readiness.ReadinessChecks(probeCtx) {
+		if check.Name == "" {
+			continue
+		}
+		checks[check.Name] = check.Status
+		if check.Healthy {
+			continue
+		}
+		if check.Critical {
+			status = "unhealthy"
+		} else if status == "ok" {
+			status = "degraded"
+		}
+	}
+	return supportbundle.ReadyzSummary{Status: status, Checks: checks}
 }
 
 func (h *Handlers) AdminOpsCheck(c fiber.Ctx) error {

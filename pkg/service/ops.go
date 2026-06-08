@@ -284,6 +284,13 @@ func (s *OpsService) Summary(ctx context.Context) OpsSummary {
 	}
 }
 
+func (s *OpsService) Config() *config.Config {
+	if s == nil {
+		return nil
+	}
+	return s.cfg
+}
+
 func (s *OpsService) CheckDependencies(ctx context.Context) OpsDependencyReport {
 	start := s.now()
 	checks := make([]OpsDependencyCheck, 0, 4)

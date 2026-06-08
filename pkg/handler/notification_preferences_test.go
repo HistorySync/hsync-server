@@ -50,12 +50,27 @@ func (s *handlerNotificationUserStore) GetByID(_ context.Context, id uuid.UUID) 
 	return s.users[id], nil
 }
 
+func (s *handlerNotificationUserStore) SoftDelete(_ context.Context, id uuid.UUID) error {
+	user := s.users[id]
+	if user == nil {
+		return service.ErrUserNotFound
+	}
+	now := time.Now()
+	user.Status = model.StatusDeleted
+	user.DeletedAt = &now
+	return nil
+}
+
 type handlerAccountDeviceStore struct {
 	devices map[uuid.UUID][]model.Device
 }
 
 func (s *handlerAccountDeviceStore) ListByUser(_ context.Context, userID uuid.UUID) ([]model.Device, error) {
 	return s.devices[userID], nil
+}
+
+func (s *handlerAccountDeviceStore) RevokeAllByUser(context.Context, uuid.UUID) error {
+	return nil
 }
 
 type handlerAccountBundleStore struct {
@@ -349,5 +364,79 @@ func TestExportPrivacyMetadataReturnsSanitizedMetadata(t *testing.T) {
 	}
 	if exported.Retention.GracePeriodSeconds != int64((30*24*time.Hour)/time.Second) {
 		t.Fatalf("retention = %+v", exported.Retention)
+	}
+}
+
+func TestDeleteAccountRequiresStepUp(t *testing.T) {
+	userID := uuid.New()
+	tm := newHandlerTestTokenManager(t)
+	token, err := tm.IssueAccessToken(userID, string(model.TierFree))
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	users := &handlerNotificationUserStore{
+		users: map[uuid.UUID]*model.User{
+			userID: {ID: userID, Email: "user@example.com", Tier: model.TierFree, Status: model.StatusActive},
+		},
+	}
+	account := service.NewAccountService(service.AccountDeps{Users: users})
+	h := New(Deps{
+		Services:     &service.Services{Account: account},
+		TokenManager: tm,
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("DELETE", "/api/v1/me/account", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusForbidden)
+	}
+}
+
+func TestDeleteAccountUsesStepUpAndSoftDeletes(t *testing.T) {
+	userID := uuid.New()
+	tm := newHandlerTestTokenManager(t)
+	token, err := tm.IssueAccessToken(userID, string(model.TierFree))
+	if err != nil {
+		t.Fatalf("IssueAccessToken: %v", err)
+	}
+	stepUp, _, err := tm.IssueStepUpToken(userID, auth.StepUpMethodPasskey)
+	if err != nil {
+		t.Fatalf("IssueStepUpToken: %v", err)
+	}
+	users := &handlerNotificationUserStore{
+		users: map[uuid.UUID]*model.User{
+			userID: {ID: userID, Email: "user@example.com", Tier: model.TierFree, Status: model.StatusActive},
+		},
+	}
+	account := service.NewAccountService(service.AccountDeps{Users: users})
+	h := New(Deps{
+		Services:     &service.Services{Account: account},
+		TokenManager: tm,
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("DELETE", "/api/v1/me/account", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set(auth.StepUpHeader, stepUp)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	var result service.AccountDeletionResult
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Status != "deleted" || users.users[userID].DeletedAt == nil {
+		t.Fatalf("result = %+v user = %+v, want deleted", result, users.users[userID])
 	}
 }

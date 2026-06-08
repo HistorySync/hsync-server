@@ -85,6 +85,13 @@ type OpsRestoreProvider interface {
 	RestoreChecks(ctx context.Context) []OpsRestoreCheck
 }
 
+// AccountDeletionPolicy contributes edition-specific account deletion gates.
+// CE owns the generic deletion workflow; Enterprise can block or require
+// operator review for commercial and team policy.
+type AccountDeletionPolicy interface {
+	EvaluateAccountDeletion(ctx context.Context, req AccountDeletionRequest) (*AccountDeletionDecision, error)
+}
+
 // ReadinessCheck is one named dependency check surfaced by /readyz.
 type ReadinessCheck struct {
 	// Name is a short key, e.g. "ee_schema" or "stripe".
@@ -105,6 +112,26 @@ type OpsRestoreCheck struct {
 	Message    string `json:"message"`
 	Action     string `json:"action,omitempty"`
 	ErrorClass string `json:"error_class,omitempty"`
+}
+
+type AccountDeletionRequest struct {
+	UserID string
+	Email  string
+	Tier   string
+	Status string
+}
+
+type AccountDeletionDecision struct {
+	Allowed        bool
+	RequiresReview bool
+	Reasons        []AccountDeletionPolicyReason
+	Metadata       map[string]any
+}
+
+type AccountDeletionPolicyReason struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Review  bool   `json:"review,omitempty"`
 }
 
 // Shared Types
@@ -157,6 +184,7 @@ type ProviderRegistry struct {
 	Quota      QuotaProvider
 	Readiness  ReadinessProvider
 	OpsRestore OpsRestoreProvider
+	Deletion   AccountDeletionPolicy
 	Notifier   Notifier
 	Webhook    WebhookProvider
 }
@@ -168,6 +196,7 @@ var (
 		Quota:      defaultQuotaProvider,
 		Readiness:  defaultReadinessProvider,
 		OpsRestore: defaultOpsRestoreProvider,
+		Deletion:   defaultAccountDeletionPolicy,
 		Notifier:   NewLogNotifier(),
 		Webhook:    NewWebhookNotifier(WebhookConfig{}),
 	}
@@ -214,6 +243,13 @@ func RegisterOpsRestore(p OpsRestoreProvider) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.OpsRestore = p
+}
+
+// RegisterAccountDeletionPolicy replaces the current AccountDeletionPolicy.
+func RegisterAccountDeletionPolicy(p AccountDeletionPolicy) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.Deletion = p
 }
 
 // RegisterNotifier replaces the current notification provider.

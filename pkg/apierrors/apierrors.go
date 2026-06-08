@@ -46,6 +46,8 @@ const (
 
 	// Auth
 	CodeConflict                  Code = "CONFLICT"
+	CodeAccountDeletionBlocked    Code = "ACCOUNT_DELETION_BLOCKED"
+	CodeAccountDeletionReview     Code = "ACCOUNT_DELETION_REVIEW_REQUIRED"
 	CodeEmailTaken                Code = "EMAIL_TAKEN"
 	CodeInvalidCredentials        Code = "INVALID_CREDENTIALS"
 	CodeInvalidRefreshToken       Code = "INVALID_REFRESH_TOKEN"
@@ -127,6 +129,8 @@ var catalog = map[Code]Entry{
 	CodeRateLimited:               {CodeRateLimited, http.StatusTooManyRequests, "rate limit exceeded, retry later"},
 	CodeMaintenanceMode:           {CodeMaintenanceMode, http.StatusServiceUnavailable, "service is in maintenance mode"},
 	CodeConflict:                  {CodeConflict, http.StatusConflict, "conflict"},
+	CodeAccountDeletionBlocked:    {CodeAccountDeletionBlocked, http.StatusConflict, "account deletion is blocked by policy"},
+	CodeAccountDeletionReview:     {CodeAccountDeletionReview, http.StatusConflict, "account deletion requires operator review"},
 	CodeEmailTaken:                {CodeEmailTaken, http.StatusConflict, "email already registered"},
 	CodeInvalidCredentials:        {CodeInvalidCredentials, http.StatusUnauthorized, "invalid email or password"},
 	CodeInvalidRefreshToken:       {CodeInvalidRefreshToken, http.StatusUnauthorized, "invalid or expired refresh token"},

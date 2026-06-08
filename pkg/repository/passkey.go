@@ -147,6 +147,14 @@ func (r *PasskeyRepo) DeleteCredentialByUser(ctx context.Context, userID, id uui
 	return tag.RowsAffected() == 1, nil
 }
 
+// DeleteCredentialsByUser removes every passkey credential for a user.
+func (r *PasskeyRepo) DeleteCredentialsByUser(ctx context.Context, userID uuid.UUID) error {
+	if _, err := r.pool.Exec(ctx, `DELETE FROM passkey_credentials WHERE user_id = $1`, userID); err != nil {
+		return fmt.Errorf("delete passkey credentials: %w", err)
+	}
+	return nil
+}
+
 func (r *PasskeyRepo) SaveChallenge(ctx context.Context, challenge *model.PasskeyChallenge) error {
 	const q = `
 		INSERT INTO passkey_challenges (user_id, type, challenge, session_json, expires_at)
@@ -192,6 +200,18 @@ func (r *PasskeyRepo) ConsumeChallenge(ctx context.Context, id uuid.UUID, challe
 		return nil, fmt.Errorf("consume passkey challenge: %w", err)
 	}
 	return challenge, nil
+}
+
+// ExpireChallengesByUser invalidates any unconsumed passkey sessions for a user.
+func (r *PasskeyRepo) ExpireChallengesByUser(ctx context.Context, userID uuid.UUID, now time.Time) error {
+	const q = `
+		UPDATE passkey_challenges
+		SET consumed_at = $2, expires_at = LEAST(expires_at, $2)
+		WHERE user_id = $1 AND consumed_at IS NULL`
+	if _, err := r.pool.Exec(ctx, q, userID, now); err != nil {
+		return fmt.Errorf("expire passkey challenges: %w", err)
+	}
+	return nil
 }
 
 func scanPasskeyCredentials(rows pgx.Rows) ([]model.PasskeyCredential, error) {

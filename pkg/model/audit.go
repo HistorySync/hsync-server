@@ -16,6 +16,8 @@ const (
 	AuditEventTwoFactorEnable           AuditEventType = "auth.2fa.enable"
 	AuditEventTwoFactorDisable          AuditEventType = "auth.2fa.disable"
 	AuditEventPrivacyExport             AuditEventType = "account.privacy_export"
+	AuditEventAccountDeletionRequest    AuditEventType = "account.deletion.request"
+	AuditEventAccountDeletionResult     AuditEventType = "account.deletion.result"
 	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
 	AuditEventNotificationOutboxRetry   AuditEventType = "admin.notification_outbox.retry"
 	AuditEventNotificationOutboxRequeue AuditEventType = "admin.notification_outbox.requeue"

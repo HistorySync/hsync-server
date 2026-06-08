@@ -10,16 +10,19 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/provider"
 )
 
 const privacyExportAuditLimit = int32(100)
 
 type accountUserStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
 type accountDeviceStore interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]model.Device, error)
+	RevokeAllByUser(ctx context.Context, userID uuid.UUID) error
 }
 
 type accountBundleStore interface {
@@ -42,6 +45,23 @@ type accountAuditStore interface {
 	ListVisibleByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AuditLog, error)
 }
 
+type accountRefreshTokenStore interface {
+	RevokeAllUserTokens(ctx context.Context, userID uuid.UUID) error
+}
+
+type accountTwoFactorStore interface {
+	DeleteByUser(ctx context.Context, userID uuid.UUID) error
+}
+
+type accountPasskeyStore interface {
+	DeleteCredentialsByUser(ctx context.Context, userID uuid.UUID) error
+	ExpireChallengesByUser(ctx context.Context, userID uuid.UUID, now time.Time) error
+}
+
+type accountAuditRecorder interface {
+	Record(ctx context.Context, input AuditEventInput) error
+}
+
 type AccountDeps struct {
 	Users                accountUserStore
 	Devices              accountDeviceStore
@@ -50,6 +70,11 @@ type AccountDeps struct {
 	Quota                accountQuotaStore
 	Notifications        accountNotificationStore
 	Audit                accountAuditStore
+	AuditRecorder        accountAuditRecorder
+	RefreshTokens        accountRefreshTokenStore
+	TwoFactor            accountTwoFactorStore
+	Passkeys             accountPasskeyStore
+	DeletionPolicy       provider.AccountDeletionPolicy
 	RetentionGracePeriod time.Duration
 }
 
@@ -61,6 +86,11 @@ type AccountService struct {
 	quota                accountQuotaStore
 	notifications        accountNotificationStore
 	audit                accountAuditStore
+	auditRecorder        accountAuditRecorder
+	refreshTokens        accountRefreshTokenStore
+	twoFactor            accountTwoFactorStore
+	passkeys             accountPasskeyStore
+	deletionPolicy       provider.AccountDeletionPolicy
 	retentionGracePeriod time.Duration
 }
 
@@ -152,7 +182,36 @@ type PrivacyExportRetentionPolicy struct {
 	GracePeriodSeconds int64 `json:"grace_period_seconds"`
 }
 
+type AccountDeletionInput struct {
+	UserID    uuid.UUID
+	RequestID string
+	IP        string
+	UserAgent string
+}
+
+type AccountDeletionResult struct {
+	Status                   string                      `json:"status"`
+	DeletedAt                *time.Time                  `json:"deleted_at,omitempty"`
+	RetentionGraceSeconds    int64                       `json:"retention_grace_seconds"`
+	Policy                   AccountDeletionPolicyResult `json:"policy"`
+	RevokedRefreshTokens     bool                        `json:"revoked_refresh_tokens"`
+	RevokedDeviceTokens      bool                        `json:"revoked_device_tokens"`
+	RemovedTwoFactor         bool                        `json:"removed_two_factor"`
+	RemovedPasskeys          bool                        `json:"removed_passkeys"`
+	ExpiredSessionChallenges bool                        `json:"expired_session_challenges"`
+}
+
+type AccountDeletionPolicyResult struct {
+	Allowed        bool                                   `json:"allowed"`
+	RequiresReview bool                                   `json:"requires_review"`
+	Reasons        []provider.AccountDeletionPolicyReason `json:"reasons,omitempty"`
+}
+
 func NewAccountService(deps AccountDeps) *AccountService {
+	policy := deps.DeletionPolicy
+	if policy == nil {
+		policy = &provider.AllowAccountDeletionPolicy{}
+	}
 	return &AccountService{
 		users:                deps.Users,
 		devices:              deps.Devices,
@@ -161,8 +220,160 @@ func NewAccountService(deps AccountDeps) *AccountService {
 		quota:                deps.Quota,
 		notifications:        deps.Notifications,
 		audit:                deps.Audit,
+		auditRecorder:        deps.AuditRecorder,
+		refreshTokens:        deps.RefreshTokens,
+		twoFactor:            deps.TwoFactor,
+		passkeys:             deps.Passkeys,
+		deletionPolicy:       policy,
 		retentionGracePeriod: deps.RetentionGracePeriod,
 	}
+}
+
+func (s *AccountService) DeleteAccount(ctx context.Context, input AccountDeletionInput) (*AccountDeletionResult, error) {
+	userID := input.UserID
+	s.recordDeletionAudit(ctx, input, model.AuditEventAccountDeletionRequest, map[string]any{
+		"request_id": input.RequestID,
+		"status":     "requested",
+	})
+	if s == nil || s.users == nil {
+		s.recordDeletionResult(ctx, input, nil, "failed", "not_configured")
+		return nil, fmt.Errorf("account service is not configured")
+	}
+
+	user, err := s.users.GetByID(ctx, userID)
+	if err != nil {
+		s.recordDeletionResult(ctx, input, nil, "failed", "get_user")
+		return nil, fmt.Errorf("get user: %w", err)
+	}
+	if user == nil {
+		s.recordDeletionResult(ctx, input, nil, "failed", "user_not_found")
+		return nil, ErrUserNotFound
+	}
+
+	decision, err := s.deletionPolicy.EvaluateAccountDeletion(ctx, provider.AccountDeletionRequest{
+		UserID: user.ID.String(),
+		Email:  user.Email,
+		Tier:   string(user.Tier),
+		Status: string(user.Status),
+	})
+	if err != nil {
+		s.recordDeletionResult(ctx, input, nil, "failed", "policy_error")
+		return nil, fmt.Errorf("evaluate account deletion policy: %w", err)
+	}
+	policyResult := accountDeletionPolicyResult(decision)
+	result := &AccountDeletionResult{
+		Status:                "pending",
+		RetentionGraceSeconds: int64(s.retentionGracePeriod / time.Second),
+		Policy:                policyResult,
+	}
+	if policyResult.RequiresReview {
+		result.Status = "review_required"
+		s.recordDeletionResult(ctx, input, result, result.Status, "policy_review_required")
+		return result, ErrAccountDeletionRequiresReview
+	}
+	if !policyResult.Allowed {
+		result.Status = "blocked"
+		s.recordDeletionResult(ctx, input, result, result.Status, "policy_blocked")
+		return result, ErrAccountDeletionBlocked
+	}
+
+	now := time.Now().UTC()
+	if s.refreshTokens != nil {
+		if err := s.refreshTokens.RevokeAllUserTokens(ctx, userID); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "revoke_refresh_tokens")
+			return nil, fmt.Errorf("revoke refresh tokens: %w", err)
+		}
+		result.RevokedRefreshTokens = true
+	}
+	if s.devices != nil {
+		if err := s.devices.RevokeAllByUser(ctx, userID); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "revoke_device_tokens")
+			return nil, fmt.Errorf("revoke device tokens: %w", err)
+		}
+		result.RevokedDeviceTokens = true
+	}
+	if s.twoFactor != nil {
+		if err := s.twoFactor.DeleteByUser(ctx, userID); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "delete_two_factor")
+			return nil, fmt.Errorf("delete two factor state: %w", err)
+		}
+		result.RemovedTwoFactor = true
+	}
+	if s.passkeys != nil {
+		if err := s.passkeys.ExpireChallengesByUser(ctx, userID, now); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "expire_passkey_challenges")
+			return nil, fmt.Errorf("expire passkey challenges: %w", err)
+		}
+		result.ExpiredSessionChallenges = true
+		if err := s.passkeys.DeleteCredentialsByUser(ctx, userID); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "delete_passkeys")
+			return nil, fmt.Errorf("delete passkeys: %w", err)
+		}
+		result.RemovedPasskeys = true
+	}
+	if err := s.users.SoftDelete(ctx, userID); err != nil {
+		s.recordDeletionResult(ctx, input, result, "failed", "soft_delete_user")
+		return nil, fmt.Errorf("soft delete user: %w", err)
+	}
+	result.Status = "deleted"
+	result.DeletedAt = &now
+	s.recordDeletionResult(ctx, input, result, result.Status, "")
+	return result, nil
+}
+
+func accountDeletionPolicyResult(decision *provider.AccountDeletionDecision) AccountDeletionPolicyResult {
+	if decision == nil {
+		return AccountDeletionPolicyResult{Allowed: true}
+	}
+	return AccountDeletionPolicyResult{
+		Allowed:        decision.Allowed && !decision.RequiresReview,
+		RequiresReview: decision.RequiresReview,
+		Reasons:        decision.Reasons,
+	}
+}
+
+func (s *AccountService) recordDeletionResult(ctx context.Context, input AccountDeletionInput, result *AccountDeletionResult, status, failure string) {
+	metadata := map[string]any{
+		"request_id": input.RequestID,
+		"status":     status,
+	}
+	if failure != "" {
+		metadata["failure"] = failure
+	}
+	if result != nil {
+		metadata["policy_allowed"] = result.Policy.Allowed
+		metadata["policy_requires_review"] = result.Policy.RequiresReview
+		metadata["policy_reasons"] = result.Policy.Reasons
+		metadata["revoked_refresh_tokens"] = result.RevokedRefreshTokens
+		metadata["revoked_device_tokens"] = result.RevokedDeviceTokens
+		metadata["removed_two_factor"] = result.RemovedTwoFactor
+		metadata["removed_passkeys"] = result.RemovedPasskeys
+		metadata["expired_session_challenges"] = result.ExpiredSessionChallenges
+	}
+	s.recordDeletionAudit(ctx, input, model.AuditEventAccountDeletionResult, metadata)
+}
+
+func (s *AccountService) recordDeletionAudit(ctx context.Context, input AccountDeletionInput, eventType model.AuditEventType, metadata map[string]any) {
+	if s == nil || s.auditRecorder == nil {
+		return
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	userID := input.UserID
+	if userID == uuid.Nil {
+		return
+	}
+	metadata["step_up_required"] = true
+	_ = s.auditRecorder.Record(ctx, AuditEventInput{
+		ActorUserID: &userID,
+		EventType:   eventType,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+		IP:          input.IP,
+		UserAgent:   input.UserAgent,
+		Metadata:    metadata,
+	})
 }
 
 func (s *AccountService) ExportPrivacyMetadata(ctx context.Context, userID uuid.UUID) (*PrivacyExport, error) {

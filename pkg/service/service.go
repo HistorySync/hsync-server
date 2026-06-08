@@ -46,41 +46,43 @@ var Argon2Params = struct {
 
 // Common errors returned by services.
 var (
-	ErrEmailTaken           = errors.New("email already registered")
-	ErrInvalidEmail         = errors.New("invalid email")
-	ErrInvalidCredentials   = errors.New("invalid email or password")
-	ErrWeakPassword         = errors.New("password must be at least 10 characters")
-	ErrQuotaExceeded        = errors.New("quota exceeded")
-	ErrDeviceLimit          = errors.New("device limit reached")
-	ErrBundleExists         = errors.New("bundle already exists")
-	ErrDeviceRevoked        = errors.New("device has been revoked")
-	ErrStripeDisabled       = errors.New("billing is not enabled")
-	ErrResetTokenRequired   = errors.New("reset token is required")
-	ErrNewPasswordRequired  = errors.New("new password is required")
-	ErrPasswordResetInvalid = errors.New("invalid or expired password reset token")
-	ErrVerifyTokenRequired  = errors.New("verification token is required")
-	ErrEmailVerifyInvalid   = errors.New("invalid or expired email verification token")
-	ErrUserInactive         = errors.New("user not found or inactive")
-	ErrBundleNotFound       = errors.New("bundle not found")
-	ErrSnapshotNotFound     = errors.New("snapshot not found")
-	ErrUserNotFound         = errors.New("user not found")
-	ErrDeviceNotFound       = errors.New("device not found")
-	ErrDeviceAlreadyRevoked = errors.New("device already revoked")
-	ErrDeviceNotRegistered  = errors.New("device not registered")
-	ErrBillingNotSupported  = errors.New("billing not supported")
-	ErrRefreshTokenRequired = errors.New("refresh token is required")
-	ErrReservationDenied    = errors.New("storage reservation denied")
-	ErrTwoFactorRequired    = errors.New("two-factor authentication is required")
-	ErrTwoFactorNotEnabled  = errors.New("two-factor authentication is not enabled")
-	ErrTwoFactorEnabled     = errors.New("two-factor authentication is already enabled")
-	ErrTwoFactorInvalidCode = errors.New("invalid two-factor authentication code")
-	ErrTwoFactorLocked      = errors.New("two-factor authentication is temporarily locked")
-	ErrTwoFactorChallenge   = errors.New("invalid or expired two-factor challenge")
-	ErrSignupsDisabled      = errors.New("new account registration is currently disabled")
-	ErrPasskeyDisabled      = errors.New("passkey authentication is disabled")
-	ErrPasskeyChallenge     = errors.New("invalid or expired passkey challenge")
-	ErrPasskeyNotFound      = errors.New("passkey credential not found")
-	ErrPasskeyVerification  = errors.New("passkey verification failed")
+	ErrEmailTaken                    = errors.New("email already registered")
+	ErrInvalidEmail                  = errors.New("invalid email")
+	ErrInvalidCredentials            = errors.New("invalid email or password")
+	ErrWeakPassword                  = errors.New("password must be at least 10 characters")
+	ErrQuotaExceeded                 = errors.New("quota exceeded")
+	ErrDeviceLimit                   = errors.New("device limit reached")
+	ErrBundleExists                  = errors.New("bundle already exists")
+	ErrDeviceRevoked                 = errors.New("device has been revoked")
+	ErrStripeDisabled                = errors.New("billing is not enabled")
+	ErrResetTokenRequired            = errors.New("reset token is required")
+	ErrNewPasswordRequired           = errors.New("new password is required")
+	ErrPasswordResetInvalid          = errors.New("invalid or expired password reset token")
+	ErrVerifyTokenRequired           = errors.New("verification token is required")
+	ErrEmailVerifyInvalid            = errors.New("invalid or expired email verification token")
+	ErrUserInactive                  = errors.New("user not found or inactive")
+	ErrBundleNotFound                = errors.New("bundle not found")
+	ErrSnapshotNotFound              = errors.New("snapshot not found")
+	ErrUserNotFound                  = errors.New("user not found")
+	ErrDeviceNotFound                = errors.New("device not found")
+	ErrDeviceAlreadyRevoked          = errors.New("device already revoked")
+	ErrDeviceNotRegistered           = errors.New("device not registered")
+	ErrBillingNotSupported           = errors.New("billing not supported")
+	ErrRefreshTokenRequired          = errors.New("refresh token is required")
+	ErrReservationDenied             = errors.New("storage reservation denied")
+	ErrTwoFactorRequired             = errors.New("two-factor authentication is required")
+	ErrTwoFactorNotEnabled           = errors.New("two-factor authentication is not enabled")
+	ErrTwoFactorEnabled              = errors.New("two-factor authentication is already enabled")
+	ErrTwoFactorInvalidCode          = errors.New("invalid two-factor authentication code")
+	ErrTwoFactorLocked               = errors.New("two-factor authentication is temporarily locked")
+	ErrTwoFactorChallenge            = errors.New("invalid or expired two-factor challenge")
+	ErrSignupsDisabled               = errors.New("new account registration is currently disabled")
+	ErrPasskeyDisabled               = errors.New("passkey authentication is disabled")
+	ErrPasskeyChallenge              = errors.New("invalid or expired passkey challenge")
+	ErrPasskeyNotFound               = errors.New("passkey credential not found")
+	ErrPasskeyVerification           = errors.New("passkey verification failed")
+	ErrAccountDeletionBlocked        = errors.New("account deletion is blocked by policy")
+	ErrAccountDeletionRequiresReview = errors.New("account deletion requires operator review")
 )
 
 // Deps holds all dependencies needed by the service layer.
@@ -309,6 +311,9 @@ func New(deps Deps) *Services {
 	var accountSnapshots accountSnapshotStore
 	var accountQuota accountQuotaStore
 	var accountAudit accountAuditStore
+	var accountRefreshTokens accountRefreshTokenStore
+	var accountTwoFactor accountTwoFactorStore
+	var accountPasskeys accountPasskeyStore
 	if deps.Repos != nil {
 		accountUsers = deps.Repos.Users
 		accountDevices = deps.Repos.Devices
@@ -316,6 +321,9 @@ func New(deps Deps) *Services {
 		accountSnapshots = deps.Repos.Snapshots
 		accountQuota = deps.Repos.Quota
 		accountAudit = deps.Repos.AuditLogs
+		accountRefreshTokens = deps.Repos.RefreshTokens
+		accountTwoFactor = deps.Repos.TwoFactor
+		accountPasskeys = deps.Repos.Passkeys
 	}
 	accountSvc := NewAccountService(AccountDeps{
 		Users:                accountUsers,
@@ -325,6 +333,11 @@ func New(deps Deps) *Services {
 		Quota:                accountQuota,
 		Notifications:        notifSvc,
 		Audit:                accountAudit,
+		AuditRecorder:        auditSvc,
+		RefreshTokens:        accountRefreshTokens,
+		TwoFactor:            accountTwoFactor,
+		Passkeys:             accountPasskeys,
+		DeletionPolicy:       provider.Registry().Deletion,
 		RetentionGracePeriod: retentionGracePeriod(deps.Config),
 	})
 

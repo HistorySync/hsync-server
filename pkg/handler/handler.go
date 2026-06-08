@@ -333,6 +333,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Post("/passkeys/registration/finish", h.RequirePasskeyRegistrationStepUp, h.FinishPasskeyRegistration)
 	me.Delete("/passkeys/:id", h.DeletePasskey, stepUp)
 	me.Get("/privacy-export", h.ExportPrivacyMetadata)
+	me.Delete("/account", h.DeleteAccount, stepUp)
 	me.Get("/notification-preferences", h.GetNotificationPreferences)
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
@@ -1762,6 +1763,43 @@ func (h *Handlers) ExportPrivacyMetadata(c fiber.Ctx) error {
 		},
 	})
 	return c.JSON(exported)
+}
+
+func (h *Handlers) DeleteAccount(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Account == nil {
+		return apierrors.NewInternal("account service is not configured")
+	}
+	result, err := h.deps.Services.Account.DeleteAccount(c.Context(), service.AccountDeletionInput{
+		UserID:    auth.UserID(c),
+		RequestID: middleware.GetRequestID(c),
+		IP:        c.IP(),
+		UserAgent: c.Get("User-Agent"),
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrUserNotFound):
+			return apierrors.New(apierrors.CodeNotFound, err.Error())
+		case errors.Is(err, service.ErrAccountDeletionRequiresReview):
+			return accountDeletionPolicyError(apierrors.CodeAccountDeletionReview, err.Error(), result)
+		case errors.Is(err, service.ErrAccountDeletionBlocked):
+			return accountDeletionPolicyError(apierrors.CodeAccountDeletionBlocked, err.Error(), result)
+		default:
+			return apierrors.NewInternal(err.Error())
+		}
+	}
+	return c.JSON(result)
+}
+
+func accountDeletionPolicyError(code apierrors.Code, detail string, result *service.AccountDeletionResult) *apierrors.Error {
+	err := apierrors.New(code, detail)
+	if result != nil && len(result.Policy.Reasons) > 0 {
+		reasons := make([]string, 0, len(result.Policy.Reasons))
+		for _, reason := range result.Policy.Reasons {
+			reasons = append(reasons, reason.Code)
+		}
+		err.Message = detail + ": " + strings.Join(reasons, ", ")
+	}
+	return err
 }
 
 // TwoFactorStatus returns the authenticated user's 2FA state.

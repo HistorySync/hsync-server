@@ -418,6 +418,14 @@ func (r *DeviceRepo) Revoke(ctx context.Context, userID, deviceUUID uuid.UUID) e
 	return err
 }
 
+// RevokeAllByUser marks every active device for a user as revoked.
+func (r *DeviceRepo) RevokeAllByUser(ctx context.Context, userID uuid.UUID) error {
+	now := time.Now()
+	const q = `UPDATE devices SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL`
+	_, err := r.pool.Exec(ctx, q, now, userID)
+	return err
+}
+
 // UpdateTokenHash stores a new device token hash.
 func (r *DeviceRepo) UpdateTokenHash(ctx context.Context, id uuid.UUID, hash []byte) error {
 	const q = `UPDATE devices SET token_hash = $1 WHERE id = $2`

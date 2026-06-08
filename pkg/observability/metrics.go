@@ -72,6 +72,16 @@ var (
 		Name: "hsync_websocket_upgrade_rejections_total",
 		Help: "Total WebSocket upgrade rejections by reason.",
 	}, []string{"reason"})
+
+	rateLimitErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "hsync_rate_limit_errors_total",
+		Help: "Total rate limiter backend errors by policy, fail mode, and action.",
+	}, []string{"policy", "fail_mode", "action"})
+
+	rateLimitRedisFallbackActive = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "hsync_rate_limit_redis_fallback_active",
+		Help: "Whether a Redis-unavailable rate-limit fallback mode is active in this process.",
+	}, []string{"mode"})
 )
 
 func init() {
@@ -88,6 +98,8 @@ func init() {
 		readinessDependencyStatus,
 		websocketConnectionsActive,
 		websocketUpgradeRejections,
+		rateLimitErrors,
+		rateLimitRedisFallbackActive,
 	)
 }
 
@@ -149,6 +161,25 @@ func SetWebSocketActiveConnections(count int) {
 
 func RecordWebSocketUpgradeRejected(reason string) {
 	websocketUpgradeRejections.WithLabelValues(normalizeLabel(reason, "unknown")).Inc()
+}
+
+func RecordRateLimitError(policy, failMode, action string) {
+	rateLimitErrors.WithLabelValues(
+		normalizeLabel(policy, "default"),
+		normalizeLabel(failMode, "fail_open"),
+		normalizeLabel(action, "allow"),
+	).Inc()
+}
+
+func SetRateLimitRedisFallbackActive(mode string) {
+	mode = normalizeLabel(mode, "")
+	for _, candidate := range []string{"memory", "deny", "disable"} {
+		value := 0.0
+		if mode == candidate {
+			value = 1
+		}
+		rateLimitRedisFallbackActive.WithLabelValues(candidate).Set(value)
+	}
 }
 
 func normalizeRoute(route string) string {

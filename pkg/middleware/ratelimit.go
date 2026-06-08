@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/historysync/hsync-server/pkg/apierrors"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
@@ -395,9 +396,11 @@ func EnforceRateLimit(c fiber.Ctx, limiter Limiter, window time.Duration, d Rate
 	res, err := limiter.Allow(c.Context(), d.Key, d.Limit, window)
 	if err != nil {
 		if d.FailMode == RateLimitFailClosed {
+			observability.RecordRateLimitError(d.Policy, string(d.FailMode), "deny")
 			log.Error().Err(err).Str("key", d.Key).Str("policy", d.Policy).Str("fail_mode", string(d.FailMode)).Msg("rate limiter error, denying request")
 			return false, rateLimitUnavailableResponse(c)
 		}
+		observability.RecordRateLimitError(d.Policy, string(d.FailMode), "allow")
 		log.Warn().Err(err).Str("key", d.Key).Str("policy", d.Policy).Str("fail_mode", string(d.FailMode)).Msg("rate limiter error, allowing request")
 		return true, nil
 	}

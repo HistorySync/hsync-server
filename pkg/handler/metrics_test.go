@@ -122,3 +122,35 @@ func TestMetricsEndpointExposesWebSocketHardeningMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestMetricsEndpointExposesRateLimitDegradationMetrics(t *testing.T) {
+	app := fiber.New(fiber.Config{ErrorHandler: New(Deps{}).ErrorHandler})
+	h := New(Deps{Metrics: MetricsConfig{
+		Enabled: true,
+		Path:    "/metrics",
+	}})
+	h.RegisterRoutes(app)
+
+	observability.RecordRateLimitError("public_auth", "fail_closed", "deny")
+	observability.RecordRateLimitError("enterprise_admin", "fail_open", "allow")
+	observability.SetRateLimitRedisFallbackActive("memory")
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/metrics", nil))
+	if err != nil {
+		t.Fatalf("metrics app.Test() error = %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`hsync_rate_limit_errors_total{action="deny",fail_mode="fail_closed",policy="public_auth"}`,
+		`hsync_rate_limit_errors_total{action="allow",fail_mode="fail_open",policy="enterprise_admin"}`,
+		`hsync_rate_limit_redis_fallback_active{mode="memory"} 1`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("metrics body missing %q:\n%s", want, text)
+		}
+	}
+}

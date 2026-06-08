@@ -94,6 +94,7 @@ func main() {
 	} else {
 		fallback := middleware.NewLimiterForRedisUnavailable(bgCtx, rateLimitRuntime.RedisFallback())
 		rateLimiter = fallback.Limiter
+		observability.SetRateLimitRedisFallbackActive(string(fallback.Mode))
 		log.Warn().
 			Str("redis_unavailable_fallback", string(fallback.Mode)).
 			Str("default_fail_mode", string(rateLimitRuntime.DefaultFailMode())).

@@ -48,3 +48,16 @@ func TestValidCIDROrAddr(t *testing.T) {
 		}
 	}
 }
+
+func TestInvalidWebSocketOrigins(t *testing.T) {
+	invalid := invalidWebSocketOrigins([]string{
+		"https://app.example.com",
+		"http://localhost:8080",
+		"https://app.example.com/path",
+		"ftp://app.example.com",
+		"",
+	})
+	if len(invalid) != 3 {
+		t.Fatalf("invalid origins = %#v, want 3 invalid entries", invalid)
+	}
+}

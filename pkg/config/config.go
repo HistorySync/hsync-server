@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -70,6 +71,12 @@ type Config struct {
 	TurnstileSiteKey string        `mapstructure:"turnstile_site_key"`
 	TurnstileTimeout time.Duration `mapstructure:"turnstile_timeout"`
 
+	// WebSocket push hardening.
+	WebSocketOriginCheckDisabled   bool     `mapstructure:"websocket_origin_check_disabled"`
+	WebSocketAllowedOrigins        []string `mapstructure:"websocket_allowed_origins"`
+	WebSocketMaxConnections        int      `mapstructure:"websocket_max_connections"`
+	WebSocketMaxConnectionsPerUser int      `mapstructure:"websocket_max_connections_per_user"`
+
 	// Background tasks
 	BackgroundTasksEnabled      bool          `mapstructure:"background_tasks_enabled"`
 	QuotaReconcileInterval      time.Duration `mapstructure:"quota_reconcile_interval"`
@@ -128,15 +135,17 @@ func DefaultConfig() *Config {
 			"172.16.0.0/12",
 			"192.168.0.0/16",
 		},
-		DatabaseURL:      "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
-		RedisURL:         "redis://localhost:6379/0",
-		S3Endpoint:       "localhost:9000",
-		S3Bucket:         "hsync-bundles",
-		S3UseSSL:         false,
-		StripeDisabled:   true,
-		OIDCProviderID:   "default",
-		OIDCScopes:       "openid profile email",
-		TurnstileTimeout: 3 * time.Second,
+		DatabaseURL:                    "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
+		RedisURL:                       "redis://localhost:6379/0",
+		S3Endpoint:                     "localhost:9000",
+		S3Bucket:                       "hsync-bundles",
+		S3UseSSL:                       false,
+		StripeDisabled:                 true,
+		OIDCProviderID:                 "default",
+		OIDCScopes:                     "openid profile email",
+		TurnstileTimeout:               3 * time.Second,
+		WebSocketMaxConnections:        10000,
+		WebSocketMaxConnectionsPerUser: 16,
 
 		BackgroundTasksEnabled:      true,
 		QuotaReconcileInterval:      24 * time.Hour,
@@ -263,6 +272,10 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("turnstile_secret", cfg.TurnstileSecret)
 	v.SetDefault("turnstile_site_key", cfg.TurnstileSiteKey)
 	v.SetDefault("turnstile_timeout", cfg.TurnstileTimeout)
+	v.SetDefault("websocket_origin_check_disabled", cfg.WebSocketOriginCheckDisabled)
+	v.SetDefault("websocket_allowed_origins", cfg.WebSocketAllowedOrigins)
+	v.SetDefault("websocket_max_connections", cfg.WebSocketMaxConnections)
+	v.SetDefault("websocket_max_connections_per_user", cfg.WebSocketMaxConnectionsPerUser)
 	v.SetDefault("background_tasks_enabled", cfg.BackgroundTasksEnabled)
 	v.SetDefault("quota_reconcile_interval", cfg.QuotaReconcileInterval)
 	v.SetDefault("retention_cleanup_interval", cfg.RetentionCleanupInterval)
@@ -374,6 +387,18 @@ func (c *Config) Validate() error {
 			errs = append(errs, "metrics_path must start with /")
 		}
 	}
+	for _, origin := range c.WebSocketAllowedOrigins {
+		if !validWebSocketOrigin(origin) {
+			errs = append(errs, "websocket_allowed_origins must contain only http/https origins without path, query, or fragment")
+			break
+		}
+	}
+	if c.WebSocketMaxConnections < 0 {
+		errs = append(errs, "websocket_max_connections must be zero or greater")
+	}
+	if c.WebSocketMaxConnectionsPerUser < 0 {
+		errs = append(errs, "websocket_max_connections_per_user must be zero or greater")
+	}
 
 	if c.QuotaWarningThreshold < 0 || c.QuotaWarningThreshold > 100 {
 		errs = append(errs, "quota_warning_threshold must be between 0 and 100")
@@ -421,6 +446,19 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func validWebSocketOrigin(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }
 
 // DecodeEd25519PrivateKey attempts to decode a private key from PEM or raw base64 seed.

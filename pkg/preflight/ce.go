@@ -61,6 +61,7 @@ func RunCE(ctx context.Context, cfg *config.Config, opts CEOptions) Report {
 	checkRedis(ctx, &report, cfg)
 	checkS3(ctx, &report, cfg)
 	report.Append(checkMetrics(cfg)...)
+	report.Append(checkWebSocket(cfg)...)
 	report.Append(checkSMTP(cfg), checkOpsAlerts(cfg))
 	checkMigrationReadiness(ctx, &report, pool, dbOK)
 	checkRuntimeSettings(ctx, &report, pool, dbOK)
@@ -372,6 +373,109 @@ func checkMetrics(cfg *config.Config) []Check {
 		})
 	}
 	return checks
+}
+
+func checkWebSocket(cfg *config.Config) []Check {
+	checks := []Check{}
+	originDetails := map[string]any{
+		"origin_check_disabled": cfg.WebSocketOriginCheckDisabled,
+		"allowed_origins":       cfg.WebSocketAllowedOrigins,
+	}
+	if cfg.WebSocketOriginCheckDisabled {
+		checks = append(checks, Check{
+			ID:       "websocket_origin",
+			Scope:    "websocket",
+			Severity: SeverityWarn,
+			Message:  "WebSocket origin validation is disabled.",
+			Action:   "Enable origin validation unless a trusted reverse proxy fully owns WebSocket origin policy.",
+			Details:  originDetails,
+		})
+	} else if invalid := invalidWebSocketOrigins(cfg.WebSocketAllowedOrigins); len(invalid) > 0 {
+		originDetails["invalid"] = invalid
+		checks = append(checks, Check{
+			ID:       "websocket_origin",
+			Scope:    "websocket",
+			Severity: SeverityError,
+			Message:  "One or more WebSocket allowed origins are invalid.",
+			Action:   "Use http/https origins without path, query, or fragment, such as https://app.example.com.",
+			Details:  originDetails,
+		})
+	} else if len(cfg.WebSocketAllowedOrigins) == 0 {
+		checks = append(checks, Check{
+			ID:       "websocket_origin",
+			Scope:    "websocket",
+			Severity: SeverityWarn,
+			Message:  "WebSocket origin validation allows only same-host browser origins; no explicit deployment origins are configured.",
+			Action:   "Set HSYNC_WEBSOCKET_ALLOWED_ORIGINS to the public web app origins when browsers connect cross-host.",
+			Details:  originDetails,
+		})
+	} else {
+		checks = append(checks, Check{
+			ID:       "websocket_origin",
+			Scope:    "websocket",
+			Severity: SeverityOK,
+			Message:  "WebSocket allowed origins are valid.",
+			Details:  originDetails,
+		})
+	}
+
+	capDetails := map[string]any{
+		"max_connections":          cfg.WebSocketMaxConnections,
+		"max_connections_per_user": cfg.WebSocketMaxConnectionsPerUser,
+		"multi_tab_policy":         "allowed within the per-user cap",
+	}
+	switch {
+	case cfg.WebSocketMaxConnections < 0 || cfg.WebSocketMaxConnectionsPerUser < 0:
+		checks = append(checks, Check{
+			ID:       "websocket_capacity",
+			Scope:    "websocket",
+			Severity: SeverityError,
+			Message:  "WebSocket connection caps must be zero or greater.",
+			Action:   "Use 0 to disable a cap, or set positive global and per-user limits.",
+			Details:  capDetails,
+		})
+	case cfg.WebSocketMaxConnections == 0 || cfg.WebSocketMaxConnectionsPerUser == 0:
+		checks = append(checks, Check{
+			ID:       "websocket_capacity",
+			Scope:    "websocket",
+			Severity: SeverityWarn,
+			Message:  "One or more WebSocket connection caps are disabled.",
+			Action:   "Set both global and per-user caps before exposing WebSocket traffic publicly.",
+			Details:  capDetails,
+		})
+	default:
+		checks = append(checks, Check{
+			ID:       "websocket_capacity",
+			Scope:    "websocket",
+			Severity: SeverityOK,
+			Message:  "WebSocket connection caps are configured.",
+			Details:  capDetails,
+		})
+	}
+	return checks
+}
+
+func invalidWebSocketOrigins(origins []string) []string {
+	invalid := []string{}
+	for _, origin := range origins {
+		if !validHTTPOrigin(origin) {
+			invalid = append(invalid, origin)
+		}
+	}
+	return invalid
+}
+
+func validHTTPOrigin(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	return scheme == "http" || scheme == "https"
 }
 
 func checkSMTP(cfg *config.Config) Check {

@@ -10,6 +10,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/valyala/fasthttp/fasthttpadaptor"
 
+	"github.com/historysync/hsync-server/pkg/model"
 	"github.com/historysync/hsync-server/pkg/repository"
 )
 
@@ -63,6 +65,21 @@ type Client struct {
 	hub      *Hub
 	conn     *websocket.Conn
 	send     chan []byte
+	reserved bool
+}
+
+// DeviceStore is the repository surface the WebSocket handshake needs.
+type DeviceStore interface {
+	GetByTokenHash(ctx context.Context, tokenHash []byte) (*model.Device, error)
+	UpdateLastSync(ctx context.Context, id uuid.UUID) error
+}
+
+// Options controls WebSocket handshake hardening.
+type Options struct {
+	OriginCheckDisabled   bool
+	AllowedOrigins        []string
+	MaxConnections        int
+	MaxConnectionsPerUser int
 }
 
 // readPump pumps messages from the WebSocket connection to the hub.
@@ -125,20 +142,38 @@ func (c *Client) writePump() {
 // Hub
 // Hub maintains the set of active clients and broadcasts push notifications.
 type Hub struct {
-	mu         sync.RWMutex
-	clients    map[uuid.UUID]map[*Client]bool // userID -> set of clients
-	register   chan *Client
-	unregister chan *Client
-	devices    *repository.DeviceRepo
+	mu             sync.RWMutex
+	clients        map[uuid.UUID]map[*Client]bool // userID -> set of clients
+	pending        map[uuid.UUID]int              // reserved upgrade slots by userID
+	pendingGlobal  int
+	register       chan *Client
+	unregister     chan *Client
+	devices        DeviceStore
+	options        Options
+	allowedOrigins map[string]struct{}
 }
 
 // NewHub creates a new Hub and starts its run loop.
 func NewHub(devices *repository.DeviceRepo) *Hub {
+	return NewHubWithOptions(devices, Options{})
+}
+
+// NewHubWithOptions creates a new Hub with explicit handshake hardening options.
+func NewHubWithOptions(devices DeviceStore, opts Options) *Hub {
+	allowed := make(map[string]struct{}, len(opts.AllowedOrigins))
+	for _, origin := range opts.AllowedOrigins {
+		if normalized := normalizeOrigin(origin); normalized != "" {
+			allowed[normalized] = struct{}{}
+		}
+	}
 	return &Hub{
-		clients:    make(map[uuid.UUID]map[*Client]bool),
-		register:   make(chan *Client),
-		unregister: make(chan *Client),
-		devices:    devices,
+		clients:        make(map[uuid.UUID]map[*Client]bool),
+		pending:        make(map[uuid.UUID]int),
+		register:       make(chan *Client),
+		unregister:     make(chan *Client),
+		devices:        devices,
+		options:        opts,
+		allowedOrigins: allowed,
 	}
 }
 
@@ -148,6 +183,9 @@ func (h *Hub) Run() {
 		select {
 		case client := <-h.register:
 			h.mu.Lock()
+			if client.reserved {
+				h.releaseReservedLocked(client.userID)
+			}
 			if h.clients[client.userID] == nil {
 				h.clients[client.userID] = make(map[*Client]bool)
 			}
@@ -216,12 +254,21 @@ func (h *Hub) BroadcastToAll(msg []byte) {
 
 // RegisterClient wires up a new WebSocket connection into the hub.
 func (h *Hub) RegisterClient(userID, deviceID uuid.UUID, conn *websocket.Conn) {
+	h.registerClient(userID, deviceID, conn, false)
+}
+
+func (h *Hub) registerReservedClient(userID, deviceID uuid.UUID, conn *websocket.Conn) {
+	h.registerClient(userID, deviceID, conn, true)
+}
+
+func (h *Hub) registerClient(userID, deviceID uuid.UUID, conn *websocket.Conn, reserved bool) {
 	client := &Client{
 		userID:   userID,
 		deviceID: deviceID,
 		hub:      h,
 		conn:     conn,
 		send:     make(chan []byte, 64), // buffered channel to avoid blocking pushes
+		reserved: reserved,
 	}
 	h.register <- client
 
@@ -240,6 +287,10 @@ func (h *Hub) ActiveUserCount() int {
 func (h *Hub) ActiveConnectionCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	return h.activeConnectionCountLocked()
+}
+
+func (h *Hub) activeConnectionCountLocked() int {
 	count := 0
 	for _, clients := range h.clients {
 		count += len(clients)
@@ -255,10 +306,86 @@ func (h *Hub) countUserClients(userID uuid.UUID) int {
 	return 0
 }
 
+func (h *Hub) reserveSlot(userID uuid.UUID) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	activeGlobal := h.activeConnectionCountLocked()
+	if h.options.MaxConnections > 0 && activeGlobal+h.pendingGlobal >= h.options.MaxConnections {
+		return false
+	}
+	activeUser := h.countUserClients(userID)
+	if h.options.MaxConnectionsPerUser > 0 && activeUser+h.pending[userID] >= h.options.MaxConnectionsPerUser {
+		return false
+	}
+	h.pendingGlobal++
+	h.pending[userID]++
+	return true
+}
+
+func (h *Hub) releaseReserved(userID uuid.UUID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.releaseReservedLocked(userID)
+}
+
+func (h *Hub) releaseReservedLocked(userID uuid.UUID) {
+	if h.pendingGlobal > 0 {
+		h.pendingGlobal--
+	}
+	if h.pending[userID] <= 1 {
+		delete(h.pending, userID)
+		return
+	}
+	h.pending[userID]--
+}
+
+func (h *Hub) checkOrigin(r *http.Request) bool {
+	if h == nil || h.options.OriginCheckDisabled {
+		return true
+	}
+	rawOrigin := strings.TrimSpace(r.Header.Get("Origin"))
+	if rawOrigin == "" {
+		return true
+	}
+	origin := normalizeOrigin(rawOrigin)
+	if origin == "" {
+		return false
+	}
+	if len(h.allowedOrigins) > 0 {
+		_, ok := h.allowedOrigins[origin]
+		return ok
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
+}
+
+func normalizeOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return ""
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ""
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return ""
+	}
+	return scheme + "://" + strings.ToLower(parsed.Host)
+}
+
 // WebSocket Upgrade Handler
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+func (h *Hub) upgrader() websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     h.checkOrigin,
+	}
 }
 
 // UpgradeHandler is a Fiber-compatible handler that upgrades HTTP to WebSocket.
@@ -266,44 +393,57 @@ var upgrader = websocket.Upgrader{
 // `token` query parameter is still accepted for older clients.
 func (h *Hub) UpgradeHandler(c fiber.Ctx) error {
 	// Fiber v3 uses fasthttp; adapt gorilla/websocket via fasthttpadaptor.
-	fasthttpadaptor.NewFastHTTPHandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			if h.devices == nil {
-				http.Error(w, "websocket device repository not configured", http.StatusInternalServerError)
-				return
-			}
-
-			token := deviceTokenFromRequest(r)
-			if token == "" {
-				http.Error(w, "missing device token", http.StatusUnauthorized)
-				return
-			}
-
-			tokenHash := sha256.Sum256([]byte(token))
-			device, err := h.devices.GetByTokenHash(context.Background(), tokenHash[:])
-			if err != nil {
-				log.Error().Err(err).Msg("ws device token lookup failed")
-				http.Error(w, "failed to validate device token", http.StatusInternalServerError)
-				return
-			}
-			if device == nil || device.RevokedAt != nil {
-				http.Error(w, "invalid device token", http.StatusUnauthorized)
-				return
-			}
-
-			conn, err := upgrader.Upgrade(w, r, nil)
-			if err != nil {
-				log.Error().Err(err).Msg("ws upgrade failed")
-				return
-			}
-			if err := h.devices.UpdateLastSync(context.Background(), device.ID); err != nil {
-				log.Warn().Err(err).Str("device_id", device.DeviceUUID.String()).Msg("failed to update device last_sync_at")
-			}
-			h.RegisterClient(device.UserID, device.DeviceUUID, conn)
-		},
-	)(c.RequestCtx())
+	fasthttpadaptor.NewFastHTTPHandlerFunc(h.ServeHTTP)(c.RequestCtx())
 
 	return nil
+}
+
+// ServeHTTP upgrades a net/http request to WebSocket after authentication and
+// handshake governance checks.
+func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.devices == nil {
+		http.Error(w, "websocket device repository not configured", http.StatusInternalServerError)
+		return
+	}
+	if !h.checkOrigin(r) {
+		http.Error(w, "websocket origin is not allowed", http.StatusForbidden)
+		return
+	}
+
+	token := deviceTokenFromRequest(r)
+	if token == "" {
+		http.Error(w, "missing device token", http.StatusUnauthorized)
+		return
+	}
+
+	tokenHash := sha256.Sum256([]byte(token))
+	device, err := h.devices.GetByTokenHash(r.Context(), tokenHash[:])
+	if err != nil {
+		log.Error().Err(err).Msg("ws device token lookup failed")
+		http.Error(w, "failed to validate device token", http.StatusInternalServerError)
+		return
+	}
+	if device == nil || device.RevokedAt != nil {
+		http.Error(w, "invalid device token", http.StatusUnauthorized)
+		return
+	}
+
+	if !h.reserveSlot(device.UserID) {
+		http.Error(w, "websocket connection capacity exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	upgrader := h.upgrader()
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		h.releaseReserved(device.UserID)
+		log.Error().Err(err).Msg("ws upgrade failed")
+		return
+	}
+	if err := h.devices.UpdateLastSync(r.Context(), device.ID); err != nil {
+		log.Warn().Err(err).Str("device_id", device.DeviceUUID.String()).Msg("failed to update device last_sync_at")
+	}
+	h.registerReservedClient(device.UserID, device.DeviceUUID, conn)
 }
 
 func deviceTokenFromRequest(r *http.Request) string {

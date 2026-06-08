@@ -141,6 +141,38 @@ func TestDefaultConfigDisablesTurnstile(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigSetsWebSocketCaps(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.WebSocketOriginCheckDisabled {
+		t.Fatal("WebSocketOriginCheckDisabled = true, want false")
+	}
+	if cfg.WebSocketMaxConnections <= 0 {
+		t.Fatalf("WebSocketMaxConnections = %d, want positive default", cfg.WebSocketMaxConnections)
+	}
+	if cfg.WebSocketMaxConnectionsPerUser <= 0 {
+		t.Fatalf("WebSocketMaxConnectionsPerUser = %d, want positive default", cfg.WebSocketMaxConnectionsPerUser)
+	}
+}
+
+func TestValidateRejectsInvalidWebSocketSettings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg.WebSocketAllowedOrigins = []string{"https://app.example.com/path"}
+	cfg.WebSocketMaxConnections = -1
+	cfg.WebSocketMaxConnectionsPerUser = -1
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want websocket errors")
+	}
+	for _, want := range []string{"websocket_allowed_origins", "websocket_max_connections", "websocket_max_connections_per_user"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want %s", err, want)
+		}
+	}
+}
+
 func TestValidateRequiresTurnstileSecretWhenEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))

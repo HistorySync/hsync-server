@@ -184,7 +184,12 @@ func main() {
 	})
 
 	// WebSocket Hub
-	hub := ws.NewHub(repos.Devices)
+	hub := ws.NewHubWithOptions(repos.Devices, ws.Options{
+		OriginCheckDisabled:   cfg.WebSocketOriginCheckDisabled,
+		AllowedOrigins:        cfg.WebSocketAllowedOrigins,
+		MaxConnections:        cfg.WebSocketMaxConnections,
+		MaxConnectionsPerUser: cfg.WebSocketMaxConnectionsPerUser,
+	})
 	go hub.Run()
 
 	// Dynamic Options

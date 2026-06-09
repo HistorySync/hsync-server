@@ -1,0 +1,2468 @@
+openapi: 3.1.0
+info:
+  title: HistorySync CE API
+  version: 1.0.0
+  summary: Community Edition HTTP contract for public sync, auth, and self-hosted admin operations.
+  description: |
+    Community Edition contract for the HistorySync Cloud Server.
+
+    The server stores encrypted bundle and snapshot blobs plus metadata indexes.
+    It does not parse bundle contents.
+
+    Enterprise deployments may replace overlapping routes. See `docs/api/README.md`
+    in this repository and the Enterprise contract for EE-owned variants.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+tags:
+  - name: Health
+  - name: Auth
+  - name: Passkeys
+  - name: Bundles
+  - name: Snapshots
+  - name: Devices
+  - name: Account Security
+  - name: Notifications
+  - name: Quota
+  - name: Admin Ops
+security: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token issued by `/api/v1/auth/login` or passkey login.
+    adminKey:
+      type: apiKey
+      in: header
+      name: X-Admin-Key
+      description: Self-hosted CE admin bootstrap key for `/admin/*` and `/api/v1/admin/*`.
+    stepUpVerification:
+      type: apiKey
+      in: header
+      name: X-HSync-Verification
+      description: Short-lived step-up token for sensitive user actions such as bundle or passkey deletion.
+  parameters:
+    BundleId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    SnapshotId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    PasskeyId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DeviceUuid:
+      name: uuid
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    NotificationFailureId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    ErrorResponse:
+      description: Standard CE API error envelope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NoContent:
+      description: Request completed successfully without a response body.
+  schemas:
+    RequestId:
+      type: string
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          examples: [INVALID_CREDENTIALS]
+        message:
+          type: string
+          examples: [invalid email or password]
+    ErrorEnvelope:
+      type: object
+      required: [request_id, error]
+      properties:
+        request_id:
+          $ref: '#/components/schemas/RequestId'
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    ReadinessResponse:
+      type: object
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, unhealthy]
+        checks:
+          type: object
+          additionalProperties:
+            type: string
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - display_name
+        - tier
+        - status
+        - email_verified
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        tier:
+          type: string
+          enum: [free, pro, team, enterprise]
+        status:
+          type: string
+          enum: [active, suspended, deleted]
+        email_verified:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    AuthTokenPair:
+      type: object
+      required: [user, access_token, refresh_token, expires_in]
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+        email_verification_token:
+          type: string
+          description: Present in local or test flows when the server returns the raw verification token.
+    RegisterRequest:
+      type: object
+      required: [email, password, turnstile_token]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        display_name:
+          type: string
+        turnstile_token:
+          type: string
+    LoginRequest:
+      type: object
+      required: [email, password, turnstile_token]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        turnstile_token:
+          type: string
+    LoginTwoFactorRequest:
+      type: object
+      required: [challenge, code]
+      properties:
+        challenge:
+          type: string
+        code:
+          type: string
+    TwoFactorChallengeResponse:
+      type: object
+      required: [requires_2fa, challenge, expires_in]
+      properties:
+        requires_2fa:
+          type: boolean
+          const: true
+        challenge:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+    AccessTokenResponse:
+      type: object
+      required: [access_token, expires_in]
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+    StatusResponse:
+      type: object
+      additionalProperties: true
+      properties:
+        status:
+          type: string
+    ForgotPasswordRequest:
+      type: object
+      required: [email, turnstile_token]
+      properties:
+        email:
+          type: string
+          format: email
+        turnstile_token:
+          type: string
+    ResendVerificationRequest:
+      type: object
+      required: [email, turnstile_token]
+      properties:
+        email:
+          type: string
+          format: email
+        turnstile_token:
+          type: string
+    VerifyEmailRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+    ResetPasswordRequest:
+      type: object
+      required: [token, new_password]
+      properties:
+        token:
+          type: string
+        new_password:
+          type: string
+    TwoFactorStatus:
+      type: object
+      required: [enabled, locked, backup_codes_remaining]
+      properties:
+        enabled:
+          type: boolean
+        locked:
+          type: boolean
+        locked_until:
+          type: string
+          format: date-time
+        backup_codes_remaining:
+          type: integer
+        last_used_at:
+          type: string
+          format: date-time
+        enabled_at:
+          type: string
+          format: date-time
+    TwoFactorSetupResult:
+      type: object
+      required: [secret, otpauth_url, backup_codes]
+      properties:
+        secret:
+          type: string
+        otpauth_url:
+          type: string
+        backup_codes:
+          type: array
+          items:
+            type: string
+    StepUpVerifyRequest:
+      type: object
+      required: [method, code]
+      properties:
+        method:
+          type: string
+          enum: [totp]
+        code:
+          type: string
+    VerificationTokenResult:
+      type: object
+      required: [verification_token, expires_in, method]
+      properties:
+        verification_token:
+          type: string
+        expires_in:
+          type: integer
+          format: int64
+        method:
+          type: string
+          enum: [totp, passkey]
+    PasskeyBeginResult:
+      type: object
+      required: [challenge_id, options, expires_in]
+      properties:
+        challenge_id:
+          type: string
+          format: uuid
+        options:
+          description: Raw WebAuthn options payload returned by the server.
+        expires_in:
+          type: integer
+          format: int64
+    PasskeyCredentialView:
+      type: object
+      required: [id, name, backup_eligible, backup_state, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        attachment:
+          type: string
+        transports:
+          type: array
+          items:
+            type: string
+        backup_eligible:
+          type: boolean
+        backup_state:
+          type: boolean
+        last_used_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    PasskeyListResponse:
+      type: object
+      required: [credentials]
+      properties:
+        credentials:
+          type: array
+          items:
+            $ref: '#/components/schemas/PasskeyCredentialView'
+    NotificationPreferences:
+      type: object
+      required:
+        - user_id
+        - security_email
+        - security_webhook
+        - billing_email
+        - billing_webhook
+        - webhook_url
+        - created_at
+        - updated_at
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        security_email:
+          type: boolean
+        security_webhook:
+          type: boolean
+        billing_email:
+          type: boolean
+        billing_webhook:
+          type: boolean
+        webhook_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    NotificationPreferencesUpdateRequest:
+      type: object
+      properties:
+        security_email:
+          type: boolean
+        security_webhook:
+          type: boolean
+        billing_email:
+          type: boolean
+        billing_webhook:
+          type: boolean
+        webhook_url:
+          type: string
+          format: uri
+    PrivacyExport:
+      type: object
+      required:
+        - generated_at
+        - includes_blob_contents
+        - parses_bundle_or_snapshots
+        - account
+        - devices
+        - quota
+        - bundles
+        - snapshots
+        - notification_preferences
+        - audit
+        - retention
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        includes_blob_contents:
+          type: boolean
+          const: false
+        parses_bundle_or_snapshots:
+          type: boolean
+          const: false
+        account:
+          type: object
+          additionalProperties: true
+        devices:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        quota:
+          type: object
+          additionalProperties: true
+        bundles:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        snapshots:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        notification_preferences:
+          type: object
+          additionalProperties: true
+        audit:
+          type: object
+          additionalProperties: true
+        retention:
+          type: object
+          required: [grace_period_seconds]
+          properties:
+            grace_period_seconds:
+              type: integer
+              format: int64
+    AccountDeletionPolicyReason:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        review:
+          type: boolean
+    AccountDeletionResult:
+      type: object
+      required:
+        - status
+        - retention_grace_seconds
+        - policy
+        - revoked_refresh_tokens
+        - revoked_device_tokens
+        - removed_two_factor
+        - removed_passkeys
+        - expired_session_challenges
+      properties:
+        status:
+          type: string
+          enum: [deleted, blocked, review_required, pending]
+        deleted_at:
+          type: string
+          format: date-time
+        retention_grace_seconds:
+          type: integer
+          format: int64
+        policy:
+          type: object
+          required: [allowed, requires_review]
+          properties:
+            allowed:
+              type: boolean
+            requires_review:
+              type: boolean
+            reasons:
+              type: array
+              items:
+                $ref: '#/components/schemas/AccountDeletionPolicyReason'
+        revoked_refresh_tokens:
+          type: boolean
+        revoked_device_tokens:
+          type: boolean
+        removed_two_factor:
+          type: boolean
+        removed_passkeys:
+          type: boolean
+        expired_session_challenges:
+          type: boolean
+    Device:
+      type: object
+      required:
+        - id
+        - user_id
+        - device_uuid
+        - device_name
+        - platform
+        - app_version
+        - created_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        device_uuid:
+          type: string
+          format: uuid
+        device_name:
+          type: string
+        platform:
+          type: string
+        app_version:
+          type: string
+        last_sync_at:
+          type: string
+          format: date-time
+        revoked_at:
+          type: string
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+    DeviceListResponse:
+      type: object
+      required: [devices]
+      properties:
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/Device'
+    DeviceRevocation:
+      type: object
+      required: [id, user_id, device_uuid, revoked_at, revoked_by]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        device_uuid:
+          type: string
+          format: uuid
+        revoked_at:
+          type: string
+          format: date-time
+        revoked_by:
+          type: string
+          format: uuid
+    RevocationListResponse:
+      type: object
+      required: [revocations]
+      properties:
+        revocations:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeviceRevocation'
+    BundleMeta:
+      type: object
+      required:
+        - bundle_id
+        - user_id
+        - uploader_device_uuid
+        - lamport_lo
+        - lamport_hi
+        - event_count
+        - size_bytes
+        - cipher_id
+        - key_generation
+        - uploaded_at
+      properties:
+        bundle_id:
+          type: string
+        user_id:
+          type: string
+          format: uuid
+        uploader_device_uuid:
+          type: string
+          format: uuid
+        lamport_lo:
+          type: integer
+          format: int64
+        lamport_hi:
+          type: integer
+          format: int64
+        event_count:
+          type: integer
+          format: int32
+        size_bytes:
+          type: integer
+          format: int64
+        cipher_id:
+          type: integer
+          format: int32
+        key_generation:
+          type: integer
+          format: int32
+        uploaded_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+    BundleListResponse:
+      type: object
+      required: [bundles, next_cursor]
+      properties:
+        bundles:
+          type: array
+          items:
+            $ref: '#/components/schemas/BundleMeta'
+        next_cursor:
+          type: string
+    SnapshotMeta:
+      type: object
+      required:
+        - snapshot_id
+        - user_id
+        - base_hlc
+        - size_bytes
+        - cipher_id
+        - key_generation
+        - created_at
+      properties:
+        snapshot_id:
+          type: string
+        user_id:
+          type: string
+          format: uuid
+        base_hlc:
+          type: integer
+          format: int64
+        size_bytes:
+          type: integer
+          format: int64
+        cipher_id:
+          type: integer
+          format: int32
+        key_generation:
+          type: integer
+          format: int32
+        created_at:
+          type: string
+          format: date-time
+        deleted_at:
+          type: string
+          format: date-time
+    QuotaUsage:
+      type: object
+      required: [user_id, total_bytes, bundle_count, snap_count, updated_at]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        total_bytes:
+          type: integer
+          format: int64
+        bundle_count:
+          type: integer
+          format: int32
+        snap_count:
+          type: integer
+          format: int32
+        updated_at:
+          type: string
+          format: date-time
+    QuotaLimits:
+      type: object
+      required:
+        - user_id
+        - storage_limit_bytes
+        - max_devices
+        - max_bundle_size
+        - max_snapshots
+        - max_rpm
+        - bundle_retention_days
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        storage_limit_bytes:
+          type: integer
+          format: int64
+        max_devices:
+          type: integer
+          format: int32
+        max_bundle_size:
+          type: integer
+          format: int64
+        max_snapshots:
+          type: integer
+          format: int32
+        max_rpm:
+          type: integer
+          format: int32
+        bundle_retention_days:
+          type: integer
+          format: int32
+        override_reason:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+    QuotaInfo:
+      type: object
+      required: [usage, limits]
+      properties:
+        usage:
+          $ref: '#/components/schemas/QuotaUsage'
+        limits:
+          $ref: '#/components/schemas/QuotaLimits'
+    SecurityStats:
+      type: object
+      required: [generated_at, last_24h, last_7d, two_factor, events_by_type]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        last_24h:
+          $ref: '#/components/schemas/SecurityStatsWindow'
+        last_7d:
+          $ref: '#/components/schemas/SecurityStatsWindow'
+        two_factor:
+          $ref: '#/components/schemas/SecurityTwoFactorStats'
+        events_by_type:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditEventTypeCount'
+    SecurityStatsWindow:
+      type: object
+      required: [since, until, login_success, login_failure, two_factor_challenge_success, two_factor_challenge_failure]
+      properties:
+        since:
+          type: string
+          format: date-time
+        until:
+          type: string
+          format: date-time
+        login_success:
+          type: integer
+          format: int64
+        login_failure:
+          type: integer
+          format: int64
+        two_factor_challenge_success:
+          type: integer
+          format: int64
+        two_factor_challenge_failure:
+          type: integer
+          format: int64
+    SecurityTwoFactorStats:
+      type: object
+      required: [enabled_users, total_users, enabled_ratio]
+      properties:
+        enabled_users:
+          type: integer
+          format: int64
+        total_users:
+          type: integer
+          format: int64
+        enabled_ratio:
+          type: number
+          format: double
+    AuditEventTypeCount:
+      type: object
+      required: [event_type, count]
+      properties:
+        event_type:
+          type: string
+        count:
+          type: integer
+          format: int64
+    NotificationFailureView:
+      type: object
+      required: [id, user_id, channel, category, type, attempt_count, error_summary, created_at, updated_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        channel:
+          type: string
+          enum: [email, webhook]
+        category:
+          type: string
+        type:
+          type: string
+        attempt_count:
+          type: integer
+        error_summary:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    NotificationFailuresResponse:
+      type: object
+      required: [notifications, limit, offset]
+      properties:
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotificationFailureView'
+        limit:
+          type: integer
+        offset:
+          type: integer
+    NotificationOutboxActionResult:
+      type: object
+      required:
+        - notification_id
+        - result
+        - status
+        - retried
+        - requeued
+        - discarded
+        - skipped
+        - not_found
+        - sent
+        - failed
+        - scheduled_retry
+        - replayed
+      properties:
+        notification_id:
+          type: string
+          format: uuid
+        limit:
+          type: integer
+          format: int32
+        result:
+          type: string
+        status:
+          type: string
+        previous_status:
+          type: string
+        retried:
+          type: integer
+          format: int32
+        requeued:
+          type: integer
+          format: int32
+        discarded:
+          type: integer
+          format: int32
+        skipped:
+          type: integer
+          format: int32
+        not_found:
+          type: integer
+          format: int32
+        sent:
+          type: integer
+          format: int32
+        failed:
+          type: integer
+          format: int32
+        scheduled_retry:
+          type: integer
+          format: int32
+        replayed:
+          type: boolean
+    AdminRetryBatchRequest:
+      type: object
+      properties:
+        limit:
+          type: integer
+          format: int32
+    OpsSummary:
+      type: object
+      required: [generated_at, config, readiness, backup]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+        config:
+          type: object
+          additionalProperties: true
+        readiness:
+          type: object
+          additionalProperties: true
+        backup:
+          type: object
+          additionalProperties: true
+    SupportBundle:
+      type: object
+      required:
+        - schema_version
+        - generated_at
+        - safe_to_share_boundary
+        - build_info
+        - doctor_report
+        - readyz
+        - ops_summary
+        - recent_scheduler_runs
+        - config_presence
+        - openapi
+      properties:
+        schema_version:
+          type: integer
+        generated_at:
+          type: string
+          format: date-time
+        since:
+          type: string
+          format: date-time
+        safe_to_share_boundary:
+          type: object
+          additionalProperties: true
+        build_info:
+          type: object
+          additionalProperties: true
+        doctor_report:
+          type: object
+          additionalProperties: true
+        readyz:
+          type: object
+          additionalProperties: true
+        ops_summary:
+          $ref: '#/components/schemas/OpsSummary'
+        recent_scheduler_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpsCheckRun'
+        config_presence:
+          type: object
+          additionalProperties: true
+        openapi:
+          type: object
+          additionalProperties: true
+        extension:
+          type: object
+          additionalProperties: true
+      description: Redacted diagnostic bundle for operator-to-support sharing. It excludes blob contents and raw webhook payloads.
+    OpsHistoryView:
+      type: object
+      required: [recent_runs, recent_failures]
+      properties:
+        recent_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpsCheckRun'
+        recent_failures:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpsCheckRun'
+    OpsCheckRun:
+      type: object
+      required: [id, run_type, overall_status, started_at, finished_at, duration_millis, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        run_type:
+          type: string
+          enum: [dependency, consistency]
+        overall_status:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        finished_at:
+          type: string
+          format: date-time
+        duration_millis:
+          type: integer
+          format: int64
+        summarized_findings: {}
+        artifact_counts: {}
+        report_json: {}
+        created_at:
+          type: string
+          format: date-time
+    OpsDependencyReport:
+      type: object
+      required: [overall, checked_at, duration_millis, checks]
+      properties:
+        overall:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        duration_millis:
+          type: integer
+          format: int64
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpsDependencyCheck'
+    OpsDependencyCheck:
+      type: object
+      required: [name, required, status, duration_millis, message]
+      properties:
+        name:
+          type: string
+        required:
+          type: boolean
+        status:
+          type: string
+        duration_millis:
+          type: integer
+          format: int64
+        message:
+          type: string
+        action:
+          type: string
+        error_class:
+          type: string
+    OpsConsistencyReport:
+      type: object
+      required: [overall, checked_at, duration_millis, sample_limit, zero_knowledge_boundary, artifacts]
+      properties:
+        overall:
+          type: string
+        checked_at:
+          type: string
+          format: date-time
+        duration_millis:
+          type: integer
+          format: int64
+        sample_limit:
+          type: integer
+          format: int32
+        zero_knowledge_boundary:
+          type: string
+        artifacts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        issues:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+    OpsRestoreRehearsalRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [baseline, verify]
+          default: baseline
+        limit:
+          type: integer
+          format: int32
+          minimum: 1
+        manifest:
+          type: object
+          additionalProperties: true
+      description: Use `baseline` to generate a metadata/object-size manifest, then submit that manifest with `verify` in the restored environment.
+    OpsRestoreReport:
+      type: object
+      required: [overall, mode, checked_at, duration_millis, limit, zero_knowledge_boundary, artifacts, summary, recommendations]
+      properties:
+        overall:
+          type: string
+        mode:
+          type: string
+          enum: [baseline, verify]
+        checked_at:
+          type: string
+          format: date-time
+        duration_millis:
+          type: integer
+          format: int64
+        limit:
+          type: integer
+          format: int32
+        zero_knowledge_boundary:
+          type: string
+        manifest:
+          type: object
+          additionalProperties: true
+        artifacts:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        summary:
+          type: object
+          required: [missing_objects, size_mismatch, orphan_objects, metadata_mismatch, check_failures]
+          properties:
+            missing_objects:
+              type: integer
+            size_mismatch:
+              type: integer
+            orphan_objects:
+              type: integer
+            metadata_mismatch:
+              type: integer
+            check_failures:
+              type: integer
+        findings:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        checks:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        recommendations:
+          type: array
+          items:
+            type: string
+    OperationalRecordsExport:
+      type: object
+      required: [record_type, source, format, count, records]
+      properties:
+        record_type:
+          type: string
+          enum: [audit_logs, ops_history, notification_outbox]
+        source:
+          type: string
+          enum: [hot, archive, all]
+        format:
+          type: string
+          enum: [json, csv]
+        count:
+          type: integer
+        records:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      operationId: ceHealthz
+      responses:
+        '200':
+          description: Server process is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      operationId: ceReadyz
+      responses:
+        '200':
+          description: Core dependencies are ready or degraded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+        '503':
+          description: Critical dependencies are unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadinessResponse'
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a CE account
+      operationId: ceRegister
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenPair'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Password login
+      operationId: ceLogin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login succeeded or requires TOTP continuation.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AuthTokenPair'
+                  - $ref: '#/components/schemas/TwoFactorChallengeResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/login/2fa:
+    post:
+      tags: [Auth]
+      summary: Complete TOTP login challenge
+      operationId: ceLoginTwoFactor
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginTwoFactorRequest'
+      responses:
+        '200':
+          description: Two-factor login completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenPair'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/passkeys/login/begin:
+    post:
+      tags: [Auth, Passkeys]
+      summary: Start passkey login
+      operationId: ceBeginPasskeyLogin
+      responses:
+        '200':
+          description: WebAuthn login challenge created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyBeginResult'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/passkeys/login/finish:
+    post:
+      tags: [Auth, Passkeys]
+      summary: Finish passkey login
+      operationId: ceFinishPasskeyLogin
+      parameters:
+        - name: challenge_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: May also be supplied in `X-HSync-Passkey-Challenge`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: WebAuthn assertion response body.
+      responses:
+        '200':
+          description: Passkey login completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthTokenPair'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/verify:
+    post:
+      tags: [Auth, Account Security]
+      summary: Perform TOTP step-up verification
+      operationId: ceVerifyStepUp
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StepUpVerifyRequest'
+      responses:
+        '200':
+          description: Step-up verification token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationTokenResult'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/verify/passkey/begin:
+    post:
+      tags: [Auth, Passkeys]
+      summary: Start passkey-based step-up
+      operationId: ceBeginPasskeyStepUp
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: WebAuthn step-up challenge created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyBeginResult'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/verify/passkey/finish:
+    post:
+      tags: [Auth, Passkeys]
+      summary: Finish passkey-based step-up
+      operationId: ceFinishPasskeyStepUp
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: challenge_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Step-up verification token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationTokenResult'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange refresh token for a new access token
+      operationId: ceRefreshAccessToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Access token refreshed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessTokenResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the submitted refresh token
+      operationId: ceLogout
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Logout completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /api/v1/auth/resend-verification:
+    post:
+      tags: [Auth]
+      summary: Restart email verification
+      operationId: ceResendVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendVerificationRequest'
+      responses:
+        '200':
+          description: Verification workflow accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  email_verification_token:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify email using a one-time token
+      operationId: ceVerifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyEmailRequest'
+      responses:
+        '200':
+          description: Email verified.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Start password reset
+      operationId: ceForgotPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ForgotPasswordRequest'
+      responses:
+        '200':
+          description: Reset workflow accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  reset_token:
+                    type: string
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Finish password reset
+      operationId: ceResetPassword
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResetPasswordRequest'
+      responses:
+        '200':
+          description: Password reset completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/bundles:
+    post:
+      tags: [Bundles]
+      summary: Upload an encrypted bundle blob
+      operationId: ceUploadBundle
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Team-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: Optional Enterprise-compatible team attribution header. CE ignores it when teams are unavailable.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - bundle
+                - bundle_id
+                - device_uuid
+                - lamport_lo
+                - lamport_hi
+                - event_count
+                - cipher_id
+                - key_generation
+              properties:
+                bundle:
+                  type: string
+                  format: binary
+                bundle_id:
+                  type: string
+                device_uuid:
+                  type: string
+                  format: uuid
+                lamport_lo:
+                  type: integer
+                  format: int64
+                lamport_hi:
+                  type: integer
+                  format: int64
+                event_count:
+                  type: integer
+                  format: int32
+                cipher_id:
+                  type: integer
+                key_generation:
+                  type: integer
+      responses:
+        '201':
+          description: Bundle metadata recorded and blob stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleMeta'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+        '507':
+          $ref: '#/components/responses/ErrorResponse'
+    get:
+      tags: [Bundles]
+      summary: List bundle metadata for the current user
+      operationId: ceListBundles
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: device_uuid
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: after_lamport
+          in: query
+          schema:
+            type: integer
+            format: int64
+        - name: cursor
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Bundle page returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BundleListResponse'
+  /api/v1/bundles/{id}:
+    get:
+      tags: [Bundles]
+      summary: Download one encrypted bundle blob
+      operationId: ceDownloadBundle
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+      responses:
+        '200':
+          description: Encrypted bundle blob.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+    delete:
+      tags: [Bundles]
+      summary: Delete one bundle metadata row and blob
+      operationId: ceDeleteBundle
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/BundleId'
+        - name: X-HSync-Verification
+          in: header
+          required: true
+          schema:
+            type: string
+          description: Step-up token from `/api/v1/auth/verify` or passkey step-up.
+      responses:
+        '200':
+          description: Bundle deleted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/snapshots:
+    post:
+      tags: [Snapshots]
+      summary: Upload an encrypted snapshot blob
+      operationId: ceUploadSnapshot
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: X-Team-ID
+          in: header
+          required: false
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - snapshot
+                - snapshot_id
+                - base_hlc
+                - cipher_id
+                - key_generation
+              properties:
+                snapshot:
+                  type: string
+                  format: binary
+                snapshot_id:
+                  type: string
+                base_hlc:
+                  type: integer
+                  format: int64
+                cipher_id:
+                  type: integer
+                key_generation:
+                  type: integer
+      responses:
+        '201':
+          description: Snapshot metadata recorded and blob stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotMeta'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '507':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/snapshots/latest:
+    get:
+      tags: [Snapshots]
+      summary: Return the latest snapshot metadata
+      operationId: ceGetLatestSnapshot
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Latest snapshot metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SnapshotMeta'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/snapshots/{id}:
+    get:
+      tags: [Snapshots]
+      summary: Download one encrypted snapshot blob
+      operationId: ceDownloadSnapshot
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SnapshotId'
+      responses:
+        '200':
+          description: Encrypted snapshot blob.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/devices:
+    get:
+      tags: [Devices]
+      summary: List devices registered to the current user
+      operationId: ceListDevices
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Registered devices.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceListResponse'
+  /api/v1/devices/{uuid}/revoke:
+    post:
+      tags: [Devices]
+      summary: Revoke one registered device
+      operationId: ceRevokeDevice
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceUuid'
+        - name: X-HSync-Verification
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Device revoked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/devices/revocations:
+    get:
+      tags: [Devices]
+      summary: List recent device revocation records
+      operationId: ceListRevocations
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Revocation audit list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RevocationListResponse'
+  /api/v1/me/2fa/status:
+    get:
+      tags: [Account Security]
+      summary: Get current TOTP status
+      operationId: ceTwoFactorStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: TOTP status for the current user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorStatus'
+  /api/v1/me/2fa/setup:
+    post:
+      tags: [Account Security]
+      summary: Begin TOTP setup
+      operationId: ceSetupTwoFactor
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: TOTP secret and backup codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TwoFactorSetupResult'
+  /api/v1/me/2fa/enable:
+    post:
+      tags: [Account Security]
+      summary: Enable TOTP using a current code
+      operationId: ceEnableTwoFactor
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: TOTP enabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/me/2fa/disable:
+    post:
+      tags: [Account Security]
+      summary: Disable TOTP
+      operationId: ceDisableTwoFactor
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: TOTP disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+  /api/v1/me/2fa/backup-codes/regenerate:
+    post:
+      tags: [Account Security]
+      summary: Rotate TOTP backup codes
+      operationId: ceRegenerateBackupCodes
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        '200':
+          description: New backup codes issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  backup_codes:
+                    type: array
+                    items:
+                      type: string
+  /api/v1/me/passkeys:
+    get:
+      tags: [Passkeys]
+      summary: List passkeys for the current user
+      operationId: ceListPasskeys
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Passkey credential list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyListResponse'
+  /api/v1/me/passkeys/registration/begin:
+    post:
+      tags: [Passkeys]
+      summary: Start passkey registration
+      operationId: ceBeginPasskeyRegistration
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: WebAuthn registration challenge created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyBeginResult'
+  /api/v1/me/passkeys/registration/finish:
+    post:
+      tags: [Passkeys]
+      summary: Finish passkey registration
+      operationId: ceFinishPasskeyRegistration
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: challenge_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: name
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: X-HSync-Passkey-Name
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '201':
+          description: Passkey registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PasskeyCredentialView'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/passkeys/{id}:
+    delete:
+      tags: [Passkeys]
+      summary: Delete one passkey
+      operationId: ceDeletePasskey
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PasskeyId'
+        - name: X-HSync-Verification
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/privacy-export:
+    get:
+      tags: [Account Security]
+      summary: Export current account privacy metadata
+      operationId: ceExportPrivacyMetadata
+      description: |
+        Returns account metadata, devices, quota, bundle and snapshot metadata,
+        notification preferences, and a bounded audit summary. CE does not
+        include encrypted blob contents or parse bundle/snapshot payloads.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Account privacy metadata export.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrivacyExport'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/account:
+    delete:
+      tags: [Account Security]
+      summary: Delete the current account
+      operationId: ceDeleteAccount
+      description: |
+        Requires a bearer token and an `X-HSync-Verification` step-up token.
+        CE owns the generic soft-delete workflow: it soft-deletes the user,
+        revokes refresh tokens and device tokens, removes 2FA/passkeys, expires
+        passkey session challenges, and writes request/result audit events. Blob
+        hard deletion remains retention-cleanup work. Enterprise deployments may
+        inject an account deletion policy that blocks or requires operator review
+        without adding payment or team logic to CE.
+      security:
+        - bearerAuth: []
+          stepUpVerification: []
+      responses:
+        '200':
+          description: Account deletion completed or scheduled under retention.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountDeletionResult'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '409':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/me/notification-preferences:
+    get:
+      tags: [Notifications]
+      summary: Read notification preferences
+      operationId: ceGetNotificationPreferences
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Notification preferences.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+    put:
+      tags: [Notifications]
+      summary: Update notification preferences
+      operationId: ceUpdateNotificationPreferences
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationPreferencesUpdateRequest'
+      responses:
+        '200':
+          description: Updated preferences.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationPreferences'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/quota:
+    get:
+      tags: [Quota]
+      summary: Return current usage and limits
+      operationId: ceGetQuota
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Quota usage and effective limits.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuotaInfo'
+  /api/v1/admin/security/stats:
+    get:
+      tags: [Admin Ops]
+      summary: Read CE security statistics
+      operationId: ceAdminSecurityStatsV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      responses:
+        '200':
+          description: Security statistics snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityStats'
+  /api/v1/admin/notifications/failures:
+    get:
+      tags: [Admin Ops]
+      summary: List failed notification deliveries
+      operationId: ceAdminNotificationFailuresV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Notification failure page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationFailuresResponse'
+  /api/v1/admin/notifications/failures/{id}/retry:
+    post:
+      tags: [Admin Ops]
+      summary: Retry one failed notification
+      operationId: ceAdminRetryNotificationFailureV1
+      description: Requires `X-Admin-Key` and an `Idempotency-Key` header.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/NotificationFailureId'
+      responses:
+        '200':
+          description: Retry result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationOutboxActionResult'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/admin/notifications/failures/retry:
+    post:
+      tags: [Admin Ops]
+      summary: Retry a batch of failed notifications
+      operationId: ceAdminRetryNotificationFailuresV1
+      description: Requires `X-Admin-Key` and an `Idempotency-Key` header.
+      security:
+        - adminKey: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRetryBatchRequest'
+      responses:
+        '200':
+          description: Batch retry result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationOutboxActionResult'
+  /api/v1/admin/notifications/failures/{id}/requeue:
+    post:
+      tags: [Admin Ops]
+      summary: Requeue one failed notification
+      operationId: ceAdminRequeueNotificationFailureV1
+      description: Requires `X-Admin-Key` and an `Idempotency-Key` header.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/NotificationFailureId'
+      responses:
+        '200':
+          description: Requeue result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationOutboxActionResult'
+  /api/v1/admin/notifications/failures/{id}/discard:
+    post:
+      tags: [Admin Ops]
+      summary: Discard one failed notification
+      operationId: ceAdminDiscardNotificationFailureV1
+      description: Requires `X-Admin-Key` and an `Idempotency-Key` header.
+      security:
+        - adminKey: []
+      parameters:
+        - $ref: '#/components/parameters/NotificationFailureId'
+      responses:
+        '200':
+          description: Discard result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationOutboxActionResult'
+  /api/v1/admin/ops/summary:
+    get:
+      tags: [Admin Ops]
+      summary: Read self-hosted ops summary
+      operationId: ceAdminOpsSummaryV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      responses:
+        '200':
+          description: Ops summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsSummary'
+  /api/v1/admin/support-bundle:
+    get:
+      tags: [Admin Ops]
+      summary: Generate a redacted support bundle
+      operationId: ceAdminSupportBundleV1
+      description: Requires `X-Admin-Key`. The bundle is redacted for support sharing and excludes encrypted blobs, raw webhook payloads, secrets, tokens, license keys, and plaintext email addresses.
+      security:
+        - adminKey: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+          description: Optional RFC3339 lower bound for recent scheduler/ops run summaries.
+      responses:
+        '200':
+          description: Redacted support bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportBundle'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/admin/ops/history:
+    get:
+      tags: [Admin Ops]
+      summary: Read recent ops runs
+      operationId: ceAdminOpsHistoryV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Recent ops history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsHistoryView'
+  /api/v1/admin/ops/check:
+    post:
+      tags: [Admin Ops]
+      summary: Run dependency checks now
+      operationId: ceAdminOpsCheckV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      responses:
+        '200':
+          description: Dependency check report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsDependencyReport'
+  /api/v1/admin/ops/consistency:
+    post:
+      tags: [Admin Ops]
+      summary: Run metadata-vs-storage consistency checks now
+      operationId: ceAdminOpsConsistencyV1
+      description: Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        '200':
+          description: Consistency report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsConsistencyReport'
+  /api/v1/admin/ops/restore-rehearsal:
+    post:
+      tags: [Admin Ops]
+      summary: Generate or verify a restore rehearsal manifest
+      operationId: ceAdminOpsRestoreRehearsalV1
+      description: Requires `X-Admin-Key`. The report compares PostgreSQL metadata, object existence, and object size only; it never reads or decrypts blob contents.
+      security:
+        - adminKey: []
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [baseline, verify]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpsRestoreRehearsalRequest'
+      responses:
+        '200':
+          description: Restore rehearsal report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsRestoreReport'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /api/v1/admin/exports/operational-records:
+    get:
+      tags: [Admin Ops]
+      summary: Export CE operational records
+      operationId: ceAdminExportOperationalRecordsV1
+      description: Requires `X-Admin-Key`. `format=csv` returns `text/csv`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: record_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [audit_logs, ops_history, notification_outbox]
+        - name: format
+          in: query
+          schema:
+            type: string
+            enum: [json, csv]
+            default: json
+        - name: source
+          in: query
+          schema:
+            type: string
+            enum: [hot, archive, all]
+            default: hot
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5000
+      responses:
+        '200':
+          description: JSON export envelope or CSV attachment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationalRecordsExport'
+            text/csv:
+              schema:
+                type: string
+                format: binary
+  /admin/ops/summary:
+    get:
+      tags: [Admin Ops]
+      summary: Legacy CE admin summary path
+      operationId: ceAdminOpsSummaryLegacy
+      description: Same behavior as `/api/v1/admin/ops/summary`. Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      responses:
+        '200':
+          description: Ops summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsSummary'
+  /admin/support-bundle:
+    get:
+      tags: [Admin Ops]
+      summary: Legacy CE admin support bundle path
+      operationId: ceAdminSupportBundleLegacy
+      description: Same behavior as `/api/v1/admin/support-bundle`. Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: Redacted support bundle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SupportBundle'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+  /admin/ops/check:
+    post:
+      tags: [Admin Ops]
+      summary: Legacy CE admin ops check path
+      operationId: ceAdminOpsCheckLegacy
+      description: Same behavior as `/api/v1/admin/ops/check`. Requires `X-Admin-Key`.
+      security:
+        - adminKey: []
+      responses:
+        '200':
+          description: Dependency check report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpsDependencyReport'

@@ -7,6 +7,27 @@ Edition API surface.
 
 - `openapi.ce.yaml`: CE-owned routes and shared contract primitives that
   Enterprise builds on.
+- `openapi.ce.baseline.yaml`: Compatibility baseline for the last consciously
+  accepted CE contract.
+
+## Compatibility Guard
+
+`go test ./docs/api` compares `openapi.ce.yaml` with
+`openapi.ce.baseline.yaml`. The check fails for breaking changes that can
+disrupt clients or automation:
+
+- deleting an existing path or operation
+- deleting a response field from an existing response schema
+- removing a value from an existing enum
+- changing an operation's effective `security` requirement
+
+Additive changes such as new endpoints, new response fields, and broader enums
+are allowed without changing the baseline.
+
+To intentionally accept a breaking change, update `openapi.ce.yaml`, copy the
+new accepted contract to `openapi.ce.baseline.yaml`, and call out the breaking
+change plus the migration path in the pull request description. The baseline
+update should be reviewed as an explicit API compatibility decision.
 
 ## Route Ownership
 

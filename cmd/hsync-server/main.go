@@ -45,6 +45,8 @@ func main() {
 			os.Exit(runMigrate(os.Args[2:]))
 		case "doctor", "preflight":
 			os.Exit(runDoctor(os.Args[2:]))
+		case "ops":
+			os.Exit(runOps(os.Args[2:]))
 		}
 	}
 

@@ -1,0 +1,36 @@
+# HistorySync reverse proxy sample for Caddy.
+# Replace sync.example.com for your environment.
+# /admin and /metrics are intentionally restricted to private networks.
+
+sync.example.com {
+    encode zstd gzip
+    request_body {
+        max_size 256MB
+    }
+
+    @admin path /admin* /api/v1/admin*
+    @metrics path /metrics
+    @private_admin {
+        path /admin* /api/v1/admin*
+        remote_ip private_ranges 127.0.0.1
+    }
+    @private_metrics {
+        path /metrics
+        remote_ip private_ranges 127.0.0.1
+    }
+
+    handle @private_admin {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle @private_metrics {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle @admin {
+        respond "admin endpoint is private" 403
+    }
+    handle @metrics {
+        respond "metrics endpoint is private" 403
+    }
+
+    reverse_proxy 127.0.0.1:8080
+}

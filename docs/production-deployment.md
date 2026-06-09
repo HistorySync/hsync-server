@@ -178,3 +178,50 @@ docker compose --env-file deployments/.env.production \
 Back up object storage separately with the S3 tooling for your provider. Redis
 stores cache/rate-limit state and append-only recovery data, but PostgreSQL plus
 the object bucket are the authoritative restore set for sync metadata and blobs.
+
+## Monthly DR Rehearsal
+
+Run a monthly disaster-recovery rehearsal before the backup window is considered
+closed. The CLI runner is read-only for production data: it does not start a
+restore database, does not apply migrations, does not mutate synced blobs, and
+does not replace the existing doctor or smoke suites. It only orchestrates the
+existing checks in a repeatable order.
+
+Recommended CE command:
+
+```bash
+go run ./cmd/hsync-server ops rehearsal --format human --since "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+go run ./cmd/hsync-server ops rehearsal --format json > rehearsal-ce.json
+```
+
+Use `--manifest <file>` when verifying a previously captured restore manifest.
+When no manifest is supplied, the runner generates a bounded manifest from the
+current PostgreSQL metadata and immediately verifies that manifest against the
+current metadata and object store. The check keeps the zero-knowledge boundary:
+it verifies object existence and size only, and never downloads, parses, or
+decrypts bundle or snapshot contents.
+
+Monthly checklist:
+
+1. Confirm the PostgreSQL backup completed and record the backup id, timestamp,
+   retention policy, and restore owner.
+2. Confirm the object-store backup or versioned bucket snapshot completed for
+   the same recovery point.
+3. Run `ops rehearsal --format json` from the release binary that would be used
+   for recovery, and archive the JSON report with the backup record.
+4. Review every step: build info, doctor, migrate status, schema drift, restore
+   manifest verify, support bundle summary, and smoke-compatible endpoint list.
+5. Treat any `blocking=true` step as a stop condition. Fix the listed action and
+   rerun the full rehearsal.
+6. Review `warn` steps explicitly. Common examples are Redis degradation,
+   pending migrations, bounded manifest coverage, or missing ops alert
+   destinations.
+7. Run the existing smoke suite separately against the intended target or staging
+   environment:
+
+```bash
+make test-smoke
+```
+
+8. Store the human summary, JSON report, smoke result, operator initials, and
+   follow-up tickets in the monthly DR log.

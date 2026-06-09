@@ -211,6 +211,7 @@ type Services struct {
 	Settings      *SettingsService
 	Idempotency   *IdempotencyService
 	Ops           *OpsService
+	Support       *SupportContextService
 }
 
 // New creates all service instances with their dependencies.
@@ -273,6 +274,22 @@ func New(deps Deps) *Services {
 	}
 	auditSvc := NewAuditService(auditStore)
 	securityStatsSvc := NewSecurityStatsService(securityAuditStore, securityUserStore)
+	var supportUsers supportUserStore
+	var supportDevices supportDeviceStore
+	var supportQuota supportQuotaStore
+	var supportAudit supportAuditStore
+	if deps.Repos != nil {
+		supportUsers = deps.Repos.Users
+		supportDevices = deps.Repos.Devices
+		supportQuota = deps.Repos.Quota
+		supportAudit = deps.Repos.AuditLogs
+	}
+	supportSvc := NewSupportContextService(SupportContextDeps{
+		Users:   supportUsers,
+		Devices: supportDevices,
+		Quota:   supportQuota,
+		Audit:   supportAudit,
+	})
 
 	// Dynamic system settings: a database-backed, whitelisted, typed override
 	// layer over code-declared defaults. A nil store (no repos) keeps reads
@@ -359,6 +376,7 @@ func New(deps Deps) *Services {
 		Settings:      settingsSvc,
 		Idempotency:   idempotencySvc,
 		Ops:           opsSvc,
+		Support:       supportSvc,
 	}
 }
 

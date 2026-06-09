@@ -81,6 +81,10 @@ func (s *handlerAccountBundleStore) ListAllByUser(_ context.Context, userID uuid
 	return s.bundles[userID], nil
 }
 
+func (s *handlerAccountBundleStore) SoftDeleteAllByUser(context.Context, uuid.UUID, time.Time) (int64, int64, error) {
+	return 0, 0, nil
+}
+
 type handlerAccountSnapshotStore struct {
 	snapshots map[uuid.UUID][]model.SnapshotMeta
 }
@@ -89,12 +93,24 @@ func (s *handlerAccountSnapshotStore) ListAllByUser(_ context.Context, userID uu
 	return s.snapshots[userID], nil
 }
 
+func (s *handlerAccountSnapshotStore) SoftDeleteAllByUser(context.Context, uuid.UUID, time.Time) (int64, int64, error) {
+	return 0, 0, nil
+}
+
 type handlerAccountQuotaStore struct {
 	usage map[uuid.UUID]*model.QuotaUsage
 }
 
 func (s *handlerAccountQuotaStore) GetUsage(_ context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
 	return s.usage[userID], nil
+}
+
+func (s *handlerAccountQuotaStore) RemoveBundleUsage(context.Context, uuid.UUID, int64) error {
+	return nil
+}
+
+func (s *handlerAccountQuotaStore) RemoveSnapshotUsage(context.Context, uuid.UUID, int64) error {
+	return nil
 }
 
 type handlerAccountAuditStore struct {

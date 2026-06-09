@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -27,14 +28,18 @@ type accountDeviceStore interface {
 
 type accountBundleStore interface {
 	ListAllByUser(ctx context.Context, userID uuid.UUID) ([]model.BundleMeta, error)
+	SoftDeleteAllByUser(ctx context.Context, userID uuid.UUID, deletedAt time.Time) (int64, int64, error)
 }
 
 type accountSnapshotStore interface {
 	ListAllByUser(ctx context.Context, userID uuid.UUID) ([]model.SnapshotMeta, error)
+	SoftDeleteAllByUser(ctx context.Context, userID uuid.UUID, deletedAt time.Time) (int64, int64, error)
 }
 
 type accountQuotaStore interface {
 	GetUsage(ctx context.Context, userID uuid.UUID) (*model.QuotaUsage, error)
+	RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error
+	RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error
 }
 
 type accountNotificationStore interface {
@@ -58,6 +63,11 @@ type accountPasskeyStore interface {
 	ExpireChallengesByUser(ctx context.Context, userID uuid.UUID, now time.Time) error
 }
 
+type accountErasureJobStore interface {
+	Create(ctx context.Context, job *model.AccountErasureJob) error
+	UpdateSummary(ctx context.Context, id uuid.UUID, summary json.RawMessage) error
+}
+
 type accountAuditRecorder interface {
 	Record(ctx context.Context, input AuditEventInput) error
 }
@@ -74,6 +84,7 @@ type AccountDeps struct {
 	RefreshTokens        accountRefreshTokenStore
 	TwoFactor            accountTwoFactorStore
 	Passkeys             accountPasskeyStore
+	ErasureJobs          accountErasureJobStore
 	DeletionPolicy       provider.AccountDeletionPolicy
 	RetentionGracePeriod time.Duration
 }
@@ -90,6 +101,7 @@ type AccountService struct {
 	refreshTokens        accountRefreshTokenStore
 	twoFactor            accountTwoFactorStore
 	passkeys             accountPasskeyStore
+	erasureJobs          accountErasureJobStore
 	deletionPolicy       provider.AccountDeletionPolicy
 	retentionGracePeriod time.Duration
 }
@@ -199,6 +211,12 @@ type AccountDeletionResult struct {
 	RemovedTwoFactor         bool                        `json:"removed_two_factor"`
 	RemovedPasskeys          bool                        `json:"removed_passkeys"`
 	ExpiredSessionChallenges bool                        `json:"expired_session_challenges"`
+	SoftDeletedBundles       int64                       `json:"soft_deleted_bundles"`
+	SoftDeletedBundleBytes   int64                       `json:"soft_deleted_bundle_bytes"`
+	SoftDeletedSnapshots     int64                       `json:"soft_deleted_snapshots"`
+	SoftDeletedSnapshotBytes int64                       `json:"soft_deleted_snapshot_bytes"`
+	ErasureJobID             uuid.UUID                   `json:"erasure_job_id,omitempty"`
+	ErasureEligibleAt        *time.Time                  `json:"erasure_eligible_at,omitempty"`
 }
 
 type AccountDeletionPolicyResult struct {
@@ -224,6 +242,7 @@ func NewAccountService(deps AccountDeps) *AccountService {
 		refreshTokens:        deps.RefreshTokens,
 		twoFactor:            deps.TwoFactor,
 		passkeys:             deps.Passkeys,
+		erasureJobs:          deps.ErasureJobs,
 		deletionPolicy:       policy,
 		retentionGracePeriod: deps.RetentionGracePeriod,
 	}
@@ -278,6 +297,27 @@ func (s *AccountService) DeleteAccount(ctx context.Context, input AccountDeletio
 	}
 
 	now := time.Now().UTC()
+	eligibleAt := now.Add(s.retentionGracePeriod)
+	job := &model.AccountErasureJob{
+		UserID:      userID,
+		RequestedAt: now,
+		EligibleAt:  eligibleAt,
+		Status:      model.AccountErasureJobStatusPending,
+	}
+	if s.erasureJobs != nil {
+		if err := s.erasureJobs.Create(ctx, job); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "create_erasure_job")
+			return nil, fmt.Errorf("create erasure job: %w", err)
+		}
+		result.ErasureJobID = job.ID
+		result.ErasureEligibleAt = &job.EligibleAt
+		s.recordDeletionAudit(ctx, input, model.AuditEventAccountErasureJobCreated, map[string]any{
+			"request_id":  input.RequestID,
+			"job_id":      job.ID.String(),
+			"eligible_at": job.EligibleAt,
+			"status":      string(job.Status),
+		})
+	}
 	if s.refreshTokens != nil {
 		if err := s.refreshTokens.RevokeAllUserTokens(ctx, userID); err != nil {
 			s.recordDeletionResult(ctx, input, result, "failed", "revoke_refresh_tokens")
@@ -310,6 +350,56 @@ func (s *AccountService) DeleteAccount(ctx context.Context, input AccountDeletio
 			return nil, fmt.Errorf("delete passkeys: %w", err)
 		}
 		result.RemovedPasskeys = true
+	}
+	if s.bundles != nil {
+		count, bytes, err := s.bundles.SoftDeleteAllByUser(ctx, userID, now)
+		if err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "soft_delete_bundles")
+			return nil, fmt.Errorf("soft delete bundles: %w", err)
+		}
+		result.SoftDeletedBundles = count
+		result.SoftDeletedBundleBytes = bytes
+		if bytes > 0 && s.quota != nil {
+			if err := s.quota.RemoveBundleUsage(ctx, userID, bytes); err != nil {
+				s.recordDeletionResult(ctx, input, result, "failed", "remove_bundle_usage")
+				return nil, fmt.Errorf("remove bundle usage: %w", err)
+			}
+		}
+	}
+	if s.snapshots != nil {
+		count, bytes, err := s.snapshots.SoftDeleteAllByUser(ctx, userID, now)
+		if err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "soft_delete_snapshots")
+			return nil, fmt.Errorf("soft delete snapshots: %w", err)
+		}
+		result.SoftDeletedSnapshots = count
+		result.SoftDeletedSnapshotBytes = bytes
+		if bytes > 0 && s.quota != nil {
+			if err := s.quota.RemoveSnapshotUsage(ctx, userID, bytes); err != nil {
+				s.recordDeletionResult(ctx, input, result, "failed", "remove_snapshot_usage")
+				return nil, fmt.Errorf("remove snapshot usage: %w", err)
+			}
+		}
+	}
+	if s.erasureJobs != nil && job.ID != uuid.Nil {
+		summary, err := json.Marshal(map[string]any{
+			"status":                       "pending_retention",
+			"requested_at":                 now,
+			"eligible_at":                  eligibleAt,
+			"soft_deleted_bundles":         result.SoftDeletedBundles,
+			"soft_deleted_bundle_bytes":    result.SoftDeletedBundleBytes,
+			"soft_deleted_snapshots":       result.SoftDeletedSnapshots,
+			"soft_deleted_snapshot_bytes":  result.SoftDeletedSnapshotBytes,
+			"zero_knowledge_boundary_note": "sync blobs remain opaque encrypted objects and are not parsed or decrypted",
+		})
+		if err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "encode_erasure_job_summary")
+			return nil, fmt.Errorf("encode erasure job summary: %w", err)
+		}
+		if err := s.erasureJobs.UpdateSummary(ctx, job.ID, summary); err != nil {
+			s.recordDeletionResult(ctx, input, result, "failed", "update_erasure_job_summary")
+			return nil, fmt.Errorf("update erasure job summary: %w", err)
+		}
 	}
 	if err := s.users.SoftDelete(ctx, userID); err != nil {
 		s.recordDeletionResult(ctx, input, result, "failed", "soft_delete_user")
@@ -349,6 +439,16 @@ func (s *AccountService) recordDeletionResult(ctx context.Context, input Account
 		metadata["removed_two_factor"] = result.RemovedTwoFactor
 		metadata["removed_passkeys"] = result.RemovedPasskeys
 		metadata["expired_session_challenges"] = result.ExpiredSessionChallenges
+		metadata["soft_deleted_bundles"] = result.SoftDeletedBundles
+		metadata["soft_deleted_bundle_bytes"] = result.SoftDeletedBundleBytes
+		metadata["soft_deleted_snapshots"] = result.SoftDeletedSnapshots
+		metadata["soft_deleted_snapshot_bytes"] = result.SoftDeletedSnapshotBytes
+		if result.ErasureJobID != uuid.Nil {
+			metadata["erasure_job_id"] = result.ErasureJobID.String()
+		}
+		if result.ErasureEligibleAt != nil {
+			metadata["erasure_eligible_at"] = *result.ErasureEligibleAt
+		}
 	}
 	s.recordDeletionAudit(ctx, input, model.AuditEventAccountDeletionResult, metadata)
 }

@@ -264,6 +264,10 @@ func main() {
 					if err != nil {
 						return err
 					}
+					erasureReport, err := svcs.Retention.RunErasureJobs(ctx)
+					if err != nil {
+						return err
+					}
 					log.Info().
 						Int64("purged_bundles", bundleReport.ExpiredBundles).
 						Int64("purged_bytes", bundleReport.ExpiredBytes).
@@ -271,6 +275,9 @@ func main() {
 						Int64("purged_snapshots", snapReport.ExpiredSnapshots).
 						Int64("purged_snapshot_bytes", snapReport.ExpiredBytes).
 						Int64("failed_snapshots", snapReport.Failed).
+						Int64("erasure_jobs_checked", erasureReport.Checked).
+						Int64("erasure_jobs_completed", erasureReport.Completed).
+						Int64("erasure_jobs_failed", erasureReport.Failed).
 						Time("older_than", bundleReport.Before).
 						Msg("retention cleanup: purged expired data")
 					return nil

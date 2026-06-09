@@ -11,3 +11,11 @@ func (p *AllowAccountDeletionPolicy) EvaluateAccountDeletion(ctx context.Context
 }
 
 var defaultAccountDeletionPolicy AccountDeletionPolicy = &AllowAccountDeletionPolicy{}
+
+type NoopAccountErasureReporter struct{}
+
+func (r *NoopAccountErasureReporter) DescribeAccountErasure(ctx context.Context, req AccountErasureReportRequest) (*AccountErasureReport, error) {
+	return &AccountErasureReport{}, nil
+}
+
+var defaultAccountErasureReporter AccountErasureReporter = &NoopAccountErasureReporter{}

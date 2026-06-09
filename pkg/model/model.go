@@ -45,6 +45,30 @@ type User struct {
 	DeletedAt     *time.Time `json:"-"                 db:"deleted_at"`
 }
 
+type AccountErasureJobStatus string
+
+const (
+	AccountErasureJobStatusPending   AccountErasureJobStatus = "pending"
+	AccountErasureJobStatusRunning   AccountErasureJobStatus = "running"
+	AccountErasureJobStatusCompleted AccountErasureJobStatus = "completed"
+	AccountErasureJobStatusFailed    AccountErasureJobStatus = "failed"
+)
+
+// AccountErasureJob tracks the final, retention-gated account cleanup proof.
+type AccountErasureJob struct {
+	ID          uuid.UUID               `json:"id"                    db:"id"`
+	UserID      uuid.UUID               `json:"user_id"               db:"user_id"`
+	RequestedAt time.Time               `json:"requested_at"          db:"requested_at"`
+	EligibleAt  time.Time               `json:"eligible_at"           db:"eligible_at"`
+	Status      AccountErasureJobStatus `json:"status"                db:"status"`
+	Summary     json.RawMessage         `json:"summary,omitempty"     db:"summary"`
+	LastError   string                  `json:"last_error,omitempty"  db:"last_error"`
+	CreatedAt   time.Time               `json:"created_at"            db:"created_at"`
+	UpdatedAt   time.Time               `json:"updated_at"            db:"updated_at"`
+	StartedAt   *time.Time              `json:"started_at,omitempty"  db:"started_at"`
+	FinishedAt  *time.Time              `json:"finished_at,omitempty" db:"finished_at"`
+}
+
 // NotificationPreferences stores per-user opt-ins for notification categories
 // and delivery channels. Webhook URLs may contain provider-side secrets and
 // should not be written to logs.

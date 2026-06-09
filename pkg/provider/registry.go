@@ -92,6 +92,12 @@ type AccountDeletionPolicy interface {
 	EvaluateAccountDeletion(ctx context.Context, req AccountDeletionRequest) (*AccountDeletionDecision, error)
 }
 
+// AccountErasureReporter contributes edition-specific retention notes to the
+// final erasure certificate without giving CE knowledge of commercial tables.
+type AccountErasureReporter interface {
+	DescribeAccountErasure(ctx context.Context, req AccountErasureReportRequest) (*AccountErasureReport, error)
+}
+
 // ReadinessCheck is one named dependency check surfaced by /readyz.
 type ReadinessCheck struct {
 	// Name is a short key, e.g. "ee_schema" or "stripe".
@@ -132,6 +138,22 @@ type AccountDeletionPolicyReason struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 	Review  bool   `json:"review,omitempty"`
+}
+
+type AccountErasureReportRequest struct {
+	UserID string
+}
+
+type AccountErasureReport struct {
+	Retained []AccountErasureRetentionItem `json:"retained,omitempty"`
+}
+
+type AccountErasureRetentionItem struct {
+	Category    string         `json:"category"`
+	Count       int64          `json:"count"`
+	Reason      string         `json:"reason"`
+	RetainedFor string         `json:"retained_for,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 // Shared Types
@@ -185,6 +207,7 @@ type ProviderRegistry struct {
 	Readiness  ReadinessProvider
 	OpsRestore OpsRestoreProvider
 	Deletion   AccountDeletionPolicy
+	Erasure    AccountErasureReporter
 	Notifier   Notifier
 	Webhook    WebhookProvider
 }
@@ -197,6 +220,7 @@ var (
 		Readiness:  defaultReadinessProvider,
 		OpsRestore: defaultOpsRestoreProvider,
 		Deletion:   defaultAccountDeletionPolicy,
+		Erasure:    defaultAccountErasureReporter,
 		Notifier:   NewLogNotifier(),
 		Webhook:    NewWebhookNotifier(WebhookConfig{}),
 	}
@@ -250,6 +274,13 @@ func RegisterAccountDeletionPolicy(p AccountDeletionPolicy) {
 	regMu.Lock()
 	defer regMu.Unlock()
 	registry.Deletion = p
+}
+
+// RegisterAccountErasureReporter replaces the current AccountErasureReporter.
+func RegisterAccountErasureReporter(p AccountErasureReporter) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	registry.Erasure = p
 }
 
 // RegisterNotifier replaces the current notification provider.

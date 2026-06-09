@@ -38,6 +38,7 @@ type Repos struct {
 	Idempotency        *IdempotencyRepo
 	OpsHistory         *OpsHistoryRepo
 	OperationalHistory *OperationalHistoryRepo
+	AccountErasureJobs *AccountErasureJobRepo
 }
 
 // New creates all repository instances with the given database connections.
@@ -61,6 +62,7 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 		Idempotency:        &IdempotencyRepo{pool: pgPool},
 		OpsHistory:         NewOpsHistoryRepo(pgPool),
 		OperationalHistory: NewOperationalHistoryRepo(pgPool),
+		AccountErasureJobs: &AccountErasureJobRepo{pool: pgPool},
 	}
 }
 
@@ -143,6 +145,28 @@ func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.User, erro
 	return user, nil
 }
 
+// GetAnyByID fetches a user by ID, including soft-deleted tombstones.
+func (r *UserRepo) GetAnyByID(ctx context.Context, id uuid.UUID) (*model.User, error) {
+	const q = `
+		SELECT id, email, password_hash, display_name, tier, status,
+		       email_verified, created_at, updated_at, deleted_at
+		FROM users WHERE id = $1`
+
+	user := &model.User{}
+	err := r.pool.QueryRow(ctx, q, id).Scan(
+		&user.ID, &user.Email, &user.PasswordHash, &user.DisplayName,
+		&user.Tier, &user.Status, &user.EmailVerified,
+		&user.CreatedAt, &user.UpdatedAt, &user.DeletedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get any user by id: %w", err)
+	}
+	return user, nil
+}
+
 // GetByEmail fetches a user by email. Returns nil if not found.
 func (r *UserRepo) GetByEmail(ctx context.Context, email string) (*model.User, error) {
 	const q = `
@@ -189,6 +213,25 @@ func (r *UserRepo) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	const q = `UPDATE users SET status = 'deleted', deleted_at = $1 WHERE id = $2 AND deleted_at IS NULL`
 	_, err := r.pool.Exec(ctx, q, now, id)
 	return err
+}
+
+// AnonymizeDeletedUser removes direct account identifiers from a deleted user
+// tombstone while preserving the stable ID needed by erasure jobs and audits.
+func (r *UserRepo) AnonymizeDeletedUser(ctx context.Context, id uuid.UUID) (int64, error) {
+	const q = `
+		UPDATE users
+		SET email = $2,
+		    password_hash = '',
+		    display_name = '',
+		    email_verified = false,
+		    tier = 'free',
+		    status = 'deleted'
+		WHERE id = $1 AND deleted_at IS NOT NULL`
+	tag, err := r.pool.Exec(ctx, q, id, "deleted-"+id.String()+"@erased.local")
+	if err != nil {
+		return 0, fmt.Errorf("anonymize deleted user: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // VerifyEmail marks a user's email as verified.
@@ -424,6 +467,15 @@ func (r *DeviceRepo) RevokeAllByUser(ctx context.Context, userID uuid.UUID) erro
 	const q = `UPDATE devices SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL`
 	_, err := r.pool.Exec(ctx, q, now, userID)
 	return err
+}
+
+// DeleteByUser physically removes device rows after account erasure eligibility.
+func (r *DeviceRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM devices WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete devices by user: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // UpdateTokenHash stores a new device token hash.
@@ -720,6 +772,33 @@ func (r *BundleRepo) CountDeletedBefore(ctx context.Context, before time.Time) (
 	return count, bytes, nil
 }
 
+// SoftDeleteAllByUser marks every live bundle for the user as deleted.
+func (r *BundleRepo) SoftDeleteAllByUser(ctx context.Context, userID uuid.UUID, deletedAt time.Time) (int64, int64, error) {
+	const q = `
+		WITH deleted AS (
+			UPDATE bundles
+			SET deleted_at = $2
+			WHERE user_id = $1 AND deleted_at IS NULL
+			RETURNING size_bytes
+		)
+		SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM deleted`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, userID, deletedAt).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("soft delete bundles by user: %w", err)
+	}
+	return count, bytes, nil
+}
+
+// CountByUserIncludingDeleted returns all remaining bundle rows for a user.
+func (r *BundleRepo) CountByUserIncludingDeleted(ctx context.Context, userID uuid.UUID) (int64, int64, error) {
+	const q = `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM bundles WHERE user_id = $1`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, userID).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("count bundles by user including deleted: %w", err)
+	}
+	return count, bytes, nil
+}
+
 func scanBundles(rows pgx.Rows) ([]model.BundleMeta, error) {
 	var bundles []model.BundleMeta
 	for rows.Next() {
@@ -956,6 +1035,33 @@ func (r *SnapshotRepo) CountDeletedBefore(ctx context.Context, before time.Time)
 	var count, bytes int64
 	if err := r.pool.QueryRow(ctx, q, before).Scan(&count, &bytes); err != nil {
 		return 0, 0, fmt.Errorf("count deleted snapshots: %w", err)
+	}
+	return count, bytes, nil
+}
+
+// SoftDeleteAllByUser marks every live snapshot for the user as deleted.
+func (r *SnapshotRepo) SoftDeleteAllByUser(ctx context.Context, userID uuid.UUID, deletedAt time.Time) (int64, int64, error) {
+	const q = `
+		WITH deleted AS (
+			UPDATE snapshots
+			SET deleted_at = $2
+			WHERE user_id = $1 AND deleted_at IS NULL
+			RETURNING size_bytes
+		)
+		SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM deleted`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, userID, deletedAt).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("soft delete snapshots by user: %w", err)
+	}
+	return count, bytes, nil
+}
+
+// CountByUserIncludingDeleted returns all remaining snapshot rows for a user.
+func (r *SnapshotRepo) CountByUserIncludingDeleted(ctx context.Context, userID uuid.UUID) (int64, int64, error) {
+	const q = `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM snapshots WHERE user_id = $1`
+	var count, bytes int64
+	if err := r.pool.QueryRow(ctx, q, userID).Scan(&count, &bytes); err != nil {
+		return 0, 0, fmt.Errorf("count snapshots by user including deleted: %w", err)
 	}
 	return count, bytes, nil
 }
@@ -1239,6 +1345,25 @@ func (r *QuotaRepo) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, s
 	return nil
 }
 
+// DeleteUsageByUser removes the user's live usage row after final erasure.
+func (r *QuotaRepo) DeleteUsageByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM storage_usage WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete storage usage by user: %w", err)
+	}
+	r.invalidateUsageCache(ctx, userID)
+	return tag.RowsAffected(), nil
+}
+
+// DeleteLimitsByUser removes user-specific quota overrides after final erasure.
+func (r *QuotaRepo) DeleteLimitsByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM quota_limits WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete quota limits by user: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}
+
 // RecalculateUsage recomputes a user's storage_usage row from the authoritative
 // bundle and snapshot rows (excluding soft-deleted ones), correcting drift such
 // as the transient over-count a crash mid-upload can leave behind. It is
@@ -1338,6 +1463,15 @@ func (r *RefreshTokenRepo) RevokeAllUserTokens(ctx context.Context, userID uuid.
 	const q = `UPDATE refresh_tokens SET revoked_at = $1 WHERE user_id = $2 AND revoked_at IS NULL`
 	_, err := r.pool.Exec(ctx, q, now, userID)
 	return err
+}
+
+// DeleteByUser physically removes refresh tokens after account erasure eligibility.
+func (r *RefreshTokenRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM refresh_tokens WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete refresh tokens by user: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // IsTokenValid checks whether a refresh token hash is still valid.

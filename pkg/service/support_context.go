@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -23,6 +24,10 @@ type supportUserStore interface {
 	GetByEmail(ctx context.Context, email string) (*model.User, error)
 }
 
+type supportUserTombstoneStore interface {
+	GetAnyByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+}
+
 type supportDeviceStore interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]model.Device, error)
 }
@@ -36,20 +41,26 @@ type supportAuditStore interface {
 	ListVisibleByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AuditLog, error)
 }
 
+type supportErasureJobStore interface {
+	ListByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AccountErasureJob, error)
+}
+
 var ErrSupportContextLookupMismatch = errors.New("support context lookup conditions refer to different users")
 
 type SupportContextDeps struct {
-	Users   supportUserStore
-	Devices supportDeviceStore
-	Quota   supportQuotaStore
-	Audit   supportAuditStore
+	Users       supportUserStore
+	Devices     supportDeviceStore
+	Quota       supportQuotaStore
+	Audit       supportAuditStore
+	ErasureJobs supportErasureJobStore
 }
 
 type SupportContextService struct {
-	users   supportUserStore
-	devices supportDeviceStore
-	quota   supportQuotaStore
-	audit   supportAuditStore
+	users       supportUserStore
+	devices     supportDeviceStore
+	quota       supportQuotaStore
+	audit       supportAuditStore
+	erasureJobs supportErasureJobStore
 }
 
 type SupportContextLookup struct {
@@ -64,7 +75,21 @@ type SupportBaseContext struct {
 	User        *model.User            `json:"user,omitempty"`
 	Devices     []SupportDeviceSummary `json:"devices"`
 	Quota       *SupportQuotaSummary   `json:"quota,omitempty"`
+	ErasureJobs []SupportErasureJob    `json:"erasure_jobs"`
 	RecentAudit []SupportAuditSummary  `json:"recent_audit"`
+}
+
+type SupportErasureJob struct {
+	ID          uuid.UUID                     `json:"id"`
+	UserID      uuid.UUID                     `json:"user_id"`
+	RequestedAt time.Time                     `json:"requested_at"`
+	EligibleAt  time.Time                     `json:"eligible_at"`
+	Status      model.AccountErasureJobStatus `json:"status"`
+	Summary     map[string]any                `json:"summary,omitempty"`
+	LastError   string                        `json:"last_error,omitempty"`
+	StartedAt   *time.Time                    `json:"started_at,omitempty"`
+	FinishedAt  *time.Time                    `json:"finished_at,omitempty"`
+	UpdatedAt   time.Time                     `json:"updated_at"`
 }
 
 type SupportDeviceSummary struct {
@@ -95,10 +120,11 @@ type SupportAuditSummary struct {
 
 func NewSupportContextService(deps SupportContextDeps) *SupportContextService {
 	return &SupportContextService{
-		users:   deps.Users,
-		devices: deps.Devices,
-		quota:   deps.Quota,
-		audit:   deps.Audit,
+		users:       deps.Users,
+		devices:     deps.Devices,
+		quota:       deps.Quota,
+		audit:       deps.Audit,
+		erasureJobs: deps.ErasureJobs,
 	}
 }
 
@@ -119,6 +145,7 @@ func (s *SupportContextService) Lookup(ctx context.Context, lookup SupportContex
 			GeneratedAt: time.Now().UTC(),
 			Lookup:      lookup,
 			Devices:     []SupportDeviceSummary{},
+			ErasureJobs: []SupportErasureJob{},
 			RecentAudit: []SupportAuditSummary{},
 		}, nil
 	}
@@ -128,6 +155,7 @@ func (s *SupportContextService) Lookup(ctx context.Context, lookup SupportContex
 		Lookup:      lookup,
 		User:        user,
 		Devices:     []SupportDeviceSummary{},
+		ErasureJobs: []SupportErasureJob{},
 		RecentAudit: []SupportAuditSummary{},
 	}
 	if s.devices != nil {
@@ -151,6 +179,13 @@ func (s *SupportContextService) Lookup(ctx context.Context, lookup SupportContex
 		}
 		out.RecentAudit = summarizeSupportAudit(logs)
 	}
+	if s.erasureJobs != nil {
+		jobs, err := s.erasureJobs.ListByUser(ctx, user.ID, lookup.Limit)
+		if err != nil {
+			return nil, fmt.Errorf("list support erasure jobs: %w", err)
+		}
+		out.ErasureJobs = summarizeSupportErasureJobs(jobs)
+	}
 	return out, nil
 }
 
@@ -164,6 +199,14 @@ func (s *SupportContextService) lookupUser(ctx context.Context, lookup SupportCo
 		byID, err = s.users.GetByID(ctx, userID)
 		if err != nil {
 			return nil, fmt.Errorf("get support user by id: %w", err)
+		}
+		if byID == nil {
+			if tombstones, ok := s.users.(supportUserTombstoneStore); ok {
+				byID, err = tombstones.GetAnyByID(ctx, userID)
+				if err != nil {
+					return nil, fmt.Errorf("get support user tombstone by id: %w", err)
+				}
+			}
 		}
 	}
 	var byEmail *model.User
@@ -242,6 +285,29 @@ func summarizeSupportAudit(logs []model.AuditLog) []SupportAuditSummary {
 			TargetID:   log.TargetID,
 			Metadata:   sanitizeAuditMetadata(log.Metadata),
 			CreatedAt:  log.CreatedAt,
+		})
+	}
+	return out
+}
+
+func summarizeSupportErasureJobs(jobs []model.AccountErasureJob) []SupportErasureJob {
+	out := make([]SupportErasureJob, 0, len(jobs))
+	for _, job := range jobs {
+		summary := map[string]any{}
+		if len(job.Summary) > 0 {
+			_ = json.Unmarshal(job.Summary, &summary)
+		}
+		out = append(out, SupportErasureJob{
+			ID:          job.ID,
+			UserID:      job.UserID,
+			RequestedAt: job.RequestedAt,
+			EligibleAt:  job.EligibleAt,
+			Status:      job.Status,
+			Summary:     summary,
+			LastError:   job.LastError,
+			StartedAt:   job.StartedAt,
+			FinishedAt:  job.FinishedAt,
+			UpdatedAt:   job.UpdatedAt,
 		})
 	}
 	return out

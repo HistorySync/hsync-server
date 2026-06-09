@@ -81,3 +81,15 @@ func (r *NotificationPreferenceRepo) Upsert(ctx context.Context, prefs *model.No
 	}
 	return nil
 }
+
+// DeleteByUser removes a user's notification preferences after final erasure.
+func (r *NotificationPreferenceRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) (int64, error) {
+	if r == nil || r.db == nil {
+		return 0, fmt.Errorf("notification preference repository is not configured")
+	}
+	tag, err := r.db.Exec(ctx, `DELETE FROM user_notification_preferences WHERE user_id = $1`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete notification preferences: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

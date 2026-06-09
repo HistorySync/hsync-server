@@ -273,22 +273,27 @@ func New(deps Deps) *Services {
 		securityUserStore = deps.Repos.Users
 	}
 	auditSvc := NewAuditService(auditStore)
+	retentionSvc.auditRecorder = auditSvc
+	retentionSvc.erasureReporter = provider.Registry().Erasure
 	securityStatsSvc := NewSecurityStatsService(securityAuditStore, securityUserStore)
 	var supportUsers supportUserStore
 	var supportDevices supportDeviceStore
 	var supportQuota supportQuotaStore
 	var supportAudit supportAuditStore
+	var supportErasureJobs supportErasureJobStore
 	if deps.Repos != nil {
 		supportUsers = deps.Repos.Users
 		supportDevices = deps.Repos.Devices
 		supportQuota = deps.Repos.Quota
 		supportAudit = deps.Repos.AuditLogs
+		supportErasureJobs = deps.Repos.AccountErasureJobs
 	}
 	supportSvc := NewSupportContextService(SupportContextDeps{
-		Users:   supportUsers,
-		Devices: supportDevices,
-		Quota:   supportQuota,
-		Audit:   supportAudit,
+		Users:       supportUsers,
+		Devices:     supportDevices,
+		Quota:       supportQuota,
+		Audit:       supportAudit,
+		ErasureJobs: supportErasureJobs,
 	})
 
 	// Dynamic system settings: a database-backed, whitelisted, typed override
@@ -331,6 +336,7 @@ func New(deps Deps) *Services {
 	var accountRefreshTokens accountRefreshTokenStore
 	var accountTwoFactor accountTwoFactorStore
 	var accountPasskeys accountPasskeyStore
+	var accountErasureJobs accountErasureJobStore
 	if deps.Repos != nil {
 		accountUsers = deps.Repos.Users
 		accountDevices = deps.Repos.Devices
@@ -341,6 +347,7 @@ func New(deps Deps) *Services {
 		accountRefreshTokens = deps.Repos.RefreshTokens
 		accountTwoFactor = deps.Repos.TwoFactor
 		accountPasskeys = deps.Repos.Passkeys
+		accountErasureJobs = deps.Repos.AccountErasureJobs
 	}
 	accountSvc := NewAccountService(AccountDeps{
 		Users:                accountUsers,
@@ -354,6 +361,7 @@ func New(deps Deps) *Services {
 		RefreshTokens:        accountRefreshTokens,
 		TwoFactor:            accountTwoFactor,
 		Passkeys:             accountPasskeys,
+		ErasureJobs:          accountErasureJobs,
 		DeletionPolicy:       provider.Registry().Deletion,
 		RetentionGracePeriod: retentionGracePeriod(deps.Config),
 	})
@@ -420,8 +428,10 @@ func retentionGracePeriod(cfg *config.Config) time.Duration {
 }
 
 type RetentionService struct {
-	repos     *repository.Repos
-	blobStore storage.BlobStorage
+	repos           *repository.Repos
+	blobStore       storage.BlobStorage
+	auditRecorder   accountAuditRecorder
+	erasureReporter provider.AccountErasureReporter
 }
 
 // RetentionReport summarizes the soft-deleted data eligible for purging, or, for

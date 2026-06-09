@@ -18,6 +18,7 @@ vendor/
 .env
 .env.local
 .env.prod
+.env.production
 
 # IDE
 .idea/

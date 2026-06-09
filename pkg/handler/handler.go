@@ -343,6 +343,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Admin security stats for the v1 API surface.
 	v1Admin := v1.Group("/admin", adminRL, auth.AdminMiddleware(h.deps.AdminKey))
 	get(v1Admin, "/api/v1/admin/security/stats", "/security/stats", h.AdminSecurityStats)
+	get(v1Admin, "/api/v1/admin/security/timeline", "/security/timeline", h.AdminSecurityTimeline)
 	get(v1Admin, "/api/v1/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
 	post(v1Admin, "/api/v1/admin/notifications/failures/retry", "/notifications/failures/retry", h.AdminRetryNotificationFailures)
@@ -1114,6 +1115,18 @@ func (h *Handlers) FinishPasskeyRegistration(c fiber.Ctx) error {
 		observability.RecordAuthFailure("passkey", passkeyFailureReason(err))
 		return mapPasskeyError(err)
 	}
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(auth.UserID(c)),
+		EventType:   model.AuditEventPasskeyAdded,
+		TargetType:  "passkey",
+		TargetID:    view.ID.String(),
+		Metadata: map[string]any{
+			"name":               view.Name,
+			"backup_eligible":    view.BackupEligible,
+			"backup_state":       view.BackupState,
+			"authenticator_type": view.Attachment,
+		},
+	})
 	return c.Status(fiber.StatusCreated).JSON(view)
 }
 
@@ -1144,6 +1157,15 @@ func (h *Handlers) DeletePasskey(c fiber.Ctx) error {
 	if err := h.deps.Services.Passkey.DeleteCredential(c.Context(), auth.UserID(c), id); err != nil {
 		return mapPasskeyError(err)
 	}
+	h.recordAudit(c, service.AuditEventInput{
+		ActorUserID: auditActor(auth.UserID(c)),
+		EventType:   model.AuditEventPasskeyDeleted,
+		TargetType:  "passkey",
+		TargetID:    id.String(),
+		Metadata: map[string]any{
+			"step_up": true,
+		},
+	})
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -2512,6 +2534,64 @@ func (h *Handlers) AdminSecurityStats(c fiber.Ctx) error {
 	return c.JSON(stats)
 }
 
+func (h *Handlers) AdminSecurityTimeline(c fiber.Ctx) error {
+	timelineSvc := service.NewSecurityTimelineService(nil, nil)
+	if h.deps.Services != nil && h.deps.Services.SecurityTimeline != nil {
+		timelineSvc = h.deps.Services.SecurityTimeline
+	}
+	filter := model.SecurityTimelineFilter{
+		UserID: c.Query("user_id"),
+		Email:  c.Query("email"),
+		IPHash: c.Query("ip_hash"),
+		Action: c.Query("action"),
+		Since:  c.Query("since"),
+		Until:  c.Query("until"),
+	}
+	if limit, err := strconv.Atoi(c.Query("limit", "")); err == nil {
+		filter.Limit = int32(limit)
+	}
+	if offset, err := strconv.Atoi(c.Query("offset", "")); err == nil {
+		filter.Offset = int32(offset)
+	}
+	response, err := timelineSvc.Lookup(c.Context(), filter)
+	if err != nil {
+		return apierrors.NewBadRequest(err.Error())
+	}
+
+	h.recordAudit(c, service.AuditEventInput{
+		EventType:  model.AuditEventAdminSecurityTimelineRead,
+		TargetType: "security_timeline",
+		TargetID:   strings.TrimSpace(firstNonEmpty(response.Filter.UserID, response.Filter.Email, response.Filter.IPHash, response.Filter.Action, "query")),
+		Metadata: map[string]any{
+			"user_id":     response.Filter.UserID,
+			"email_hint":  response.Filter.Email,
+			"ip_hash":     response.Filter.IPHash,
+			"action":      response.Filter.Action,
+			"since":       response.Filter.Since,
+			"until":       response.Filter.Until,
+			"limit":       response.Filter.Limit,
+			"offset":      response.Filter.Offset,
+			"result_count": len(response.Events),
+			"total":       response.Total,
+			"format":      strings.ToLower(strings.TrimSpace(c.Query("format", "json"))),
+		},
+	})
+
+	switch strings.ToLower(strings.TrimSpace(c.Query("format", "json"))) {
+	case "", "json":
+		return c.JSON(response)
+	case "csv":
+		data, err := service.SecurityTimelineCSV(response)
+		if err != nil {
+			return apierrors.NewInternal(err.Error())
+		}
+		c.Set(fiber.HeaderContentType, "text/csv; charset=utf-8")
+		return c.Send(data)
+	default:
+		return apierrors.NewBadRequest("format must be json or csv")
+	}
+}
+
 func (h *Handlers) AdminNotificationFailures(c fiber.Ctx) error {
 	limit := int32(50)
 	if l, err := strconv.Atoi(c.Query("limit", "50")); err == nil && l > 0 && l <= 200 {
@@ -2871,6 +2951,15 @@ func (h *Handlers) AdminListAuditLogs(c fiber.Ctx) error {
 		"limit":      limit,
 		"offset":     offset,
 	})
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // AdminErrorCodes returns the full catalog of registered API error codes as a

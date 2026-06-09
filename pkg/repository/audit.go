@@ -18,6 +18,7 @@ import (
 const (
 	defaultAuditListLimit = int32(50)
 	maxAuditListLimit     = int32(200)
+	maxAuditTimelineLimit = int32(1000)
 )
 
 type AuditRepo struct {
@@ -91,6 +92,59 @@ func (r *AuditRepo) List(ctx context.Context, filter model.AuditListFilter) ([]m
 	return scanAuditLogs(rows)
 }
 
+func (r *AuditRepo) ListTimeline(ctx context.Context, filter model.AuditListFilter) ([]model.AuditLog, error) {
+	filter = normalizeAuditTimelineFilter(filter)
+
+	var args []any
+	var where []string
+	addArg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	if filter.ActorUserID != nil && filter.Email != "" {
+		userArg := addArg(*filter.ActorUserID)
+		targetUserArg := addArg(filter.ActorUserID.String())
+		emailArg := addArg(strings.ToLower(strings.TrimSpace(filter.Email)))
+		where = append(where, "(actor_user_id = "+userArg+" OR (target_type = 'user' AND target_id = "+targetUserArg+") OR lower(coalesce(metadata->>'email', '')) = "+emailArg+")")
+	} else if filter.ActorUserID != nil {
+		userArg := addArg(*filter.ActorUserID)
+		targetUserArg := addArg(filter.ActorUserID.String())
+		where = append(where, "(actor_user_id = "+userArg+" OR (target_type = 'user' AND target_id = "+targetUserArg+"))")
+	} else if filter.Email != "" {
+		where = append(where, "lower(coalesce(metadata->>'email', '')) = "+addArg(strings.ToLower(strings.TrimSpace(filter.Email))))
+	}
+	if filter.EventType != "" {
+		where = append(where, "event_type = "+addArg(string(filter.EventType)))
+	}
+	if !filter.Since.IsZero() {
+		where = append(where, "created_at >= "+addArg(filter.Since))
+	}
+	if !filter.Until.IsZero() {
+		where = append(where, "created_at <= "+addArg(filter.Until))
+	}
+
+	var b strings.Builder
+	b.WriteString(`
+		SELECT id, actor_user_id, event_type, target_type, target_id, ip, user_agent, metadata, created_at
+		FROM audit_logs`)
+	if len(where) > 0 {
+		b.WriteString(" WHERE ")
+		b.WriteString(strings.Join(where, " AND "))
+	}
+	b.WriteString(" ORDER BY created_at DESC, id DESC LIMIT ")
+	b.WriteString(addArg(filter.Limit))
+	b.WriteString(" OFFSET ")
+	b.WriteString(addArg(filter.Offset))
+
+	rows, err := r.pool.Query(ctx, b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list timeline audit logs: %w", err)
+	}
+	defer rows.Close()
+
+	return scanAuditLogs(rows)
+}
+
 func (r *AuditRepo) SecurityEventCounts(ctx context.Context, since24h, since7d, until time.Time) ([]model.SecurityEventWindowCount, error) {
 	const q = `
 		SELECT event_type,
@@ -143,6 +197,17 @@ func normalizeAuditListFilter(filter model.AuditListFilter) model.AuditListFilte
 	if filter.Offset < 0 {
 		filter.Offset = 0
 	}
+	return filter
+}
+
+func normalizeAuditTimelineFilter(filter model.AuditListFilter) model.AuditListFilter {
+	if filter.Limit <= 0 || filter.Limit > maxAuditTimelineLimit {
+		filter.Limit = maxAuditTimelineLimit
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	filter.Email = strings.ToLower(strings.TrimSpace(filter.Email))
 	return filter
 }
 

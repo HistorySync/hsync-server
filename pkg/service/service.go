@@ -208,6 +208,7 @@ type Services struct {
 	Passkey       *PasskeyService
 	Audit         *AuditService
 	SecurityStats *SecurityStatsService
+	SecurityTimeline *SecurityTimelineService
 	Settings      *SettingsService
 	Idempotency   *IdempotencyService
 	Ops           *OpsService
@@ -267,15 +268,20 @@ func New(deps Deps) *Services {
 	var auditStore auditEventStore
 	var securityAuditStore securityAuditStore
 	var securityUserStore securityUserStore
+	var securityTimelineAuditStore securityTimelineAuditStore
+	var securityTimelineUserStore securityTimelineUserStore
 	if deps.Repos != nil {
 		auditStore = deps.Repos.AuditLogs
 		securityAuditStore = deps.Repos.AuditLogs
 		securityUserStore = deps.Repos.Users
+		securityTimelineAuditStore = deps.Repos.AuditLogs
+		securityTimelineUserStore = deps.Repos.Users
 	}
 	auditSvc := NewAuditService(auditStore)
 	retentionSvc.auditRecorder = auditSvc
 	retentionSvc.erasureReporter = provider.Registry().Erasure
 	securityStatsSvc := NewSecurityStatsService(securityAuditStore, securityUserStore)
+	securityTimelineSvc := NewSecurityTimelineService(securityTimelineAuditStore, securityTimelineUserStore)
 	var supportUsers supportUserStore
 	var supportDevices supportDeviceStore
 	var supportQuota supportQuotaStore
@@ -381,6 +387,7 @@ func New(deps Deps) *Services {
 		Passkey:       passkeySvc,
 		Audit:         auditSvc,
 		SecurityStats: securityStatsSvc,
+		SecurityTimeline: securityTimelineSvc,
 		Settings:      settingsSvc,
 		Idempotency:   idempotencySvc,
 		Ops:           opsSvc,

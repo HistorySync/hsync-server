@@ -33,6 +33,11 @@ func (s *handlerAuditStore) List(_ context.Context, filter model.AuditListFilter
 	return s.logs, nil
 }
 
+func (s *handlerAuditStore) ListTimeline(_ context.Context, filter model.AuditListFilter) ([]model.AuditLog, error) {
+	s.filter = filter
+	return s.logs, nil
+}
+
 func TestAdminListAuditLogsParsesFilters(t *testing.T) {
 	actorID := uuid.New()
 	store := &handlerAuditStore{
@@ -152,5 +157,59 @@ func TestAdminSetSettingRecordsAuditEvent(t *testing.T) {
 		if value == "shh" {
 			t.Fatalf("metadata leaked sensitive plaintext: %+v", event.Metadata)
 		}
+	}
+}
+
+func TestAdminSecurityTimelineReturnsJSONAndWritesAudit(t *testing.T) {
+	userID := uuid.New()
+	store := &handlerAuditStore{
+		logs: []model.AuditLog{{
+			ID:          uuid.New(),
+			ActorUserID: &userID,
+			EventType:   model.AuditEventLoginFailure,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			IP:          "203.0.113.4",
+			Metadata: map[string]any{
+				"email":  "user@example.com",
+				"reason": "invalid_credentials",
+			},
+			CreatedAt: time.Now().UTC(),
+		}},
+	}
+	services := &service.Services{
+		Audit:            service.NewAuditService(store),
+		SecurityTimeline: service.NewSecurityTimelineService(store, nil),
+	}
+	h := New(Deps{Services: services, AdminKey: "secret"})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("GET", "/api/v1/admin/security/timeline?email=user@example.com&format=json", nil)
+	req.Header.Set("X-Admin-Key", "secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+
+	var body model.SecurityTimelineResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(body.Events))
+	}
+	if body.Summary.AuthFailures != 1 {
+		t.Fatalf("auth failures = %d, want 1", body.Summary.AuthFailures)
+	}
+	if body.Events[0].EmailHint == "" || body.Events[0].IPHash == "" {
+		t.Fatalf("event not redacted enough: %+v", body.Events[0])
+	}
+	if len(store.created) != 1 || store.created[0].EventType != model.AuditEventAdminSecurityTimelineRead {
+		t.Fatalf("audit query event = %+v, want timeline read audit", store.created)
 	}
 }

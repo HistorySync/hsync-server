@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"net/url"
 	"strings"
 	"time"
@@ -249,6 +250,7 @@ func LoadForMigrationsWithExtraFiles(extraNames ...string) (*Config, error) {
 //  4. Environment variables (HSYNC_ prefix, e.g. HSYNC_DATABASE_URL)
 func load(extraNames []string) (*Config, error) {
 	cfg := DefaultConfig()
+	extraNames = append(extraNames, extraConfigNamesFromEnv()...)
 
 	v := viper.New()
 	v.SetConfigName("config")
@@ -357,6 +359,22 @@ func load(extraNames []string) (*Config, error) {
 	cfg.LogLevel = level
 
 	return cfg, nil
+}
+
+func extraConfigNamesFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("HSYNC_CONFIG_EXTRA_FILES"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	names := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // Validate checks that required fields are set and values are sensible.

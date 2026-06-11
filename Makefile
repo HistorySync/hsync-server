@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 # Targets
 
-.PHONY: all build run test test-smoke test-integration lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-smoke test-integration loadtest lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -44,6 +44,10 @@ test-smoke:
 ## test-integration: Run DB-backed integration tests (requires a running Docker daemon)
 test-integration:
 	go test -tags=integration -count=1 -timeout 300s ./pkg/repository/...
+
+## loadtest: Run local CE smoke+load rehearsal against a running server
+loadtest:
+	go run ./cmd/loadtest
 
 ## lint: Run linters (requires golangci-lint)
 lint:

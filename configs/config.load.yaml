@@ -1,0 +1,17 @@
+# Local release-gate overlay for smoke+load rehearsal.
+admin_key: "load-admin-key"
+metrics_enabled: true
+metrics_path: "/metrics"
+redis_url: ""
+
+# Keep the local capacity rehearsal fast and deterministic.
+websocket_origin_check_disabled: true
+websocket_max_connections: 8
+websocket_max_connections_per_user: 2
+
+notifications_enabled: true
+quota_warning_threshold: 1
+quota_exhausted_threshold: 95
+notification_outbox_interval: "1s"
+
+background_tasks_enabled: true

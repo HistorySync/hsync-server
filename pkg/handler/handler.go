@@ -318,6 +318,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	// Devices (JWT-protected)
 	devices := v1.Group("/devices", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 	get(devices, "/api/v1/devices/", "/", h.ListDevices)
+	post(devices, "/api/v1/devices/:uuid/token", "/:uuid/token", h.RequestDeviceToken)
 	post(devices, "/api/v1/devices/:uuid/revoke", "/:uuid/revoke", h.RevokeDevice, stepUp)
 	devices.Get("/revocations", h.ListRevocations)
 

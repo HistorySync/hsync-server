@@ -111,6 +111,53 @@ func TestLoadWithExtraFilesAllowsMissingBaseConfig(t *testing.T) {
 	}
 }
 
+func TestLoadWithEnvExtraFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "configs"), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	secret := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	base := "jwt_private_key: " + seed + "\nsecurity_secret: " + secret + "\nweb_app_name: CE\n"
+	extra := "web_app_name: load gate\nnotifications_enabled: true\n"
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.yaml"), []byte(base), 0o644); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "configs", "config.load.yaml"), []byte(extra), 0o644); err != nil {
+		t.Fatalf("write config.load.yaml: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	oldExtra := os.Getenv("HSYNC_CONFIG_EXTRA_FILES")
+	if err := os.Setenv("HSYNC_CONFIG_EXTRA_FILES", "config.load"); err != nil {
+		t.Fatalf("setenv: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(oldWD); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+		if err := os.Setenv("HSYNC_CONFIG_EXTRA_FILES", oldExtra); err != nil {
+			t.Fatalf("restore env: %v", err)
+		}
+	})
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebAppName != "load gate" {
+		t.Fatalf("WebAppName = %q, want load gate", cfg.WebAppName)
+	}
+	if !cfg.NotificationsEnabled {
+		t.Fatal("NotificationsEnabled = false, want true")
+	}
+}
+
 func TestValidateRequiresOIDCSettingsWhenEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))

@@ -63,6 +63,67 @@ to exercise the supported degraded path, and blob storage uses an in-memory fake
 If Docker cannot provide Linux containers locally, run this suite in CI or on a
 Linux workstation.
 
+## Release Capacity Rehearsal
+
+The CE release gate also includes a repeatable local smoke+load rehearsal. It
+targets a running local server, uses normal auth flows, and verifies the
+specific pre-release behaviors that are easy to regress under small bursts:
+register/login, bundle upload/download/list, snapshot upload, WebSocket
+connection caps, rate-limit fallback visibility, notification outbox drain, and
+quota rollback accounting.
+
+Start the local stack with the load overlay merged on top of the usual config:
+
+```powershell
+$env:HSYNC_CONFIG_EXTRA_FILES="config.load"
+go run ./cmd/hsync-server
+```
+
+The `configs/config.load.yaml` overlay intentionally keeps this environment
+local-only: metrics are enabled, Redis is disabled to expose fallback mode,
+WebSocket caps are low enough to trigger deterministic rejections, background
+tasks stay on, and notification draining is shortened to one second polling.
+
+Run the rehearsal against that server:
+
+```powershell
+go run ./cmd/loadtest -json
+```
+
+or:
+
+```powershell
+make loadtest
+```
+
+The report includes per-scenario `p50`, `p95`, `error_rate`, `rejections`, a
+roll-up `rejection_reasons` map, `quota_rollback_count`, and the
+`hsync_rate_limit_redis_fallback_active` state captured from `/metrics`.
+
+Recommended release thresholds for local rehearsal:
+
+- `error_rate` should stay at `0%` for `ce_register_login`,
+  `ce_bundle_snapshot_sync`, and `ce_notification_outbox_drain`.
+- `ce_ws_connect_cap` should show at least one rejection when `HSYNC_LOAD_WS_ATTEMPTS`
+  is greater than `websocket_max_connections_per_user`; that confirms the cap is
+  enforced instead of silently over-admitting sockets.
+- `ce_rate_limit_fallback` may show rejections, but they should be explicit
+  `HTTP_429` or `RATE_LIMITED` outcomes rather than transport errors or `5xx`
+  responses.
+- `quota_rollback_count` should remain `0` for the default rehearsal. A non-zero
+  value means quota reservations were created and then rolled back, which is a
+  release blocker unless the run intentionally exercised a failing storage path.
+- `rate_limit_fallback` should match expectations for the local topology. With
+  `config.load.yaml`, `memory=true` is expected because Redis is disabled.
+- `notification_outbox failed` should remain `0`, and `sent` should increase
+  after the quota-warning trigger upload.
+
+Interpret the output as a release confidence check, not as a production
+saturation benchmark. A rising `p95` with zero errors usually means the machine
+is noisy or under-provisioned locally; `5xx`, missing notification drains,
+unexpected rejection reasons, or non-zero rollback counts indicate a behavioral
+regression worth fixing before release.
+
 ## Upgrade Validation Flow
 
 Before applying a release to a persistent database, run the read-only migration

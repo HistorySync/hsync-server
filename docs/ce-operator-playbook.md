@@ -642,6 +642,19 @@ The push endpoint is `GET /ws/push`. It authenticates with the per-device
 WebSocket token, preferably in `Authorization: Bearer <device_token>`. The
 legacy `?token=` query parameter remains available for older clients.
 
+Device token lifecycle:
+
+- Clients obtain or rotate the token with `POST /api/v1/devices/:uuid/token`
+  under a user JWT session.
+- The raw token is returned only once; CE stores only `SHA-256(token)` plus a
+  server-enforced expiry timestamp.
+- CE currently enforces a 24 hour token lifetime. A WebSocket reconnect after
+  expiry must request a fresh device token first.
+- Revoked devices cannot refresh tokens and existing WebSocket auth stops
+  working as soon as the old token is rejected.
+- Token issuance and rejection are audited with device UUID, platform, and
+  rejection reason only; no plaintext token is logged or exported.
+
 Origin policy:
 
 - `websocket_origin_check_disabled=false` by default.
@@ -677,8 +690,10 @@ with the load balancer topology in mind.
 2. Confirm browser `Origin` exactly matches one of `websocket_allowed_origins`
    or the public request host.
 3. Confirm the device token is fresh and the device has not been revoked.
-4. Raise per-user caps only when expected multi-tab/device behavior needs it.
-5. Raise global caps only after checking CPU, memory, and file descriptor headroom.
+4. If `/api/v1/devices/:uuid/token` returns 429, back off and retry instead of
+   forcing repeated refresh attempts.
+5. Raise per-user caps only when expected multi-tab/device behavior needs it.
+6. Raise global caps only after checking CPU, memory, and file descriptor headroom.
 
 ## 7. Recommended incident flow
 

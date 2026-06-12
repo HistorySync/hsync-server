@@ -568,6 +568,30 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Device'
+    DeviceTokenRequest:
+      type: object
+      properties:
+        device_name:
+          type: string
+          description: Optional display name stored on first registration.
+        platform:
+          type: string
+          description: Client platform hint recorded in audit metadata and device metadata.
+        app_version:
+          type: string
+          description: Optional client version stored with the device metadata.
+    DeviceTokenResponse:
+      type: object
+      required: [device_token, expires_in, device]
+      properties:
+        device_token:
+          type: string
+          description: Raw WebSocket device token. It is returned only once and is not recoverable later.
+        expires_in:
+          type: integer
+          description: Seconds until the server-side device token expiry. CE currently enforces 24 hours.
+        device:
+          $ref: '#/components/schemas/Device'
     DeviceRevocation:
       type: object
       required: [id, user_id, device_uuid, revoked_at, revoked_by]
@@ -1771,6 +1795,42 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DeviceListResponse'
+  /api/v1/devices/{uuid}/token:
+    post:
+      tags: [Devices]
+      summary: Issue or rotate a device WebSocket token
+      description: |
+        Returns a raw device token exactly once. The server stores only its hash,
+        enforces a 24 hour expiry during WebSocket authentication, rejects revoked
+        devices, and applies authenticated per-user rate limiting to refreshes.
+      operationId: ceRequestDeviceToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DeviceUuid'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeviceTokenRequest'
+      responses:
+        '200':
+          description: Device token issued or rotated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceTokenResponse'
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '429':
+          $ref: '#/components/responses/ErrorResponse'
+        '507':
+          $ref: '#/components/responses/ErrorResponse'
   /api/v1/devices/{uuid}/revoke:
     post:
       tags: [Devices]

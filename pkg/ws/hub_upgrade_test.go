@@ -99,6 +99,23 @@ func TestUpgradeAcceptsValidTokenAndOrigin(t *testing.T) {
 	}
 }
 
+func TestUpgradeRejectsExpiredOrMissingValidatedToken(t *testing.T) {
+	store := newFakeDeviceStore("device-token")
+	store.device = nil
+	hub := NewHubWithOptions(store, Options{OriginCheckDisabled: true})
+	go hub.Run()
+	server := httptest.NewServer(http.HandlerFunc(hub.ServeHTTP))
+	t.Cleanup(server.Close)
+
+	_, resp, err := dialWS(t, server.URL, "device-token", "")
+	if err == nil {
+		t.Fatal("Dial() error = nil, want invalid token rejection")
+	}
+	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %v, want %d", responseStatus(resp), http.StatusUnauthorized)
+	}
+}
+
 type fakeDeviceStore struct {
 	tokenHash       [sha256.Size]byte
 	device          *model.Device
@@ -120,6 +137,9 @@ func newFakeDeviceStore(token string) *fakeDeviceStore {
 func (s *fakeDeviceStore) GetByTokenHash(_ context.Context, tokenHash []byte) (*model.Device, error) {
 	s.lookups++
 	if string(tokenHash) != string(s.tokenHash[:]) {
+		return nil, nil
+	}
+	if s.device == nil {
 		return nil, nil
 	}
 	clone := *s.device

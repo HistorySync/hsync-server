@@ -4,6 +4,7 @@ package repository
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -108,8 +109,9 @@ func TestDeviceTokenHashLookup(t *testing.T) {
 	d := seedDevice(t, repos, u.ID)
 
 	hash := []byte("device-token-hash")
-	if err := repos.Devices.UpdateTokenHash(ctx, d.ID, hash); err != nil {
-		t.Fatalf("UpdateTokenHash: %v", err)
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	if err := repos.Devices.UpdateToken(ctx, d.ID, hash, expiresAt); err != nil {
+		t.Fatalf("UpdateToken: %v", err)
 	}
 
 	got, err := repos.Devices.GetByTokenHash(ctx, hash)
@@ -126,6 +128,58 @@ func TestDeviceTokenHashLookup(t *testing.T) {
 	}
 	if missing != nil {
 		t.Fatalf("GetByTokenHash(missing) = %+v, want nil", missing)
+	}
+}
+
+func TestDeviceTokenHashLookupRejectsExpiredToken(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "expired-token@example.com")
+	d := seedDevice(t, repos, u.ID)
+
+	hash := []byte("expired-device-token-hash")
+	if err := repos.Devices.UpdateToken(ctx, d.ID, hash, time.Now().UTC().Add(-time.Minute)); err != nil {
+		t.Fatalf("UpdateToken: %v", err)
+	}
+
+	got, err := repos.Devices.GetByTokenHash(ctx, hash)
+	if err != nil {
+		t.Fatalf("GetByTokenHash(expired): %v", err)
+	}
+	if got != nil {
+		t.Fatalf("GetByTokenHash(expired) = %+v, want nil", got)
+	}
+}
+
+func TestDeviceTokenExpiryPersistsOnCreateAndRead(t *testing.T) {
+	repos := setupTest(t)
+	ctx := testContext(t)
+
+	u := seedUser(t, repos, "persist-token@example.com")
+	expiresAt := time.Now().UTC().Add(24 * time.Hour).Round(time.Microsecond)
+	d := &model.Device{
+		UserID:         u.ID,
+		DeviceUUID:     uuid.New(),
+		DeviceName:     "persist-device",
+		Platform:       "windows",
+		AppVersion:     "1.0.0",
+		TokenHash:      []byte("persisted-token-hash"),
+		TokenExpiresAt: &expiresAt,
+	}
+	if err := repos.Devices.Create(ctx, d); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	got, err := repos.Devices.GetByID(ctx, d.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got == nil || got.TokenExpiresAt == nil {
+		t.Fatalf("GetByID = %+v, want token expiry", got)
+	}
+	if got.TokenExpiresAt.UTC().Unix() != expiresAt.UTC().Unix() {
+		t.Fatalf("TokenExpiresAt = %s, want %s", got.TokenExpiresAt.UTC(), expiresAt.UTC())
 	}
 }
 

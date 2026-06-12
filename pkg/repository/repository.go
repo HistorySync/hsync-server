@@ -360,12 +360,12 @@ type DeviceRepo struct {
 // Create registers a new device for a user.
 func (r *DeviceRepo) Create(ctx context.Context, d *model.Device) error {
 	const q = `
-		INSERT INTO devices (user_id, device_uuid, device_name, platform, app_version, token_hash)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO devices (user_id, device_uuid, device_name, platform, app_version, token_hash, token_expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, created_at`
 
 	return r.pool.QueryRow(ctx, q,
-		d.UserID, d.DeviceUUID, d.DeviceName, d.Platform, d.AppVersion, d.TokenHash,
+		d.UserID, d.DeviceUUID, d.DeviceName, d.Platform, d.AppVersion, d.TokenHash, d.TokenExpiresAt,
 	).Scan(&d.ID, &d.CreatedAt)
 }
 
@@ -373,13 +373,13 @@ func (r *DeviceRepo) Create(ctx context.Context, d *model.Device) error {
 func (r *DeviceRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.Device, error) {
 	const q = `
 		SELECT id, user_id, device_uuid, device_name, platform, app_version,
-		       token_hash, last_sync_at, revoked_at, created_at
+		       token_hash, token_expires_at, last_sync_at, revoked_at, created_at
 		FROM devices WHERE id = $1`
 
 	d := &model.Device{}
 	err := r.pool.QueryRow(ctx, q, id).Scan(
 		&d.ID, &d.UserID, &d.DeviceUUID, &d.DeviceName, &d.Platform, &d.AppVersion,
-		&d.TokenHash, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
+		&d.TokenHash, &d.TokenExpiresAt, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -394,13 +394,13 @@ func (r *DeviceRepo) GetByID(ctx context.Context, id uuid.UUID) (*model.Device, 
 func (r *DeviceRepo) GetByUserAndUUID(ctx context.Context, userID, deviceUUID uuid.UUID) (*model.Device, error) {
 	const q = `
 		SELECT id, user_id, device_uuid, device_name, platform, app_version,
-		       token_hash, last_sync_at, revoked_at, created_at
+		       token_hash, token_expires_at, last_sync_at, revoked_at, created_at
 		FROM devices WHERE user_id = $1 AND device_uuid = $2`
 
 	d := &model.Device{}
 	err := r.pool.QueryRow(ctx, q, userID, deviceUUID).Scan(
 		&d.ID, &d.UserID, &d.DeviceUUID, &d.DeviceName, &d.Platform, &d.AppVersion,
-		&d.TokenHash, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
+		&d.TokenHash, &d.TokenExpiresAt, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -415,7 +415,7 @@ func (r *DeviceRepo) GetByUserAndUUID(ctx context.Context, userID, deviceUUID uu
 func (r *DeviceRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]model.Device, error) {
 	const q = `
 		SELECT id, user_id, device_uuid, device_name, platform, app_version,
-		       token_hash, last_sync_at, revoked_at, created_at
+		       token_hash, token_expires_at, last_sync_at, revoked_at, created_at
 		FROM devices WHERE user_id = $1
 		ORDER BY created_at`
 
@@ -429,7 +429,7 @@ func (r *DeviceRepo) ListByUser(ctx context.Context, userID uuid.UUID) ([]model.
 	for rows.Next() {
 		var d model.Device
 		if err := rows.Scan(&d.ID, &d.UserID, &d.DeviceUUID, &d.DeviceName, &d.Platform, &d.AppVersion,
-			&d.TokenHash, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt); err != nil {
+			&d.TokenHash, &d.TokenExpiresAt, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
 		devices = append(devices, d)
@@ -478,24 +478,29 @@ func (r *DeviceRepo) DeleteByUser(ctx context.Context, userID uuid.UUID) (int64,
 	return tag.RowsAffected(), nil
 }
 
-// UpdateTokenHash stores a new device token hash.
-func (r *DeviceRepo) UpdateTokenHash(ctx context.Context, id uuid.UUID, hash []byte) error {
-	const q = `UPDATE devices SET token_hash = $1 WHERE id = $2`
-	_, err := r.pool.Exec(ctx, q, hash, id)
+// UpdateToken stores a new device token hash and expiry.
+func (r *DeviceRepo) UpdateToken(ctx context.Context, id uuid.UUID, hash []byte, expiresAt time.Time) error {
+	const q = `UPDATE devices SET token_hash = $1, token_expires_at = $2 WHERE id = $3`
+	_, err := r.pool.Exec(ctx, q, hash, expiresAt.UTC(), id)
 	return err
 }
 
-// GetByTokenHash fetches a device by its current token hash. Returns nil if not found.
+// GetByTokenHash fetches a device by its current token hash when the token is
+// still active. Returns nil if not found, revoked, or expired.
 func (r *DeviceRepo) GetByTokenHash(ctx context.Context, hash []byte) (*model.Device, error) {
 	const q = `
 		SELECT id, user_id, device_uuid, device_name, platform, app_version,
-		       token_hash, last_sync_at, revoked_at, created_at
-		FROM devices WHERE token_hash = $1`
+		       token_hash, token_expires_at, last_sync_at, revoked_at, created_at
+		FROM devices
+		WHERE token_hash = $1
+		  AND revoked_at IS NULL
+		  AND token_expires_at IS NOT NULL
+		  AND token_expires_at > now()`
 
 	d := &model.Device{}
 	err := r.pool.QueryRow(ctx, q, hash).Scan(
 		&d.ID, &d.UserID, &d.DeviceUUID, &d.DeviceName, &d.Platform, &d.AppVersion,
-		&d.TokenHash, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
+		&d.TokenHash, &d.TokenExpiresAt, &d.LastSyncAt, &d.RevokedAt, &d.CreatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil

@@ -429,7 +429,7 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to validate device token", http.StatusInternalServerError)
 		return
 	}
-	if device == nil || device.RevokedAt != nil {
+	if device == nil {
 		http.Error(w, "invalid device token", http.StatusUnauthorized)
 		return
 	}

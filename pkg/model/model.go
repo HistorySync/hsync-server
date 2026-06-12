@@ -165,16 +165,17 @@ type OpsCheckRun struct {
 
 // Device represents a registered client device.
 type Device struct {
-	ID         uuid.UUID  `json:"id"            db:"id"`
-	UserID     uuid.UUID  `json:"user_id"       db:"user_id"`
-	DeviceUUID uuid.UUID  `json:"device_uuid"   db:"device_uuid"`
-	DeviceName string     `json:"device_name"   db:"device_name"`
-	Platform   string     `json:"platform"      db:"platform"`
-	AppVersion string     `json:"app_version"   db:"app_version"`
-	TokenHash  []byte     `json:"-"             db:"token_hash"`
-	LastSyncAt *time.Time `json:"last_sync_at"  db:"last_sync_at"`
-	RevokedAt  *time.Time `json:"revoked_at"    db:"revoked_at"`
-	CreatedAt  time.Time  `json:"created_at"    db:"created_at"`
+	ID             uuid.UUID  `json:"id"            db:"id"`
+	UserID         uuid.UUID  `json:"user_id"       db:"user_id"`
+	DeviceUUID     uuid.UUID  `json:"device_uuid"   db:"device_uuid"`
+	DeviceName     string     `json:"device_name"   db:"device_name"`
+	Platform       string     `json:"platform"      db:"platform"`
+	AppVersion     string     `json:"app_version"   db:"app_version"`
+	TokenHash      []byte     `json:"-"             db:"token_hash"`
+	TokenExpiresAt *time.Time `json:"-"             db:"token_expires_at"`
+	LastSyncAt     *time.Time `json:"last_sync_at"  db:"last_sync_at"`
+	RevokedAt      *time.Time `json:"revoked_at"    db:"revoked_at"`
+	CreatedAt      time.Time  `json:"created_at"    db:"created_at"`
 }
 
 // Bundle

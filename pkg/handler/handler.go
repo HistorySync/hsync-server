@@ -111,6 +111,7 @@ const (
 	authRecoveryEmailLimit = 3
 	authResetIPLimit       = 10
 	authResetTokenLimit    = 5
+	deviceTokenRPM         = 10
 
 	authRecoveryWindow = 15 * time.Minute
 	authRegisterWindow = time.Hour

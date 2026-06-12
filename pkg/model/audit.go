@@ -17,6 +17,9 @@ const (
 	AuditEventTwoFactorDisable          AuditEventType = "auth.2fa.disable"
 	AuditEventPasskeyAdded              AuditEventType = "auth.passkey.added"
 	AuditEventPasskeyDeleted            AuditEventType = "auth.passkey.deleted"
+	AuditEventDeviceTokenIssued         AuditEventType = "device.token.issued"
+	AuditEventDeviceTokenRotated        AuditEventType = "device.token.rotated"
+	AuditEventDeviceTokenRejected       AuditEventType = "device.token.rejected"
 	AuditEventPrivacyExport             AuditEventType = "account.privacy_export"
 	AuditEventAccountDeletionRequest    AuditEventType = "account.deletion.request"
 	AuditEventAccountDeletionResult     AuditEventType = "account.deletion.result"
@@ -101,27 +104,27 @@ type SecurityTimelineFilter struct {
 }
 
 type SecurityTimelineSummary struct {
-	TotalEvents             int64                `json:"total_events"`
-	AuthFailures            int64                `json:"auth_failures"`
-	StepUpEvents            int64                `json:"step_up_events"`
-	PasskeyChanges          int64                `json:"passkey_changes"`
-	AccountDeletionOrExport int64                `json:"account_deletion_or_export"`
+	TotalEvents             int64                 `json:"total_events"`
+	AuthFailures            int64                 `json:"auth_failures"`
+	StepUpEvents            int64                 `json:"step_up_events"`
+	PasskeyChanges          int64                 `json:"passkey_changes"`
+	AccountDeletionOrExport int64                 `json:"account_deletion_or_export"`
 	Actions                 []AuditEventTypeCount `json:"actions"`
 }
 
 type SecurityTimelineEvent struct {
-	ID         string         `json:"id"`
-	Source     string         `json:"source"`
-	Action     AuditEventType `json:"action"`
-	Category   string         `json:"category"`
-	UserID     string         `json:"user_id,omitempty"`
-	ActorUserID string        `json:"actor_user_id,omitempty"`
-	EmailHint  string         `json:"email_hint,omitempty"`
-	IPHash     string         `json:"ip_hash,omitempty"`
-	TargetType string         `json:"target_type,omitempty"`
-	TargetID   string         `json:"target_id,omitempty"`
-	Metadata   map[string]any `json:"metadata,omitempty"`
-	CreatedAt  time.Time      `json:"created_at"`
+	ID          string         `json:"id"`
+	Source      string         `json:"source"`
+	Action      AuditEventType `json:"action"`
+	Category    string         `json:"category"`
+	UserID      string         `json:"user_id,omitempty"`
+	ActorUserID string         `json:"actor_user_id,omitempty"`
+	EmailHint   string         `json:"email_hint,omitempty"`
+	IPHash      string         `json:"ip_hash,omitempty"`
+	TargetType  string         `json:"target_type,omitempty"`
+	TargetID    string         `json:"target_id,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	CreatedAt   time.Time      `json:"created_at"`
 }
 
 type SecurityTimelineResponse struct {

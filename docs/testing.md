@@ -63,6 +63,51 @@ to exercise the supported degraded path, and blob storage uses an in-memory fake
 If Docker cannot provide Linux containers locally, run this suite in CI or on a
 Linux workstation.
 
+## Release Candidate Gate
+
+RC builds must pass the unified release gate before they are tagged or promoted.
+The gate is intentionally strict: it does not update baselines, does not push
+artifacts, and fails immediately if any check is not clean.
+
+Run it from the repository root:
+
+```powershell
+make release-check
+```
+
+or:
+
+```powershell
+.\scripts\release-check.ps1 -ReportPath build/release-report-ce.json
+```
+
+The CE release gate runs these checks in order against a temporary local stack:
+
+- `go test -count=1 -timeout 60s ./...`
+- `go test ./docs/api`
+- `go run ./cmd/hsync-server migrate status --json`
+- `go run ./cmd/hsync-server doctor --format json`
+- `go run ./cmd/hsync-server ops rehearsal --format json`
+- `go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server`
+
+`doctor` and `ops rehearsal` must report `overall=ok`. Warn-level output is
+treated as an RC blocker because the goal is "can this commit become an RC
+right now", not "did the command exit zero".
+
+The script writes a machine-readable report to `build/release-report-ce.json`
+with:
+
+- `commit`
+- `version`
+- `edition`
+- `passed_steps`
+- `failed_steps`
+- `duration_ms`
+
+Per-step stdout/stderr logs are written under `build/release-check/`. CI keeps
+those artifacts even when the gate fails so release blockers can be inspected
+without rerunning locally.
+
 ## Release Capacity Rehearsal
 
 The CE release gate also includes a repeatable local smoke+load rehearsal. It

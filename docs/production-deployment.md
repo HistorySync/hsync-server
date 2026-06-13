@@ -45,6 +45,17 @@ Nginx or Caddy process can terminate TLS and enforce path/IP boundaries.
 
 ## First CE Deploy
 
+RC prerequisite:
+
+```bash
+make release-check
+```
+
+Do not tag or promote a CE release candidate unless the release gate passes for
+the exact commit being shipped. The gate bundles unit tests, OpenAPI
+compatibility, migration status, doctor JSON, ops rehearsal JSON, and the CE
+smoke suite into one reportable decision point.
+
 Create and fill the environment file:
 
 ```bash
@@ -104,6 +115,10 @@ cp ../hsync-server/deployments/.env.production.example \
   ../hsync-server/deployments/.env.production
 cp deployments/.env.production.example deployments/.env.production
 ```
+
+Before promoting an Enterprise RC, run the Enterprise release gate from the EE
+repository root with a valid signed `HSYNC_LICENSE_KEY`. That gate runs the CE
+release gate first, then the Enterprise checks for the same candidate commit.
 
 Run the same flow with both compose files and both env files:
 

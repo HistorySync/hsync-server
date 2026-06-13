@@ -142,7 +142,8 @@ make loadtest
 ```
 
 The report includes per-scenario `p50`, `p95`, `error_rate`, `rejections`, a
-roll-up `rejection_reasons` map, `quota_rollback_count`, and the
+roll-up `rejection_reasons` map, explicit `status_classes` counts for
+`http_403`, `http_429`, and `http_5xx`, `quota_rollback_count`, and the
 `hsync_rate_limit_redis_fallback_active` state captured from `/metrics`.
 
 Recommended release thresholds for local rehearsal:
@@ -155,6 +156,9 @@ Recommended release thresholds for local rehearsal:
 - `ce_rate_limit_fallback` may show rejections, but they should be explicit
   `HTTP_429` or `RATE_LIMITED` outcomes rather than transport errors or `5xx`
   responses.
+- `status_classes.http_5xx` should remain `0`. Non-zero `http_403` or
+  `http_429` counts are acceptable only when they match the scenario you
+  intentionally triggered.
 - `quota_rollback_count` should remain `0` for the default rehearsal. A non-zero
   value means quota reservations were created and then rolled back, which is a
   release blocker unless the run intentionally exercised a failing storage path.
@@ -168,6 +172,23 @@ saturation benchmark. A rising `p95` with zero errors usually means the machine
 is noisy or under-provisioned locally; `5xx`, missing notification drains,
 unexpected rejection reasons, or non-zero rollback counts indicate a behavioral
 regression worth fixing before release.
+
+If the rehearsal fails, start here:
+
+- `status_classes.http_429` or `RATE_LIMITED` spikes: inspect `/metrics` for
+  `hsync_rate_limit_redis_fallback_active` and confirm the local fail mode in
+  `configs/config.load.yaml` matches the run you intended.
+- `status_classes.http_403` on WebSocket/device flows: confirm the device token
+  was freshly minted and inspect `hsync_websocket_upgrade_rejections_total` plus
+  the WebSocket limits in `configs/config.load.yaml`.
+- `status_classes.http_5xx` or non-zero `quota_rollback_count`: inspect the
+  server log around bundle/snapshot writes and the
+  `hsync_quota_reservations_total{result="rollback"}` metric to see whether
+  storage writes or metadata commits failed mid-flight.
+- `ce_notification_outbox_drain` stalls: query
+  `/admin/exports/operational-records?record_type=notification_outbox`, confirm
+  `background_tasks_enabled=true`, and cross-check the notification guidance in
+  `docs/ce-operator-playbook.md#4-notification-outbox`.
 
 ## Upgrade Validation Flow
 

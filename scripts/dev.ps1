@@ -8,6 +8,7 @@ param(
         "test-no-race",
         "test-smoke",
         "test-integration",
+        "release-check",
         "lint",
         "clean",
         "dev",
@@ -87,6 +88,7 @@ Tasks:
   test-no-race         run unit tests without -race
   test-smoke           run production readiness smoke checks
   test-integration     run DB-backed integration tests
+  release-check        run the release candidate gate and write a JSON report
   lint                 run golangci-lint
   clean                remove .\build
   dev                  run air hot reload
@@ -117,6 +119,7 @@ switch ($Task) {
     "test-no-race" { Invoke-External "go" @("test", "-count=1", "-timeout", "60s", "./...") }
     "test-smoke" { Invoke-External "go" @("test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server") }
     "test-integration" { Invoke-External "go" @("test", "-tags=integration", "-count=1", "-timeout", "300s", "./pkg/repository/...") }
+    "release-check" { Invoke-External "pwsh" @("-ExecutionPolicy", "Bypass", "-File", ".\\scripts\\release-check.ps1") }
     "lint" { Invoke-External "golangci-lint" @("run", "./...") }
     "clean" {
         if (Test-Path -LiteralPath $BuildDir) {

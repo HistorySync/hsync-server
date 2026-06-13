@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 # Targets
 
-.PHONY: all build run test test-smoke test-integration loadtest lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-smoke test-integration loadtest release-check lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -48,6 +48,10 @@ test-integration:
 ## loadtest: Run local CE smoke+load rehearsal against a running server
 loadtest:
 	go run ./cmd/loadtest
+
+## release-check: Run the release candidate gate and emit a JSON report
+release-check:
+	pwsh -ExecutionPolicy Bypass -File .\scripts\release-check.ps1
 
 ## lint: Run linters (requires golangci-lint)
 lint:

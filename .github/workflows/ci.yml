@@ -6,6 +6,26 @@ on:
   pull_request:
 
 jobs:
+  release-check:
+    name: Release candidate gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Run release candidate gate
+        shell: pwsh
+        run: .\scripts\release-check.ps1 -ReportPath build/release-report-ce.json
+      - name: Upload release report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ce-release-report
+          path: |
+            build/release-report-ce.json
+            build/release-check/**
+
   api-compatibility:
     name: API compatibility
     runs-on: ubuntu-latest

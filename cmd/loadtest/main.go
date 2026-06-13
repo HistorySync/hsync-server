@@ -21,16 +21,16 @@ import (
 )
 
 type config struct {
-	BaseURL          string
-	AdminKey         string
-	Users            int
-	BundleUploads    int
-	BundleSizeBytes  int
-	RateLimitBursts  int
-	WSAttempts       int
-	Timeout          time.Duration
-	PollTimeout      time.Duration
-	OutputJSON       bool
+	BaseURL         string
+	AdminKey        string
+	Users           int
+	BundleUploads   int
+	BundleSizeBytes int
+	RateLimitBursts int
+	WSAttempts      int
+	Timeout         time.Duration
+	PollTimeout     time.Duration
+	OutputJSON      bool
 }
 
 type report struct {
@@ -38,6 +38,7 @@ type report struct {
 	BaseURL             string            `json:"base_url"`
 	Scenarios           []scenarioReport  `json:"scenarios"`
 	RejectionReasons    map[string]int    `json:"rejection_reasons"`
+	StatusClasses       map[string]int    `json:"status_classes"`
 	QuotaRollbackCount  float64           `json:"quota_rollback_count"`
 	RateLimitFallback   map[string]bool   `json:"rate_limit_fallback"`
 	NotificationSummary notificationState `json:"notification_summary"`
@@ -153,6 +154,12 @@ func run(ctx context.Context, cl *client, cfg config) (*report, error) {
 		RunAt:            time.Now().UTC(),
 		BaseURL:          cl.baseURL,
 		RejectionReasons: map[string]int{},
+		StatusClasses: map[string]int{
+			"http_403": 0,
+			"http_429": 0,
+			"http_5xx": 0,
+			"other":    0,
+		},
 		RateLimitFallback: map[string]bool{
 			"memory":  false,
 			"deny":    false,
@@ -177,13 +184,13 @@ func run(ctx context.Context, cl *client, cfg config) (*report, error) {
 	}
 	rep.Scenarios = append(rep.Scenarios, deviceScenario.report())
 
-	rateLimitScenario, err := runRateLimitBurst(ctx, cl, cfg, users[0], rep.RejectionReasons)
+	rateLimitScenario, err := runRateLimitBurst(ctx, cl, cfg, users[0], rep.RejectionReasons, rep.StatusClasses)
 	if err != nil {
 		return nil, err
 	}
 	rep.Scenarios = append(rep.Scenarios, rateLimitScenario.report())
 
-	wsScenario, wsCapacityDelta, err := runWebSocketCap(ctx, cl, cfg, users[0], startMetrics.WSCapacityRejections, rep.RejectionReasons)
+	wsScenario, wsCapacityDelta, err := runWebSocketCap(ctx, cl, cfg, users[0], startMetrics.WSCapacityRejections, rep.RejectionReasons, rep.StatusClasses)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +208,7 @@ func run(ctx context.Context, cl *client, cfg config) (*report, error) {
 	if len(users) == 1 {
 		notificationUser = nil
 	}
-	outboxScenario, summary, err := runNotificationDrain(ctx, cl, cfg, notificationUser, beforeNotificationMetrics.NotificationBillingSuccess, rep.RejectionReasons)
+	outboxScenario, summary, err := runNotificationDrain(ctx, cl, cfg, notificationUser, beforeNotificationMetrics.NotificationBillingSuccess, rep.RejectionReasons, rep.StatusClasses)
 	if err != nil {
 		return nil, err
 	}
@@ -242,7 +249,7 @@ func runRegisterLogin(ctx context.Context, cl *client, cfg config, reasons map[s
 			AccessToken string `json:"access_token"`
 		}
 		if err := cl.postJSON(ctx, "/api/v1/auth/register", body, nil, &reg); err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, nil)
 			return nil, tracker, fmt.Errorf("register %s: %w", user.Email, err)
 		}
 		tracker.ok(time.Since(start))
@@ -256,7 +263,7 @@ func runRegisterLogin(ctx context.Context, cl *client, cfg config, reasons map[s
 			"email":    user.Email,
 			"password": user.Password,
 		}, nil, &login); err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, nil)
 			return nil, tracker, fmt.Errorf("login %s: %w", user.Email, err)
 		}
 		tracker.ok(time.Since(start))
@@ -280,7 +287,7 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 		"platform":    "windows",
 		"app_version": "loadtest",
 	}, bearer(user.AccessToken), &tokenResp); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, nil)
 		return tracker, fmt.Errorf("request device token: %w", err)
 	}
 	tracker.ok(time.Since(start))
@@ -291,7 +298,7 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 		bundleID := fmt.Sprintf("bundle-%d-%d", time.Now().UnixNano(), i)
 		start = time.Now()
 		if err := cl.uploadBundle(ctx, user, bundleID, payload); err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, nil)
 			return tracker, fmt.Errorf("upload bundle %s: %w", bundleID, err)
 		}
 		tracker.ok(time.Since(start))
@@ -305,7 +312,7 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 		} `json:"bundles"`
 	}
 	if err := cl.getJSON(ctx, "/api/v1/bundles?limit=50", bearer(user.AccessToken), &listResp); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, nil)
 		return tracker, fmt.Errorf("list bundles: %w", err)
 	}
 	tracker.ok(time.Since(start))
@@ -313,7 +320,7 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 	for _, bundleID := range user.Bundles {
 		start = time.Now()
 		if _, err := cl.getRaw(ctx, "/api/v1/bundles/"+url.PathEscape(bundleID), bearer(user.AccessToken)); err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, nil)
 			return tracker, fmt.Errorf("download bundle %s: %w", bundleID, err)
 		}
 		tracker.ok(time.Since(start))
@@ -322,14 +329,14 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 	user.SnapshotID = fmt.Sprintf("snapshot-%d", time.Now().UnixNano())
 	start = time.Now()
 	if err := cl.uploadSnapshot(ctx, user, user.SnapshotID, payload[:min(len(payload), 1024*1024)]); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, nil)
 		return tracker, fmt.Errorf("upload snapshot: %w", err)
 	}
 	tracker.ok(time.Since(start))
 
 	start = time.Now()
 	if _, err := cl.getRaw(ctx, "/api/v1/snapshots/"+url.PathEscape(user.SnapshotID), bearer(user.AccessToken)); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, nil)
 		return tracker, fmt.Errorf("download snapshot: %w", err)
 	}
 	tracker.ok(time.Since(start))
@@ -337,7 +344,7 @@ func runDeviceAndSync(ctx context.Context, cl *client, cfg config, users []*user
 	return tracker, nil
 }
 
-func runRateLimitBurst(ctx context.Context, cl *client, cfg config, user *userSession, reasons map[string]int) (*scenarioTracker, error) {
+func runRateLimitBurst(ctx context.Context, cl *client, cfg config, user *userSession, reasons, classes map[string]int) (*scenarioTracker, error) {
 	tracker := newScenario("ce_rate_limit_fallback")
 	for i := 0; i < cfg.RateLimitBursts; i++ {
 		start := time.Now()
@@ -346,7 +353,7 @@ func runRateLimitBurst(ctx context.Context, cl *client, cfg config, user *userSe
 			"password": user.Password,
 		}, nil, &struct{}{})
 		if err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, classes)
 			continue
 		}
 		tracker.ok(time.Since(start))
@@ -354,7 +361,7 @@ func runRateLimitBurst(ctx context.Context, cl *client, cfg config, user *userSe
 	return tracker, nil
 }
 
-func runWebSocketCap(ctx context.Context, cl *client, cfg config, user *userSession, beforeCapacity float64, reasons map[string]int) (*scenarioTracker, int, error) {
+func runWebSocketCap(ctx context.Context, cl *client, cfg config, user *userSession, beforeCapacity float64, reasons, classes map[string]int) (*scenarioTracker, int, error) {
 	tracker := newScenario("ce_ws_connect_cap")
 	wsURL := strings.Replace(cl.baseURL, "http://", "ws://", 1)
 	wsURL = strings.Replace(wsURL, "https://", "wss://", 1) + "/ws/push"
@@ -376,7 +383,7 @@ func runWebSocketCap(ctx context.Context, cl *client, cfg config, user *userSess
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
 			}
-			tracker.fail(time.Since(start), httpStatusError(resp), reasons)
+			tracker.fail(time.Since(start), httpStatusError(resp), reasons, classes)
 			continue
 		}
 		conns = append(conns, conn)
@@ -394,11 +401,11 @@ func runWebSocketCap(ctx context.Context, cl *client, cfg config, user *userSess
 	return tracker, delta, nil
 }
 
-func runNotificationDrain(ctx context.Context, cl *client, cfg config, user *userSession, beforeSuccess float64, reasons map[string]int) (*scenarioTracker, notificationState, error) {
+func runNotificationDrain(ctx context.Context, cl *client, cfg config, user *userSession, beforeSuccess float64, reasons, classes map[string]int) (*scenarioTracker, notificationState, error) {
 	tracker := newScenario("ce_notification_outbox_drain")
 	if user == nil {
 		var err error
-		user, err = createScenarioUser(ctx, cl, tracker, reasons, "notify")
+		user, err = createScenarioUser(ctx, cl, tracker, reasons, classes, "notify")
 		if err != nil {
 			return tracker, notificationState{}, err
 		}
@@ -419,7 +426,7 @@ func runNotificationDrain(ctx context.Context, cl *client, cfg config, user *use
 		"platform":    "windows",
 		"app_version": "loadtest",
 	}, bearer(user.AccessToken), &tokenResp); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, classes)
 		return tracker, notificationState{}, fmt.Errorf("request notification device token: %w", err)
 	}
 	tracker.ok(time.Since(start))
@@ -429,7 +436,7 @@ func runNotificationDrain(ctx context.Context, cl *client, cfg config, user *use
 	bundleID := fmt.Sprintf("notification-%d", time.Now().UnixNano())
 	start = time.Now()
 	if err := cl.uploadBundle(ctx, user, bundleID, payload); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, classes)
 		return tracker, notificationState{}, fmt.Errorf("trigger notification upload: %w", err)
 	}
 	tracker.ok(time.Since(start))
@@ -441,12 +448,12 @@ func runNotificationDrain(ctx context.Context, cl *client, cfg config, user *use
 		start = time.Now()
 		state, err := cl.notificationState(ctx, cfg.AdminKey)
 		if err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, classes)
 			return tracker, summary, fmt.Errorf("notification state: %w", err)
 		}
 		metrics, err := readMetrics(ctx, cl)
 		if err != nil {
-			tracker.fail(time.Since(start), err, reasons)
+			tracker.fail(time.Since(start), err, reasons, classes)
 			return tracker, summary, fmt.Errorf("metrics poll: %w", err)
 		}
 		summary = state
@@ -537,7 +544,7 @@ func (c *client) notificationState(ctx context.Context, adminKey string) (notifi
 	return state, nil
 }
 
-func createScenarioUser(ctx context.Context, cl *client, tracker *scenarioTracker, reasons map[string]int, prefix string) (*userSession, error) {
+func createScenarioUser(ctx context.Context, cl *client, tracker *scenarioTracker, reasons, classes map[string]int, prefix string) (*userSession, error) {
 	user := &userSession{
 		Email:    fmt.Sprintf("%s-%d@example.com", prefix, time.Now().UnixNano()),
 		Password: "load-password-123",
@@ -555,7 +562,7 @@ func createScenarioUser(ctx context.Context, cl *client, tracker *scenarioTracke
 		} `json:"user"`
 	}
 	if err := cl.postJSON(ctx, "/api/v1/auth/register", body, nil, &reg); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, classes)
 		return nil, fmt.Errorf("register %s: %w", user.Email, err)
 	}
 	tracker.ok(time.Since(start))
@@ -569,7 +576,7 @@ func createScenarioUser(ctx context.Context, cl *client, tracker *scenarioTracke
 		"email":    user.Email,
 		"password": user.Password,
 	}, nil, &login); err != nil {
-		tracker.fail(time.Since(start), err, reasons)
+		tracker.fail(time.Since(start), err, reasons, classes)
 		return nil, fmt.Errorf("login %s: %w", user.Email, err)
 	}
 	tracker.ok(time.Since(start))
@@ -724,6 +731,30 @@ func httpStatusError(resp *http.Response) error {
 	return &statusError{Status: resp.StatusCode, Message: resp.Status}
 }
 
+func recordStatusClass(err error, classes map[string]int) {
+	if classes == nil {
+		return
+	}
+	classes[classifyStatusClass(err)]++
+}
+
+func classifyStatusClass(err error) string {
+	var statusErr *statusError
+	if !asStatusError(err, &statusErr) {
+		return "other"
+	}
+	switch {
+	case statusErr.Status == http.StatusForbidden:
+		return "http_403"
+	case statusErr.Status == http.StatusTooManyRequests:
+		return "http_429"
+	case statusErr.Status >= 500 && statusErr.Status <= 599:
+		return "http_5xx"
+	default:
+		return "other"
+	}
+}
+
 func (s *scenarioTracker) report() scenarioReport {
 	sort.Slice(s.durations, func(i, j int) bool { return s.durations[i] < s.durations[j] })
 	return scenarioReport{
@@ -749,10 +780,11 @@ func (s *scenarioTracker) ok(d time.Duration) {
 	s.durations = append(s.durations, d)
 }
 
-func (s *scenarioTracker) fail(d time.Duration, err error, reasons map[string]int) {
+func (s *scenarioTracker) fail(d time.Duration, err error, reasons, classes map[string]int) {
 	s.operations++
 	s.failures++
 	s.durations = append(s.durations, d)
+	recordStatusClass(err, classes)
 	if isRejection(err) {
 		s.rejections++
 		reasons[rejectionReason(err)]++
@@ -854,6 +886,7 @@ func printReport(rep *report) {
 		)
 	}
 	fmt.Printf("rejection_reasons=%s\n", formatReasons(rep.RejectionReasons))
+	fmt.Printf("status_classes=%s\n", formatReasons(rep.StatusClasses))
 	fmt.Printf("quota_rollback_count=%.0f\n", rep.QuotaRollbackCount)
 	fmt.Printf("rate_limit_fallback memory=%t deny=%t disable=%t\n",
 		rep.RateLimitFallback["memory"],

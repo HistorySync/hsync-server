@@ -119,6 +119,13 @@ or:
 .\scripts\release-check.ps1 -ReportPath build/release-report-ce.json
 ```
 
+Standalone supply-chain commands are also available:
+
+```powershell
+make vuln-check
+make sbom
+```
+
 The CE release gate runs these checks in order against a temporary local stack:
 
 - `go test -count=1 -timeout 60s ./...`
@@ -138,6 +145,12 @@ with:
 - `commit`
 - `version`
 - `edition`
+- `build_info`
+- `artifact_manifest_path`
+- `artifacts.binary.sha256`
+- `artifacts.image.digest`
+- `artifacts.sbom`
+- `vulnerability_reports`
 - `passed_steps`
 - `failed_steps`
 - `duration_ms`
@@ -145,6 +158,10 @@ with:
 Per-step stdout/stderr logs are written under `build/release-check/`. CI keeps
 those artifacts even when the gate fails so release blockers can be inspected
 without rerunning locally.
+
+The release artifact manifest itself is written to
+`build/release-artifact-manifest-ce.json`. Use
+`docs/release-verification.md` for binary/image-to-commit verification steps.
 
 ## Release Capacity Rehearsal
 

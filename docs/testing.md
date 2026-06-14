@@ -63,6 +63,44 @@ to exercise the supported degraded path, and blob storage uses an in-memory fake
 If Docker cannot provide Linux containers locally, run this suite in CI or on a
 Linux workstation.
 
+## Client Conformance Tests
+
+The CE client conformance suite is an opt-in integration tier that exercises the
+minimal protocol surface a desktop app or browser extension depends on:
+password login, refresh, device token issuance, bundle upload/download,
+snapshot upload/download, WebSocket push delivery, step-up verification, device
+revocation, and selected negative error cases.
+
+Run it with:
+
+```powershell
+go test -tags=conformance -count=1 -timeout 300s ./pkg/clientconformance
+```
+
+or:
+
+```powershell
+make test-conformance
+```
+
+The suite starts a real Fiber listener, a throwaway PostgreSQL 16 container, and
+an in-memory blob store. It validates that selected error responses match both
+the `pkg/apierrors` catalog and the statuses declared in `docs/api/openapi.ce.yaml`.
+
+Local auth overrides:
+
+- `HSYNC_CONFORMANCE_2FA_MODE=real` uses the real TOTP setup, login challenge,
+  and `/api/v1/auth/verify` flow before sensitive device actions.
+- `HSYNC_CONFORMANCE_2FA_MODE=skip` mints a short-lived step-up token directly
+  in the harness so clients can keep testing revoke flows without a real TOTP UI.
+- `HSYNC_CONFORMANCE_PASSKEY_MODE=disabled` asserts the CE default behavior that
+  `/api/v1/auth/passkeys/login/begin` returns `PASSKEY_DISABLED`.
+- `HSYNC_CONFORMANCE_PASSKEY_MODE=skip` skips that negative passkey assertion.
+
+Turnstile is always faked inside this suite with a fixed accepted token so local
+and CI runs do not depend on external verification. If Docker is unavailable,
+the conformance suite skips instead of failing the default test tier.
+
 ## Release Candidate Gate
 
 RC builds must pass the unified release gate before they are tagged or promoted.

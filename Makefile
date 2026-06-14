@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 # Targets
 
-.PHONY: all build run test test-smoke test-integration loadtest release-check lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-smoke test-conformance test-integration loadtest release-check lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -40,6 +40,10 @@ test:
 ## test-smoke: Run production readiness smoke checks (requires Docker)
 test-smoke:
 	go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server
+
+## test-conformance: Run CE client protocol conformance tests (requires Docker)
+test-conformance:
+	go test -tags=conformance -count=1 -timeout 300s ./pkg/clientconformance
 
 ## test-integration: Run DB-backed integration tests (requires a running Docker daemon)
 test-integration:

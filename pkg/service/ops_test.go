@@ -420,6 +420,47 @@ func TestOpsCheckDependenciesReportsActionableFailures(t *testing.T) {
 	}
 }
 
+func TestOpsCheckDependenciesRedisUnavailableIsDegraded(t *testing.T) {
+	store := newFakeOpsBlobStore()
+	svc := NewOpsService(OpsDeps{
+		BlobStore:    store,
+		DatabasePing: func(context.Context) error { return nil },
+		RedisPing:    func(context.Context) error { return errors.New("redis unavailable") },
+	})
+
+	report := svc.CheckDependencies(context.Background())
+	statuses := statusByName(report)
+	if report.Overall != OpsStatusDegraded {
+		t.Fatalf("overall = %q, want degraded: %+v", report.Overall, report.Checks)
+	}
+	if statuses["postgresql"] != OpsStatusOK {
+		t.Fatalf("postgres status = %q, want ok", statuses["postgresql"])
+	}
+	if statuses["redis"] != OpsStatusDegraded {
+		t.Fatalf("redis status = %q, want degraded", statuses["redis"])
+	}
+	if statuses["storage"] != OpsStatusOK || statuses["storage_probe"] != OpsStatusOK {
+		t.Fatalf("storage checks = %+v, want ok", report.Checks)
+	}
+
+	var redisCheck OpsDependencyCheck
+	for _, check := range report.Checks {
+		if check.Name == "redis" {
+			redisCheck = check
+			break
+		}
+	}
+	if !strings.Contains(redisCheck.Message, "optional cache/rate-limit behavior may be degraded") {
+		t.Fatalf("redis message = %q, want degraded optional behavior note", redisCheck.Message)
+	}
+	if !strings.Contains(redisCheck.Action, "Verify redis_url") {
+		t.Fatalf("redis action = %q, want operator action", redisCheck.Action)
+	}
+	if redisCheck.ErrorClass != "unavailable" {
+		t.Fatalf("redis error class = %q, want unavailable", redisCheck.ErrorClass)
+	}
+}
+
 func TestOpsConsistencyReportsMetadataStorageMatchWithoutReadingBlobs(t *testing.T) {
 	user := uuid.New()
 	bundle := model.BundleMeta{UserID: user, BundleID: "b1", SizeBytes: 3}

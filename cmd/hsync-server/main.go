@@ -41,6 +41,8 @@ func main() {
 	// "migrate" runs database migrations and exits; anything else starts the server.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "version":
+			os.Exit(runVersion(os.Args[2:]))
 		case "migrate":
 			os.Exit(runMigrate(os.Args[2:]))
 		case "doctor", "preflight":

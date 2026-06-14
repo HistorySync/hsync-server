@@ -11,9 +11,21 @@ $ArtifactsDir = Join-Path $RepoRoot "build\release-check"
 $ComposeFile = Join-Path $RepoRoot "deployments\docker-compose.release-check.yml"
 $EnvFile = Join-Path $ArtifactsDir ".env.release-check"
 $ReleaseConfigPath = Join-Path $RepoRoot "config.release-check.yaml"
+$ArtifactManifestPath = Join-Path $RepoRoot "build\release-artifact-manifest-ce.json"
+$VulnJSONPath = Join-Path $RepoRoot "build\vuln\govulncheck-ce.json"
+$VulnTextPath = Join-Path $RepoRoot "build\vuln\govulncheck-ce.txt"
 $OpsWebhookURL = "https://ops.example.invalid/historysync"
 $ServerStdoutPath = Join-Path $ArtifactsDir "server.stdout.log"
 $ServerStderrPath = Join-Path $ArtifactsDir "server.stderr.log"
+
+function Get-ExecutableSuffix {
+    if ($IsWindows) {
+        return ".exe"
+    }
+    return ""
+}
+
+$BinaryPath = Join-Path $RepoRoot ("build\artifacts\hsync-server" + (Get-ExecutableSuffix))
 
 New-Item -ItemType Directory -Force -Path $ArtifactsDir | Out-Null
 
@@ -151,6 +163,12 @@ function Convert-CommandForDisplay {
     return ($Parts | ForEach-Object {
         if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
     }) -join ' '
+}
+
+function Get-RelativePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    return [System.IO.Path]::GetRelativePath($RepoRoot, $Path).Replace("\", "/")
 }
 
 function New-ReleaseStep {
@@ -370,13 +388,15 @@ S3_SECRET_KEY=$s3SecretKey
 "@ | Set-Content -LiteralPath $EnvFile
 
 $steps = @(
+    (New-ReleaseStep -Name "vuln-check" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\vuln-check.ps1"))),
+    (New-ReleaseStep -Name "artifact-manifest" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\supply-chain.ps1"), "-ManifestPath", $ArtifactManifestPath, "-BinaryPath", $BinaryPath)),
     (New-ReleaseStep -Name "environment-setup" -Command @("docker", "compose", "up")),
-    (New-ReleaseStep -Name "server-ready" -Command @("go", "run", "./cmd/hsync-server")),
+    (New-ReleaseStep -Name "server-ready" -Command @($BinaryPath)),
     (New-ReleaseStep -Name "go-test" -Command @("go", "test", "-count=1", "-timeout", "60s", "./...")),
     (New-ReleaseStep -Name "openapi-compatibility" -Command @("go", "test", "./docs/api")),
-    (New-ReleaseStep -Name "migrate-status" -Command @("go", "run", "./cmd/hsync-server", "migrate", "status", "--json")),
-    (New-ReleaseStep -Name "doctor-json" -Command @("go", "run", "./cmd/hsync-server", "doctor", "--format", "json")),
-    (New-ReleaseStep -Name "ops-rehearsal" -Command @("go", "run", "./cmd/hsync-server", "ops", "rehearsal", "--format", "json")),
+    (New-ReleaseStep -Name "migrate-status" -Command @($BinaryPath, "migrate", "status", "--json")),
+    (New-ReleaseStep -Name "doctor-json" -Command @($BinaryPath, "doctor", "--format", "json")),
+    (New-ReleaseStep -Name "ops-rehearsal" -Command @($BinaryPath, "ops", "rehearsal", "--format", "json")),
     (New-ReleaseStep -Name "smoke" -Command @("go", "test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server"))
 )
 
@@ -390,7 +410,10 @@ try {
     $previousExtraFiles = $env:HSYNC_CONFIG_EXTRA_FILES
     $env:HSYNC_CONFIG_EXTRA_FILES = "config.release-check"
 
-    Invoke-EnvironmentStep -Step $steps[0] -Action {
+    Invoke-ReleaseStep -Step $steps[0]
+    Invoke-ReleaseStep -Step $steps[1]
+
+    Invoke-EnvironmentStep -Step $steps[2] -Action {
         param($stdoutFile, $stderrFile)
         docker compose --env-file $EnvFile -f $ComposeFile up -d 1> $stdoutFile 2> $stderrFile
         if ($LASTEXITCODE -ne 0) {
@@ -399,45 +422,45 @@ try {
         Wait-ForDockerHealth -Service "postgres"
         Wait-ForDockerHealth -Service "redis"
         Wait-ForDockerHealth -Service "minio"
-        go run ./cmd/hsync-server migrate up 1>> $stdoutFile 2>> $stderrFile
+        & $BinaryPath "migrate" "up" 1>> $stdoutFile 2>> $stderrFile
         if ($LASTEXITCODE -ne 0) {
-            throw "go run ./cmd/hsync-server migrate up failed with exit code $LASTEXITCODE"
+            throw "$BinaryPath migrate up failed with exit code $LASTEXITCODE"
         }
     }
-    $steps[0].detail = "Docker dependencies started and migrations applied."
+    $steps[2].detail = "Docker dependencies started and migrations applied."
 
-    Invoke-EnvironmentStep -Step $steps[1] -Action {
+    Invoke-EnvironmentStep -Step $steps[3] -Action {
         param($stdoutFile, $stderrFile)
-        $script:serverProcess = Invoke-CapturedCommand -FilePath "go" -Arguments @("run", "./cmd/hsync-server") -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
+        $script:serverProcess = Invoke-CapturedCommand -FilePath $BinaryPath -Arguments @() -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
         Wait-ForHTTP -Url "$baseUrl/readyz" -TimeoutSeconds 120
         Set-Content -LiteralPath $stdoutFile -Value "Server ready at $baseUrl/readyz"
     }
-    $steps[1].detail = "Server reached /readyz."
+    $steps[3].detail = "Server reached /readyz."
 
-    Invoke-ReleaseStep -Step $steps[2]
-    Invoke-ReleaseStep -Step $steps[3]
-    Invoke-ReleaseStep -Step $steps[4] -Inspector {
+    Invoke-ReleaseStep -Step $steps[4]
+    Invoke-ReleaseStep -Step $steps[5]
+    Invoke-ReleaseStep -Step $steps[6] -Inspector {
         param($stdout, $stderr, $exitCode)
         if ($exitCode -ne 0) {
             return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
         return Test-MigrateStatusJSON -Path $stdout
     }
-    Invoke-ReleaseStep -Step $steps[5] -Inspector {
+    Invoke-ReleaseStep -Step $steps[7] -Inspector {
         param($stdout, $stderr, $exitCode)
         if ($exitCode -ne 0) {
             return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
         return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
     }
-    Invoke-ReleaseStep -Step $steps[6] -Inspector {
+    Invoke-ReleaseStep -Step $steps[8] -Inspector {
         param($stdout, $stderr, $exitCode)
         if ($exitCode -ne 0) {
             return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
         return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
     }
-    Invoke-ReleaseStep -Step $steps[7]
+    Invoke-ReleaseStep -Step $steps[9]
 
     $summary = Get-ReportSummary -Steps $steps
     $releasePassed = ($summary.failed.Count -eq 0)
@@ -452,11 +475,30 @@ finally {
     $releaseFinishedAt = (Get-Date).ToUniversalTime()
     $durationMs = [int64](New-TimeSpan -Start $releaseStartedAt -End $releaseFinishedAt).TotalMilliseconds
     $summary = Get-ReportSummary -Steps $steps
+    $artifactManifest = $null
+    if (Test-Path -LiteralPath $ArtifactManifestPath) {
+        $artifactManifest = Get-Content -LiteralPath $ArtifactManifestPath -Raw | ConvertFrom-Json
+    }
 
     $report = [ordered]@{
         commit = $gitCommit
         version = $gitVersion
         edition = "community"
+        build_info = $(if ($artifactManifest) { $artifactManifest.build_info } else { $null })
+        artifact_manifest_path = $(if (Test-Path -LiteralPath $ArtifactManifestPath) { Get-RelativePath -Path $ArtifactManifestPath } else { $null })
+        vulnerability_reports = [ordered]@{
+            govulncheck_json = $(if (Test-Path -LiteralPath $VulnJSONPath) { Get-RelativePath -Path $VulnJSONPath } else { $null })
+            govulncheck_text = $(if (Test-Path -LiteralPath $VulnTextPath) { Get-RelativePath -Path $VulnTextPath } else { $null })
+        }
+        artifacts = $(if ($artifactManifest) {
+            [ordered]@{
+                binary = $artifactManifest.binary
+                image = $artifactManifest.image
+                sbom = $artifactManifest.sbom
+            }
+        } else {
+            $null
+        })
         started_at = $releaseStartedAt.ToString("o")
         finished_at = $releaseFinishedAt.ToString("o")
         duration_ms = $durationMs

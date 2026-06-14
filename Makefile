@@ -19,7 +19,7 @@ LDFLAGS := -s -w \
 
 # Targets
 
-.PHONY: all build run test test-smoke test-conformance test-integration loadtest release-check lint clean docker-build docker-up docker-down migrate-up migrate-down
+.PHONY: all build run test test-smoke test-conformance test-integration loadtest release-check sbom vuln-check lint clean docker-build docker-up docker-down migrate-up migrate-down
 
 all: lint test build
 
@@ -56,6 +56,14 @@ loadtest:
 ## release-check: Run the release candidate gate and emit a JSON report
 release-check:
 	pwsh -ExecutionPolicy Bypass -File .\scripts\release-check.ps1
+
+## sbom: Build release artifacts and generate SBOM + manifest outputs
+sbom:
+	pwsh -ExecutionPolicy Bypass -File .\scripts\supply-chain.ps1
+
+## vuln-check: Run dependency vulnerability checks and emit reports
+vuln-check:
+	pwsh -ExecutionPolicy Bypass -File .\scripts\vuln-check.ps1
 
 ## lint: Run linters (requires golangci-lint)
 lint:

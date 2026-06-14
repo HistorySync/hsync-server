@@ -1,0 +1,9 @@
+.git
+.github
+.codex
+build/
+tmp/
+tmp-gocache/
+.env
+.env.*
+config.release-check.yaml

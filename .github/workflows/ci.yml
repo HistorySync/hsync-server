@@ -6,6 +6,24 @@ on:
   pull_request:
 
 jobs:
+  vuln-check:
+    name: Dependency vulnerability check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Run govulncheck
+        shell: pwsh
+        run: .\scripts\vuln-check.ps1
+      - name: Upload vulnerability reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ce-vuln-report
+          path: build/vuln/**
+
   release-check:
     name: Release candidate gate
     runs-on: ubuntu-latest
@@ -24,7 +42,10 @@ jobs:
           name: ce-release-report
           path: |
             build/release-report-ce.json
+            build/release-artifact-manifest-ce.json
             build/release-check/**
+            build/release-artifacts/**
+            build/sbom/**
 
   api-compatibility:
     name: API compatibility

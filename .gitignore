@@ -13,6 +13,7 @@ coverage.out
 
 # Go vendor
 vendor/
+go.work.sum
 
 # Environment secrets
 .env

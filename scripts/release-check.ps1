@@ -69,11 +69,13 @@ function Invoke-CapturedCommand {
 
     $startParams = @{
         FilePath               = $FilePath
-        ArgumentList           = $Arguments
         WorkingDirectory       = $RepoRoot
         RedirectStandardOutput = $stdout
         RedirectStandardError  = $stderr
         PassThru               = $true
+    }
+    if ($Arguments.Count -gt 0) {
+        $startParams["ArgumentList"] = $Arguments
     }
     if ($IsWindows) {
         $startParams["WindowStyle"] = "Hidden"

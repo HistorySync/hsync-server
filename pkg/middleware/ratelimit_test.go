@@ -186,16 +186,16 @@ func TestAuthTokenRateDecisionForValueHashesToken(t *testing.T) {
 func TestRateLimitFailsOpenOnLimiterErrorByDefault(t *testing.T) {
 	app := fiber.New()
 	calls := 0
-	app.Post("/", func(c fiber.Ctx) error {
-		calls++
-		return c.SendStatus(fiber.StatusNoContent)
-	}, RateLimit(RateLimitConfig{
+	app.Post("/", RateLimit(RateLimitConfig{
 		Limiter: errorLimiter{err: errors.New("redis unavailable")},
 		Window:  time.Minute,
 		Classify: func(fiber.Ctx) RateDecision {
 			return RateDecision{Key: "auth:login:ip:127.0.0.1", Limit: 1, Policy: "public_auth"}
 		},
-	}))
+	}), func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
 	if err != nil {
@@ -213,10 +213,7 @@ func TestRateLimitFailsOpenOnLimiterErrorByDefault(t *testing.T) {
 func TestRateLimitFailsClosedOnLimiterError(t *testing.T) {
 	app := fiber.New()
 	calls := 0
-	app.Post("/", func(c fiber.Ctx) error {
-		calls++
-		return c.SendStatus(fiber.StatusNoContent)
-	}, RateLimit(RateLimitConfig{
+	app.Post("/", RateLimit(RateLimitConfig{
 		Limiter:  errorLimiter{err: errors.New("redis unavailable")},
 		Window:   time.Minute,
 		Policy:   "public_auth",
@@ -224,7 +221,10 @@ func TestRateLimitFailsClosedOnLimiterError(t *testing.T) {
 		Classify: func(fiber.Ctx) RateDecision {
 			return RateDecision{Key: "auth:login:ip:127.0.0.1", Limit: 1}
 		},
-	}))
+	}), func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 
 	resp, err := app.Test(httptest.NewRequest(fiber.MethodPost, "/", nil))
 	if err != nil {
@@ -253,16 +253,16 @@ func TestRateLimitExhaustionSetsHeadersAndErrorCode(t *testing.T) {
 	calls := 0
 
 	app := fiber.New()
-	app.Post("/", func(c fiber.Ctx) error {
-		calls++
-		return c.SendStatus(fiber.StatusNoContent)
-	}, RateLimit(RateLimitConfig{
+	app.Post("/", RateLimit(RateLimitConfig{
 		Limiter: limiter,
 		Window:  time.Minute,
 		Classify: func(fiber.Ctx) RateDecision {
 			return RateDecision{Key: "auth:login:email:user@example.com", Limit: 1}
 		},
-	}))
+	}), func(c fiber.Ctx) error {
+		calls++
+		return c.SendStatus(fiber.StatusNoContent)
+	})
 
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(fiber.MethodPost, "/", nil)

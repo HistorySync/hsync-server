@@ -24,7 +24,7 @@ func (r *PasskeyRepo) CreateCredential(ctx context.Context, credential *model.Pa
 			sign_count, clone_warning, user_present, user_verified,
 			backup_eligible, backup_state, transports, attachment
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13, '')::jsonb, '[]'::jsonb), $14)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''::bytea), $7, $8, $9, $10, $11, $12, COALESCE(NULLIF($13, '')::jsonb, '[]'::jsonb), $14)
 		RETURNING id, created_at, updated_at`
 	return r.pool.QueryRow(ctx, q,
 		credential.UserID,
@@ -104,7 +104,7 @@ func (r *PasskeyRepo) UpdateCredentialAfterUse(ctx context.Context, credential *
 		UPDATE passkey_credentials
 		SET public_key = $3,
 		    attestation_type = $4,
-		    aaguid = $5,
+		    aaguid = COALESCE($5, ''::bytea),
 		    sign_count = $6,
 		    clone_warning = $7,
 		    user_present = $8,

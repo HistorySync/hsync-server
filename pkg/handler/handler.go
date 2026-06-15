@@ -264,22 +264,34 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		}
 		return out
 	}
+	reorderRouteHandlers := func(handlers []fiber.Handler) []fiber.Handler {
+		if len(handlers) <= 1 {
+			return handlers
+		}
+		ordered := make([]fiber.Handler, 0, len(handlers))
+		ordered = append(ordered, handlers[1:]...)
+		ordered = append(ordered, handlers[0])
+		return ordered
+	}
 	get := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodGet, fullPath) {
-			extra := toRouteHandlers(handlers[1:])
-			router.Get(path, handlers[0], extra...)
+			ordered := reorderRouteHandlers(handlers)
+			extra := toRouteHandlers(ordered[1:])
+			router.Get(path, ordered[0], extra...)
 		}
 	}
 	post := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodPost, fullPath) {
-			extra := toRouteHandlers(handlers[1:])
-			router.Post(path, handlers[0], extra...)
+			ordered := reorderRouteHandlers(handlers)
+			extra := toRouteHandlers(ordered[1:])
+			router.Post(path, ordered[0], extra...)
 		}
 	}
 	put := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodPut, fullPath) {
-			extra := toRouteHandlers(handlers[1:])
-			router.Put(path, handlers[0], extra...)
+			ordered := reorderRouteHandlers(handlers)
+			extra := toRouteHandlers(ordered[1:])
+			router.Put(path, ordered[0], extra...)
 		}
 	}
 
@@ -293,13 +305,13 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		h.Login,
 		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:ip", authLoginIPLimit)))
 	authGroup.Post("/login/2fa",
-		h.LoginTwoFactor,
-		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:2fa:ip", authLoginIPLimit)))
-	authGroup.Post("/passkeys/login/begin", h.BeginPasskeyLogin, publicAuthRL)
-	authGroup.Post("/passkeys/login/finish", h.FinishPasskeyLogin, publicAuthRL)
-	authGroup.Post("/verify", h.VerifyAuth, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
-	authGroup.Post("/verify/passkey/begin", h.BeginPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
-	authGroup.Post("/verify/passkey/finish", h.FinishPasskeyStepUp, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
+		authRL(rateLimitWindow, middleware.AuthIPRateDecision("auth:login:2fa:ip", authLoginIPLimit)),
+		h.LoginTwoFactor)
+	authGroup.Post("/passkeys/login/begin", publicAuthRL, h.BeginPasskeyLogin)
+	authGroup.Post("/passkeys/login/finish", publicAuthRL, h.FinishPasskeyLogin)
+	authGroup.Post("/verify", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.VerifyAuth)
+	authGroup.Post("/verify/passkey/begin", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.BeginPasskeyStepUp)
+	authGroup.Post("/verify/passkey/finish", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.FinishPasskeyStepUp)
 	post(authGroup, "/api/v1/auth/refresh", "/refresh", h.RefreshToken, publicAuthRL)
 	post(authGroup, "/api/v1/auth/logout", "/logout", h.Logout, publicAuthRL)
 	authGroup.Post("/resend-verification",
@@ -318,7 +330,7 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	bundles.Post("/", h.UploadBundle)
 	bundles.Get("/", h.ListBundles)
 	bundles.Get("/:id", h.DownloadBundle)
-	bundles.Delete("/:id", h.DeleteBundle, stepUp)
+	bundles.Delete("/:id", stepUp, h.DeleteBundle)
 
 	// Snapshots (JWT-protected)
 	snapshots := v1.Group("/snapshots", auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
@@ -343,14 +355,14 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	me.Get("/passkeys", h.ListPasskeys)
 	me.Post("/passkeys/registration/begin", h.BeginPasskeyRegistration)
 	me.Post("/passkeys/registration/finish", h.RequirePasskeyRegistrationStepUp, h.FinishPasskeyRegistration)
-	me.Delete("/passkeys/:id", h.DeletePasskey, stepUp)
+	me.Delete("/passkeys/:id", stepUp, h.DeletePasskey)
 	me.Get("/privacy-export", h.ExportPrivacyMetadata)
-	me.Delete("/account", h.DeleteAccount, stepUp)
+	me.Delete("/account", stepUp, h.DeleteAccount)
 	me.Get("/notification-preferences", h.GetNotificationPreferences)
 	me.Put("/notification-preferences", h.UpdateNotificationPreferences)
 
 	// Quota (JWT-protected)
-	get(v1, "/api/v1/quota", "/quota", auth.AuthMiddleware(h.deps.TokenManager), perUserRL, h.GetQuota)
+	get(v1, "/api/v1/quota", "/quota", h.GetQuota, auth.AuthMiddleware(h.deps.TokenManager), perUserRL)
 
 	// Admin security stats for the v1 API surface.
 	v1Admin := v1.Group("/admin", adminRL, auth.AdminMiddleware(h.deps.AdminKey))

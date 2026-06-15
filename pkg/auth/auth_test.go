@@ -319,9 +319,9 @@ func newStepUpTestApp(tm *TokenManager) *fiber.App {
 			return c.Status(fiber.StatusInternalServerError).SendString(err.Error())
 		},
 	})
-	app.Post("/sensitive", func(c fiber.Ctx) error {
+	app.Post("/sensitive", AuthMiddleware(tm), StepUpMiddleware(tm), func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
-	}, AuthMiddleware(tm), StepUpMiddleware(tm))
+	})
 	return app
 }
 

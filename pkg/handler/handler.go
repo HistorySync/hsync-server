@@ -257,19 +257,29 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 		return authRateLimit(h.deps.RateLimiter, h.deps.RateLimit, window, classify)
 	}
 	stepUp := auth.StepUpMiddleware(h.deps.TokenManager)
+	toRouteHandlers := func(handlers []fiber.Handler) []any {
+		out := make([]any, 0, len(handlers))
+		for _, handler := range handlers {
+			out = append(out, handler)
+		}
+		return out
+	}
 	get := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodGet, fullPath) {
-			router.Get(path, handlers[0], handlers[1:]...)
+			extra := toRouteHandlers(handlers[1:])
+			router.Get(path, handlers[0], extra...)
 		}
 	}
 	post := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodPost, fullPath) {
-			router.Post(path, handlers[0], handlers[1:]...)
+			extra := toRouteHandlers(handlers[1:])
+			router.Post(path, handlers[0], extra...)
 		}
 	}
 	put := func(router fiber.Router, fullPath, path string, handlers ...fiber.Handler) {
 		if !h.routeExcluded(fiber.MethodPut, fullPath) {
-			router.Put(path, handlers[0], handlers[1:]...)
+			extra := toRouteHandlers(handlers[1:])
+			router.Put(path, handlers[0], extra...)
 		}
 	}
 

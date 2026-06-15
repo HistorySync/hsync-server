@@ -57,7 +57,7 @@ function Invoke-External {
 function Invoke-CapturedCommand {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [string[]]$Arguments = @(),
         [Parameter(Mandatory = $true)][string]$StdoutPath,
         [Parameter(Mandatory = $true)][string]$StderrPath
     )
@@ -433,7 +433,7 @@ try {
 
     Invoke-EnvironmentStep -Step $steps[3] -Action {
         param($stdoutFile, $stderrFile)
-        $script:serverProcess = Invoke-CapturedCommand -FilePath $BinaryPath -Arguments @() -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
+        $script:serverProcess = Invoke-CapturedCommand -FilePath $BinaryPath -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
         Wait-ForHTTP -Url "$baseUrl/readyz" -TimeoutSeconds 120
         Set-Content -LiteralPath $stdoutFile -Value "Server ready at $baseUrl/readyz"
     }

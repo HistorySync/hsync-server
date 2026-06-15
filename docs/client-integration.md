@@ -1,22 +1,45 @@
 # Client Integration
 
-This document describes the minimal CE client integration flow for a desktop
-app or browser extension. It covers protocol sequencing only. The server treats
-bundle and snapshot payloads as opaque encrypted blobs and does not parse them.
+This document describes the minimum Community Edition client contract for a
+desktop app, CLI, browser extension, or other sync-capable client.
 
-## 1. Authenticate the user
+The server stores encrypted bundle and snapshot blobs plus metadata. It does
+not inspect or transform bundle contents.
 
-Register or log in with email/password:
+## Scope
+
+This guide covers:
+
+- email/password registration and login
+- refresh token usage
+- device token issuance
+- bundle and snapshot sync
+- WebSocket push handling
+- step-up verification for sensitive actions
+- device revocation recovery
+
+This guide does not cover:
+
+- a full SDK
+- UI decisions
+- encryption format design
+
+## Minimal flow
+
+### 1. Register or log in
+
+Use one of:
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
 
-Both routes require `turnstile_token` in CE when Turnstile is enabled. A
-successful login returns:
+When Turnstile is enabled, include `turnstile_token`.
 
-- `access_token`: bearer token for normal API calls
-- `refresh_token`: long-lived token used to mint new access tokens
-- `expires_in`: access token lifetime in seconds
+Successful password auth returns:
+
+- `access_token`
+- `refresh_token`
+- `expires_in`
 
 If the account has TOTP enabled, `POST /api/v1/auth/login` returns:
 
@@ -24,21 +47,22 @@ If the account has TOTP enabled, `POST /api/v1/auth/login` returns:
 - `challenge`
 - `expires_in`
 
-Complete that flow with `POST /api/v1/auth/login/2fa`.
+Complete that challenge with `POST /api/v1/auth/login/2fa`.
 
-## 2. Refresh access tokens
+### 2. Keep the access token fresh
 
-When the access token expires, call:
+Access tokens are short-lived bearer tokens for normal HTTP API calls.
+
+Before or after expiry, exchange the current refresh token with:
 
 - `POST /api/v1/auth/refresh`
 
-with `refresh_token` and replace the in-memory access token with the returned
-`access_token`.
+Replace the in-memory access token with the new `access_token`.
 
-## 3. Register a client device and get a WS token
+### 3. Register one logical client device
 
-Choose a stable client-generated UUID per installed app profile, then request a
-device token:
+Generate and persist a stable UUID per installed profile, then request a
+device token with:
 
 - `POST /api/v1/devices/{uuid}/token`
 
@@ -48,18 +72,18 @@ Recommended request fields:
 - `platform`
 - `app_version`
 
-The response contains:
+The response includes:
 
-- `device_token`: bearer token for `GET /ws/push`
-- `expires_in`: CE currently uses 24 hours
-- `device`: persisted device metadata
+- `device_token`
+- `expires_in`
+- `device`
 
-The device token is separate from the user access token. Use the access token
-for REST API calls and the device token only for WebSocket auth.
+Use the user `access_token` for REST API calls. Use the `device_token` only
+for WebSocket authentication.
 
-## 4. Open the push channel
+### 4. Open push delivery
 
-Connect:
+Connect to:
 
 - `GET /ws/push`
 
@@ -73,18 +97,18 @@ Current CE push message types:
 - `snapshot_uploaded`
 - `device_revoked`
 
-Clients should treat push as an invalidation signal and re-fetch metadata or
-content from HTTP endpoints rather than assuming the push payload is complete.
+Treat push as an invalidation signal. Re-fetch metadata or content through HTTP
+instead of assuming the push payload is a full state sync.
 
-## 5. Sync bundles
+### 5. Upload and fetch bundles
 
 Upload encrypted bundle blobs with:
 
 - `POST /api/v1/bundles`
 
-Multipart fields:
+Required multipart fields:
 
-- `bundle`: file payload
+- `bundle`
 - `bundle_id`
 - `device_uuid`
 - `lamport_lo`
@@ -93,41 +117,39 @@ Multipart fields:
 - `cipher_id`
 - `key_generation`
 
-Read back metadata and content with:
+Read bundle metadata and bytes with:
 
 - `GET /api/v1/bundles`
 - `GET /api/v1/bundles/{id}`
 
-The CE server stores the uploaded bytes as-is and does not inspect bundle
-contents.
-
-## 6. Sync snapshots
+### 6. Upload and fetch snapshots
 
 Upload encrypted snapshot blobs with:
 
 - `POST /api/v1/snapshots`
 
-Multipart fields:
+Required multipart fields:
 
-- `snapshot`: file payload
+- `snapshot`
 - `snapshot_id`
 - `base_hlc`
 - `cipher_id`
 - `key_generation`
 
-Read back metadata and content with:
+Read snapshot metadata and bytes with:
 
 - `GET /api/v1/snapshots/latest`
 - `GET /api/v1/snapshots/{id}`
 
-## 7. Step-up for sensitive actions
+### 7. Perform step-up for sensitive actions
 
-Sensitive user actions require an `X-HSync-Verification` header. For TOTP
-accounts, obtain it with:
+Some routes require a short-lived `X-HSync-Verification` header.
+
+For TOTP accounts, call:
 
 - `POST /api/v1/auth/verify`
 
-using:
+with:
 
 - `method=totp`
 - `code`
@@ -140,23 +162,25 @@ Example sensitive route:
 
 - `POST /api/v1/devices/{uuid}/revoke`
 
-Without step-up, CE returns `STEP_UP_REQUIRED`.
+### 8. Handle revocation
 
-## 8. Device revocation handling
+Device revocation effects:
 
-When a device is revoked:
+- the revoke request succeeds through `POST /api/v1/devices/{uuid}/revoke`
+- online devices receive `device_revoked` over WebSocket
+- future token refreshes for that same device UUID return `DEVICE_REVOKED`
 
-- REST revocation is done via `POST /api/v1/devices/{uuid}/revoke`
-- existing clients receive `device_revoked` over WebSocket
-- future `POST /api/v1/devices/{uuid}/token` calls for that revoked device
-  return `DEVICE_REVOKED`
+When a client receives or discovers revocation, it should:
 
-Clients should clear the revoked device token, stop reconnect loops, and
-require the user to re-register the device under a new trusted session.
+- delete the cached device token
+- stop reconnect loops for `/ws/push`
+- stop using that device UUID for uploads
+- require a fresh trusted session before registering a new device UUID
 
-## Error handling contract
+## Error handling
 
-CE errors use the standard envelope from `docs/api/openapi.ce.yaml`:
+CE errors use the standard envelope from
+`docs/api/openapi.ce.yaml`:
 
 ```json
 {
@@ -168,34 +192,48 @@ CE errors use the standard envelope from `docs/api/openapi.ce.yaml`:
 }
 ```
 
-Client logic should branch on `error.code`, not on English text. The canonical
-code catalog lives in `pkg/apierrors/apierrors.go`, and the HTTP status mapping
-in that catalog should match the OpenAPI document.
+Client behavior should branch on `error.code`, not on English message text.
 
-Common codes in the sync flow include:
+Recommended handling:
 
-- `INVALID_CREDENTIALS`
-- `INVALID_REFRESH_TOKEN`
-- `TURNSTILE_REQUIRED`
-- `PASSKEY_DISABLED`
-- `STEP_UP_REQUIRED`
-- `DEVICE_REVOKED`
-- `BAD_REQUEST`
-- `CONFLICT`
-- `QUOTA_EXCEEDED`
+- `INVALID_CREDENTIALS`: keep the current session unauthenticated and ask for new credentials.
+- `TURNSTILE_REQUIRED`: fetch a fresh challenge token and retry the auth request.
+- `TURNSTILE_FAILED`: do not silently loop; require a fresh Turnstile solve.
+- `INVALID_REFRESH_TOKEN`: discard the session and require full login.
+- `TWO_FACTOR_REQUIRED`: continue the login flow with `/api/v1/auth/login/2fa`.
+- `TWO_FACTOR_INVALID_CODE`: allow retry with rate-limit aware UX.
+- `TWO_FACTOR_LOCKED`: stop retrying until the lock window passes.
+- `STEP_UP_REQUIRED`: start a new step-up flow before retrying the protected request.
+- `STEP_UP_INVALID`: discard the cached verification token and request a new one.
+- `STEP_UP_EXPIRED`: request a fresh verification token and retry once.
+- `DEVICE_NOT_REGISTERED`: issue a device token first, then retry bundle upload.
+- `DEVICE_REVOKED`: stop using that device UUID and device token.
+- `QUOTA_EXCEEDED`: pause uploads and surface storage-limit guidance.
+- `CONFLICT`: treat as an application-level conflict, not a transport retry signal.
+- `BAD_REQUEST`: treat as a client bug or malformed request; do not blind-retry.
 
-## Local and CI test modes
+## Retry guidance
 
-The CE client conformance suite in `pkg/clientconformance` supports lightweight
-test-only auth modes:
+Safe default behavior:
 
-- Turnstile is faked in-suite with a fixed accepted token.
-- `HSYNC_CONFORMANCE_2FA_MODE=real` runs the full TOTP flow.
-- `HSYNC_CONFORMANCE_2FA_MODE=skip` mints a short-lived step-up token in the
-  harness for revoke-flow testing.
-- `HSYNC_CONFORMANCE_PASSKEY_MODE=disabled` asserts the default CE behavior that
-  passkey login is unavailable.
-- `HSYNC_CONFORMANCE_PASSKEY_MODE=skip` skips the passkey-disabled assertion.
+- Retry transient network failures with backoff.
+- Retry `5xx` responses only when the request is idempotent from the client's perspective.
+- Do not blindly retry `4xx` responses except after a concrete recovery step such as refresh, re-auth, or step-up.
+- Reconnect WebSocket with backoff, but stop reconnecting after `DEVICE_REVOKED`.
 
-These modes are intended for protocol verification only. They do not replace
-production auth configuration.
+## Local and CI conformance modes
+
+`pkg/clientconformance` supports lightweight protocol modes for local and CI
+validation:
+
+- `HSYNC_CONFORMANCE_TURNSTILE_MODE=fake`: default mode; accepts one fixed test token in-suite.
+- `HSYNC_CONFORMANCE_TURNSTILE_MODE=skip`: disables Turnstile enforcement in the harness.
+- `HSYNC_CONFORMANCE_2FA_MODE=real`: runs the full TOTP setup, login, and step-up flow.
+- `HSYNC_CONFORMANCE_2FA_MODE=fake`: reserved lightweight mode for environments that only need contract coverage.
+- `HSYNC_CONFORMANCE_2FA_MODE=skip`: mints a short-lived step-up token directly in the harness.
+- `HSYNC_CONFORMANCE_PASSKEY_MODE=disabled`: default CE expectation; passkey login is unavailable.
+- `HSYNC_CONFORMANCE_PASSKEY_MODE=fake`: reserved lightweight mode for environments that only need contract coverage.
+- `HSYNC_CONFORMANCE_PASSKEY_MODE=skip`: skips the passkey-disabled assertion.
+
+These modes are for protocol verification only. They are not production auth
+configurations.

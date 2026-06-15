@@ -53,13 +53,18 @@ import (
 
 const (
 	conformanceTurnstileToken = "conformance-turnstile-ok"
+	turnstileModeFake         = "fake"
+	turnstileModeSkip         = "skip"
 	passkeyModeDisabled       = "disabled"
+	passkeyModeFake           = "fake"
 	passkeyModeSkip           = "skip"
 	twoFactorModeReal         = "real"
+	twoFactorModeFake         = "fake"
 	twoFactorModeSkip         = "skip"
 )
 
 type suiteConfig struct {
+	turnstileMode string
 	passkeyMode   string
 	twoFactorMode string
 }
@@ -156,22 +161,36 @@ type memoryBlobStore struct {
 
 func TestCEClientConformanceSuite(t *testing.T) {
 	cfg := loadSuiteConfig()
-	h := newHarness(t)
+	h := newHarness(t, cfg)
 
 	t.Run("negative_errors", func(t *testing.T) {
-		testLoginRequiresTurnstile(t, h)
+		if cfg.turnstileMode != turnstileModeSkip {
+			testRegisterRejectsInvalidTurnstile(t, h)
+			testLoginRequiresTurnstile(t, h)
+			testLoginRejectsInvalidTurnstile(t, h)
+		}
 		testRefreshRejectsInvalidToken(t, h)
 		testBundleUploadRequiresFile(t, h)
+		testBundleUploadRejectsUnregisteredDevice(t, h)
+		testDeviceTokenRejectsInvalidUUID(t, h)
+		testStepUpRejectsInvalidVerificationToken(t, h)
+		if cfg.twoFactorMode != twoFactorModeSkip {
+			testVerifyRejectsUnsupportedMethod(t, h)
+		}
 		if cfg.passkeyMode == passkeyModeDisabled {
 			testPasskeyLoginDisabled(t, h)
 		}
 	})
 
-	t.Run("end_to_end_sync", func(t *testing.T) {
+	t.Run("sync_flow", func(t *testing.T) {
 		s := registerAndLogin(t, h, "sync")
+		assertOpenAPIStatus(t, h, "/api/v1/auth/register", http.MethodPost, http.StatusCreated)
+		assertOpenAPIStatus(t, h, "/api/v1/auth/login", http.MethodPost, http.StatusOK)
 		testRefreshSucceeds(t, h, s)
+		assertOpenAPIStatus(t, h, "/api/v1/auth/refresh", http.MethodPost, http.StatusOK)
 
 		deviceResp := requestDeviceToken(t, h, s)
+		assertOpenAPIStatus(t, h, "/api/v1/devices/{uuid}/token", http.MethodPost, http.StatusOK)
 		if got, want := deviceResp.ExpiresIn, int((24*time.Hour)/time.Second); got != want {
 			t.Fatalf("device token expires_in = %d, want %d", got, want)
 		}
@@ -180,33 +199,44 @@ func TestCEClientConformanceSuite(t *testing.T) {
 		conn := dialWebSocket(t, h, s.deviceToken)
 		defer conn.Close()
 
+		listDevicesAndAssert(t, h, s, s.deviceUUID.String())
+		assertOpenAPIStatus(t, h, "/api/v1/devices", http.MethodGet, http.StatusOK)
+
 		bundleBytes := []byte("encrypted bundle bytes")
 		uploadBundle(t, h, s, "bundle-1", bundleBytes)
+		assertOpenAPIStatus(t, h, "/api/v1/bundles", http.MethodPost, http.StatusCreated)
 		assertPushMessage(t, conn, ws.MsgBundleUploaded, map[string]string{
 			"bundle_id": "bundle-1",
 		})
 		listBundlesAndAssert(t, h, s, "bundle-1")
+		assertOpenAPIStatus(t, h, "/api/v1/bundles", http.MethodGet, http.StatusOK)
 		downloadBundleAndAssert(t, h, s, "bundle-1", bundleBytes)
+		assertOpenAPIStatus(t, h, "/api/v1/bundles/{id}", http.MethodGet, http.StatusOK)
 
 		snapshotBytes := []byte("encrypted snapshot bytes")
 		uploadSnapshot(t, h, s, "snapshot-1", snapshotBytes)
+		assertOpenAPIStatus(t, h, "/api/v1/snapshots", http.MethodPost, http.StatusCreated)
 		assertPushMessage(t, conn, ws.MsgSnapshotUploaded, map[string]string{
 			"snapshot_id": "snapshot-1",
 		})
 		getLatestSnapshotAndAssert(t, h, s, "snapshot-1")
+		assertOpenAPIStatus(t, h, "/api/v1/snapshots/latest", http.MethodGet, http.StatusOK)
 		downloadSnapshotAndAssert(t, h, s, "snapshot-1", snapshotBytes)
+		assertOpenAPIStatus(t, h, "/api/v1/snapshots/{id}", http.MethodGet, http.StatusOK)
 
 		stepUpToken := issueStepUpToken(t, h, s, cfg.twoFactorMode)
 
 		expectError(t, h, http.MethodPost, "/api/v1/devices/{uuid}/revoke",
 			"/api/v1/devices/"+url.PathEscape(s.deviceUUID.String())+"/revoke",
 			map[string]any{}, bearerHeaders(s.accessToken), http.StatusForbidden, apierrors.CodeStepUpRequired)
+		assertOpenAPIStatus(t, h, "/api/v1/devices/{uuid}/revoke", http.MethodPost, http.StatusForbidden)
 
 		revokeDevice(t, h, s, stepUpToken)
 		assertPushMessage(t, conn, ws.MsgDeviceRevoked, map[string]string{
 			"device_uuid": s.deviceUUID.String(),
 		})
 		listRevocationsAndAssert(t, h, s)
+		assertOpenAPIStatus(t, h, "/api/v1/devices/revocations", http.MethodGet, http.StatusOK)
 		expectError(t, h, http.MethodPost, "/api/v1/devices/{uuid}/token",
 			"/api/v1/devices/"+url.PathEscape(s.deviceUUID.String())+"/token",
 			map[string]any{"platform": "desktop"}, bearerHeaders(s.accessToken),
@@ -216,8 +246,9 @@ func TestCEClientConformanceSuite(t *testing.T) {
 
 func loadSuiteConfig() suiteConfig {
 	return suiteConfig{
-		passkeyMode: normalizeMode(os.Getenv("HSYNC_CONFORMANCE_PASSKEY_MODE"), passkeyModeDisabled, passkeyModeDisabled, passkeyModeSkip),
-		twoFactorMode: normalizeMode(os.Getenv("HSYNC_CONFORMANCE_2FA_MODE"), twoFactorModeReal, twoFactorModeReal, twoFactorModeSkip),
+		turnstileMode: normalizeMode(os.Getenv("HSYNC_CONFORMANCE_TURNSTILE_MODE"), turnstileModeFake, turnstileModeFake, turnstileModeSkip),
+		passkeyMode:   normalizeMode(os.Getenv("HSYNC_CONFORMANCE_PASSKEY_MODE"), passkeyModeDisabled, passkeyModeDisabled, passkeyModeFake, passkeyModeSkip),
+		twoFactorMode: normalizeMode(os.Getenv("HSYNC_CONFORMANCE_2FA_MODE"), twoFactorModeReal, twoFactorModeReal, twoFactorModeFake, twoFactorModeSkip),
 	}
 }
 
@@ -234,7 +265,7 @@ func normalizeMode(raw, fallback string, allowed ...string) string {
 	return fallback
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T, suiteCfg suiteConfig) *harness {
 	t.Helper()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -243,14 +274,14 @@ func newHarness(t *testing.T) *harness {
 	pool := newPostgresPool(t, ctx)
 	applyAllMigrations(t, ctx, pool)
 
-	cfg := config.DefaultConfig()
-	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
-	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
-	cfg.StripeDisabled = true
-	cfg.BackgroundTasksEnabled = false
+	serverCfg := config.DefaultConfig()
+	serverCfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	serverCfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	serverCfg.StripeDisabled = true
+	serverCfg.BackgroundTasksEnabled = false
 
 	repos := repository.New(pool, nil)
-	tokenManager, err := auth.NewTokenManager(cfg.JWTPrivateKey, auth.TokenConfig{
+	tokenManager, err := auth.NewTokenManager(serverCfg.JWTPrivateKey, auth.TokenConfig{
 		AccessTTL:  15 * time.Minute,
 		RefreshTTL: 30 * 24 * time.Hour,
 	})
@@ -264,8 +295,8 @@ func newHarness(t *testing.T) *harness {
 		TokenManager:   tokenManager,
 		BlobStore:      blobStore,
 		StripeDisabled: true,
-		SecuritySecret: cfg.SecuritySecret,
-		Config:         cfg,
+		SecuritySecret: serverCfg.SecuritySecret,
+		Config:         serverCfg,
 		DatabasePing:   pool.Ping,
 	})
 	hub := ws.NewHubWithOptions(repos.Devices, ws.Options{OriginCheckDisabled: true})
@@ -282,7 +313,7 @@ func newHarness(t *testing.T) *harness {
 		BuildInfo:    buildinfo.WithEdition("community"),
 		RateLimiter:  middleware.NewMemoryLimiter(),
 		Turnstile: middleware.TurnstileConfig{
-			Enabled:  true,
+			Enabled:  suiteCfg.turnstileMode != turnstileModeSkip,
 			Verifier: fakeTurnstile,
 		},
 	})
@@ -407,6 +438,23 @@ func testLoginRequiresTurnstile(t *testing.T, h *harness) {
 	}, nil, http.StatusBadRequest, apierrors.CodeTurnstileRequired)
 }
 
+func testRegisterRejectsInvalidTurnstile(t *testing.T, h *harness) {
+	expectError(t, h, http.MethodPost, "/api/v1/auth/register", "/api/v1/auth/register", map[string]any{
+		"email":           "missing@example.com",
+		"password":        "password-12345",
+		"display_name":    "Conformance User",
+		"turnstile_token": "invalid-turnstile",
+	}, nil, http.StatusForbidden, apierrors.CodeTurnstileFailed)
+}
+
+func testLoginRejectsInvalidTurnstile(t *testing.T, h *harness) {
+	expectError(t, h, http.MethodPost, "/api/v1/auth/login", "/api/v1/auth/login", map[string]any{
+		"email":           "missing@example.com",
+		"password":        "password-12345",
+		"turnstile_token": "invalid-turnstile",
+	}, nil, http.StatusForbidden, apierrors.CodeTurnstileFailed)
+}
+
 func testRefreshRejectsInvalidToken(t *testing.T, h *harness) {
 	expectError(t, h, http.MethodPost, "/api/v1/auth/refresh", "/api/v1/auth/refresh", map[string]any{
 		"refresh_token": "not-a-real-token",
@@ -430,6 +478,54 @@ func testBundleUploadRequiresFile(t *testing.T, h *harness) {
 	headers := bearerHeaders(s.accessToken)
 	headers.Set("Content-Type", writer.FormDataContentType())
 	expectRawError(t, h, http.MethodPost, "/api/v1/bundles", "/api/v1/bundles", body, headers, http.StatusBadRequest, apierrors.CodeBadRequest)
+}
+
+func testBundleUploadRejectsUnregisteredDevice(t *testing.T, h *harness) {
+	s := registerAndLogin(t, h, "bundle-device-negative")
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	mustWriteField(t, writer, "bundle_id", "unregistered-device")
+	mustWriteField(t, writer, "device_uuid", uuid.NewString())
+	mustWriteField(t, writer, "lamport_lo", "1")
+	mustWriteField(t, writer, "lamport_hi", "2")
+	mustWriteField(t, writer, "event_count", "1")
+	mustWriteField(t, writer, "cipher_id", "1")
+	mustWriteField(t, writer, "key_generation", "1")
+	part, err := writer.CreateFormFile("bundle", "unregistered-device.hsb")
+	if err != nil {
+		t.Fatalf("create bundle part: %v", err)
+	}
+	if _, err := part.Write([]byte("encrypted bundle bytes")); err != nil {
+		t.Fatalf("write bundle part: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	headers := bearerHeaders(s.accessToken)
+	headers.Set("Content-Type", writer.FormDataContentType())
+	expectRawError(t, h, http.MethodPost, "/api/v1/bundles", "/api/v1/bundles", body, headers, http.StatusBadRequest, apierrors.CodeDeviceNotRegistered)
+}
+
+func testDeviceTokenRejectsInvalidUUID(t *testing.T, h *harness) {
+	s := registerAndLogin(t, h, "device-token-negative")
+	expectError(t, h, http.MethodPost, "/api/v1/devices/{uuid}/token", "/api/v1/devices/not-a-uuid/token",
+		map[string]any{"platform": "desktop"}, bearerHeaders(s.accessToken), http.StatusBadRequest, apierrors.CodeBadRequest)
+}
+
+func testStepUpRejectsInvalidVerificationToken(t *testing.T, h *harness) {
+	s := registerAndLogin(t, h, "stepup-negative")
+	headers := bearerHeaders(s.accessToken)
+	headers.Set(auth.StepUpHeader, "not-a-real-step-up-token")
+	expectRawError(t, h, http.MethodPost, "/api/v1/devices/{uuid}/revoke", "/api/v1/devices/"+url.PathEscape(s.deviceUUID.String())+"/revoke",
+		bytes.NewReader([]byte(`{}`)), headers, http.StatusForbidden, apierrors.CodeStepUpInvalid)
+}
+
+func testVerifyRejectsUnsupportedMethod(t *testing.T, h *harness) {
+	s := registerAndLogin(t, h, "verify-negative")
+	expectError(t, h, http.MethodPost, "/api/v1/auth/verify", "/api/v1/auth/verify", map[string]any{
+		"method": "passkey",
+		"code":   "123456",
+	}, bearerHeaders(s.accessToken), http.StatusBadRequest, apierrors.CodeBadRequest)
 }
 
 func testPasskeyLoginDisabled(t *testing.T, h *harness) {
@@ -557,6 +653,20 @@ func listBundlesAndAssert(t *testing.T, h *harness, s *session, wantBundleID str
 	}
 	if list.Bundles[0].BundleID != wantBundleID {
 		t.Fatalf("first bundle id = %q, want %q", list.Bundles[0].BundleID, wantBundleID)
+	}
+}
+
+func listDevicesAndAssert(t *testing.T, h *harness, s *session, wantDeviceUUID string) {
+	t.Helper()
+	var resp struct {
+		Devices []model.Device `json:"devices"`
+	}
+	doRequest(t, h, http.MethodGet, "/api/v1/devices", nil, bearerHeaders(s.accessToken), http.StatusOK, &resp)
+	if len(resp.Devices) == 0 {
+		t.Fatal("device list is empty")
+	}
+	if resp.Devices[0].DeviceUUID.String() != wantDeviceUUID {
+		t.Fatalf("first device uuid = %q, want %q", resp.Devices[0].DeviceUUID, wantDeviceUUID)
 	}
 }
 
@@ -820,6 +930,13 @@ func expectRawError(t *testing.T, h *harness, method, pathTemplate, path string,
 	}
 }
 
+func assertOpenAPIStatus(t *testing.T, h *harness, path, method string, status int) {
+	t.Helper()
+	if !h.openAPI.allowsStatus(path, method, status) {
+		t.Fatalf("OpenAPI does not declare %s %s response %d", method, path, status)
+	}
+}
+
 func postJSON(t *testing.T, h *harness, method, path string, payload any, headers http.Header, wantStatus int, out any) {
 	t.Helper()
 	raw, err := json.Marshal(payload)
@@ -934,15 +1051,10 @@ func loadOpenAPI(t *testing.T) openAPIDocument {
 }
 
 func (d openAPIDocument) allowsErrorStatus(path, method string, status int) bool {
-	operations, ok := d.Paths[path]
+	responses, ok := d.responsesFor(path, method)
 	if !ok {
 		return false
 	}
-	operation, ok := operations[strings.ToLower(method)]
-	if !ok {
-		return false
-	}
-	responses := asMap(asMap(operation)["responses"])
 	response, ok := responses[strconv.Itoa(status)]
 	if !ok {
 		return false
@@ -957,6 +1069,27 @@ func (d openAPIDocument) allowsErrorStatus(path, method string, status int) bool
 	}
 	ref, _ := asMap(response)["$ref"].(string)
 	return ref == "#/components/responses/ErrorResponse"
+}
+
+func (d openAPIDocument) allowsStatus(path, method string, status int) bool {
+	responses, ok := d.responsesFor(path, method)
+	if !ok {
+		return false
+	}
+	_, ok = responses[strconv.Itoa(status)]
+	return ok
+}
+
+func (d openAPIDocument) responsesFor(path, method string) (map[string]any, bool) {
+	operations, ok := d.Paths[path]
+	if !ok {
+		return nil, false
+	}
+	operation, ok := operations[strings.ToLower(method)]
+	if !ok {
+		return nil, false
+	}
+	return asMap(asMap(operation)["responses"]), true
 }
 
 func (d openAPIDocument) resolveResponse(response any) any {

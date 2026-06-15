@@ -1,19 +1,34 @@
 name: CI
+run-name: CI / ${{ github.event_name }} / ${{ github.head_ref || github.ref_name }}
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25"
 
 jobs:
   vuln-check:
     name: Dependency vulnerability check
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
       - name: Run govulncheck
         shell: pwsh
         run: .\scripts\vuln-check.ps1
@@ -27,11 +42,14 @@ jobs:
   release-check:
     name: Release candidate gate
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
       - name: Run release candidate gate
         shell: pwsh
         run: .\scripts\release-check.ps1 -ReportPath build/release-report-ce.json
@@ -50,22 +68,28 @@ jobs:
   api-compatibility:
     name: API compatibility
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
       - name: OpenAPI compatibility check
         run: go test ./docs/api
 
   unit:
     name: Unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
       - name: Build
         run: go build ./...
       - name: Unit tests
@@ -74,11 +98,14 @@ jobs:
   integration:
     name: Integration tests (PostgreSQL)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: ${{ env.GO_VERSION }}
       # ubuntu-latest ships a running Docker daemon, so testcontainers starts
       # its own ephemeral postgres:16-alpine; no service container is needed.
       - name: Integration tests

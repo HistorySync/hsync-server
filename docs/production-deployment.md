@@ -50,9 +50,9 @@ make release-check
 ```
 
 Do not tag or promote a CE release candidate unless the release gate passes for
-the exact commit being shipped. The gate bundles unit tests, OpenAPI
-compatibility, migration status, doctor JSON, ops rehearsal JSON, and the CE
-smoke suite into one reportable decision point.
+the exact commit being shipped. RC readiness requires every release-check step
+to pass: tests, OpenAPI compatibility, doctor JSON, ops rehearsal JSON, smoke,
+load, and artifact verification.
 
 Create and fill the environment file:
 

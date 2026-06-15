@@ -130,14 +130,14 @@ The CE release gate runs these checks in order against a temporary local stack:
 
 - `go test -count=1 -timeout 60s ./...`
 - `go test ./docs/api`
-- `go run ./cmd/hsync-server migrate status --json`
 - `go run ./cmd/hsync-server doctor --format json`
 - `go run ./cmd/hsync-server ops rehearsal --format json`
 - `go test -tags=smoke -count=1 -timeout 300s ./cmd/hsync-server`
+- `go run ./cmd/loadtest -json`
+- `pwsh -ExecutionPolicy Bypass -File .\scripts\supply-chain.ps1`
 
-`doctor` and `ops rehearsal` must report `overall=ok`. Warn-level output is
-treated as an RC blocker because the goal is "can this commit become an RC
-right now", not "did the command exit zero".
+Every step must pass. The gate does not skip failures, does not update
+baselines, and does not mark the RC green if any step fails.
 
 The script writes a machine-readable report to `build/release-report-ce.json`
 with:

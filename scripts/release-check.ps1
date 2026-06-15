@@ -258,6 +258,10 @@ function Invoke-ReleaseStep {
     else {
         Complete-StepFromResult -Step $Step -ExitCode $exitCode -Status "failed" -Detail "Command exited with code $exitCode."
     }
+
+    if ($Step.status -ne "passed") {
+        throw "Step $($Step.name) failed."
+    }
 }
 
 function Invoke-EnvironmentStep {
@@ -316,6 +320,75 @@ function Test-MigrateStatusJSON {
     return [PSCustomObject]@{ Status = "failed"; Detail = "consistent=$consistent pending=$pendingCount tracking_table_ok=$trackingTableOk" }
 }
 
+function Test-CEReleaseLoadReport {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $json = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $failures = @()
+    $scenarios = @{}
+    foreach ($scenario in @($json.scenarios)) {
+        $scenarios[[string]$scenario.name] = $scenario
+    }
+
+    foreach ($name in @("ce_register_login", "ce_bundle_snapshot_sync", "ce_notification_outbox_drain")) {
+        $scenario = $scenarios[$name]
+        if ($null -eq $scenario) {
+            $failures += "missing scenario $name"
+            continue
+        }
+        if ([int64]$scenario.errors -ne 0) {
+            $failures += "$name errors=$($scenario.errors)"
+        }
+    }
+
+    foreach ($name in @("ce_rate_limit_fallback", "ce_ws_connect_cap")) {
+        $scenario = $scenarios[$name]
+        if ($null -eq $scenario) {
+            $failures += "missing scenario $name"
+            continue
+        }
+        if ([int64]$scenario.errors -ne 0) {
+            $failures += "$name errors=$($scenario.errors)"
+        }
+        if ([int64]$scenario.rejections -le 0) {
+            $failures += "$name rejections=$($scenario.rejections)"
+        }
+    }
+
+    foreach ($field in @("http_5xx", "other")) {
+        if ([int64]$json.status_classes.$field -ne 0) {
+            $failures += "status_classes.$field=$($json.status_classes.$field)"
+        }
+    }
+
+    foreach ($mode in @("memory", "deny", "disable")) {
+        if ($json.rate_limit_fallback.$mode -eq $true) {
+            $failures += "rate_limit_fallback.$mode=true"
+        }
+    }
+
+    if ([int64]$json.quota_rollback_count -ne 0) {
+        $failures += "quota_rollback_count=$($json.quota_rollback_count)"
+    }
+
+    if ($null -eq $json.notification_summary) {
+        $failures += "missing notification_summary"
+    }
+    else {
+        if ([int64]$json.notification_summary.failed -ne 0) {
+            $failures += "notification_summary.failed=$($json.notification_summary.failed)"
+        }
+        if ([int64]$json.notification_summary.sent -le 0) {
+            $failures += "notification_summary.sent=$($json.notification_summary.sent)"
+        }
+    }
+
+    if ($failures.Count -eq 0) {
+        return [PSCustomObject]@{ Status = "passed"; Detail = "load thresholds met" }
+    }
+    return [PSCustomObject]@{ Status = "failed"; Detail = ($failures -join "; ") }
+}
+
 function Get-ReportSummary {
     param([array]$Steps)
 
@@ -327,6 +400,37 @@ function Get-ReportSummary {
     }
 }
 
+function Start-ReleaseDataStack {
+    param(
+        [Parameter(Mandatory = $true)][string]$StdoutFile,
+        [Parameter(Mandatory = $true)][string]$StderrFile
+    )
+
+    if ($script:releaseEnvironmentStarted) {
+        return
+    }
+    docker compose --env-file $EnvFile -f $ComposeFile up -d 1> $StdoutFile 2> $StderrFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "docker compose up failed with exit code $LASTEXITCODE"
+    }
+    Wait-ForDockerHealth -Service "postgres"
+    Wait-ForDockerHealth -Service "redis"
+    Wait-ForDockerHealth -Service "minio"
+    & $BinaryPath "migrate" "up" 1>> $StdoutFile 2>> $StderrFile
+    if ($LASTEXITCODE -ne 0) {
+        throw "$BinaryPath migrate up failed with exit code $LASTEXITCODE"
+    }
+    $script:releaseEnvironmentStarted = $true
+}
+
+function Start-ReleaseServer {
+    if ($null -ne $script:serverProcess -and -not $script:serverProcess.HasExited) {
+        return
+    }
+    $script:serverProcess = Invoke-CapturedCommand -FilePath $BinaryPath -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
+    Wait-ForHTTP -Url "$baseUrl/readyz" -TimeoutSeconds 120
+}
+
 $gitCommit = (git -C $RepoRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0) {
     throw "git rev-parse HEAD failed"
@@ -334,6 +438,22 @@ if ($LASTEXITCODE -ne 0) {
 $gitVersion = (git -C $RepoRoot describe --tags --always --dirty).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($gitVersion)) {
     $gitVersion = "dev"
+}
+$buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+function Build-ReleaseBinary {
+    $ldflags = @(
+        "-s",
+        "-w",
+        "-X", "github.com/historysync/hsync-server/pkg/buildinfo.version=$gitVersion",
+        "-X", "github.com/historysync/hsync-server/pkg/buildinfo.commit=$gitCommit",
+        "-X", "github.com/historysync/hsync-server/pkg/buildinfo.buildTime=$buildTime",
+        "-X", "github.com/historysync/hsync-server/pkg/buildinfo.edition=community"
+    ) -join " "
+    & go build -ldflags $ldflags -o $BinaryPath ./cmd/hsync-server
+    if ($LASTEXITCODE -ne 0) {
+        throw "go build ./cmd/hsync-server failed with exit code $LASTEXITCODE"
+    }
 }
 
 $jwtKey = New-Base64Secret
@@ -390,19 +510,17 @@ S3_SECRET_KEY=$s3SecretKey
 "@ | Set-Content -LiteralPath $EnvFile
 
 $steps = @(
-    (New-ReleaseStep -Name "vuln-check" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\vuln-check.ps1"))),
-    (New-ReleaseStep -Name "artifact-manifest" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\supply-chain.ps1"), "-ManifestPath", $ArtifactManifestPath, "-BinaryPath", $BinaryPath)),
-    (New-ReleaseStep -Name "environment-setup" -Command @("docker", "compose", "up")),
-    (New-ReleaseStep -Name "server-ready" -Command @($BinaryPath)),
-    (New-ReleaseStep -Name "go-test" -Command @("go", "test", "-count=1", "-timeout", "60s", "./...")),
+    (New-ReleaseStep -Name "test" -Command @("go", "test", "-count=1", "-timeout", "60s", "./...")),
     (New-ReleaseStep -Name "openapi-compatibility" -Command @("go", "test", "./docs/api")),
-    (New-ReleaseStep -Name "migrate-status" -Command @($BinaryPath, "migrate", "status", "--json")),
-    (New-ReleaseStep -Name "doctor-json" -Command @($BinaryPath, "doctor", "--format", "json")),
-    (New-ReleaseStep -Name "ops-rehearsal" -Command @($BinaryPath, "ops", "rehearsal", "--format", "json")),
-    (New-ReleaseStep -Name "smoke" -Command @("go", "test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server"))
+    (New-ReleaseStep -Name "doctor" -Command @($BinaryPath, "doctor", "--format", "json")),
+    (New-ReleaseStep -Name "rehearsal" -Command @($BinaryPath, "ops", "rehearsal", "--format", "json")),
+    (New-ReleaseStep -Name "smoke" -Command @("go", "test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server")),
+    (New-ReleaseStep -Name "load" -Command @("go", "run", "./cmd/loadtest", "-json", "-base-url", $baseUrl, "-admin-key", $adminKey)),
+    (New-ReleaseStep -Name "artifact-verification" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\supply-chain.ps1"), "-ManifestPath", $ArtifactManifestPath, "-BinaryPath", $BinaryPath, "-Version", $gitVersion, "-Commit", $gitCommit, "-BuildTime", $buildTime))
 )
 
 $serverProcess = $null
+$releaseEnvironmentStarted = $false
 $releaseStartedAt = (Get-Date).ToUniversalTime()
 $releasePassed = $false
 $releaseError = $null
@@ -412,57 +530,39 @@ try {
     $previousExtraFiles = $env:HSYNC_CONFIG_EXTRA_FILES
     $env:HSYNC_CONFIG_EXTRA_FILES = "config.release-check"
 
+    $setupStdout = Join-Path $ArtifactsDir "_setup.stdout.log"
+    $setupStderr = Join-Path $ArtifactsDir "_setup.stderr.log"
+    Build-ReleaseBinary
+    Start-ReleaseDataStack -StdoutFile $setupStdout -StderrFile $setupStderr
+    Start-ReleaseServer
+
     Invoke-ReleaseStep -Step $steps[0]
     Invoke-ReleaseStep -Step $steps[1]
-
-    Invoke-EnvironmentStep -Step $steps[2] -Action {
-        param($stdoutFile, $stderrFile)
-        docker compose --env-file $EnvFile -f $ComposeFile up -d 1> $stdoutFile 2> $stderrFile
-        if ($LASTEXITCODE -ne 0) {
-            throw "docker compose up failed with exit code $LASTEXITCODE"
+    Invoke-ReleaseStep -Step $steps[2] -Inspector {
+        param($stdout, $stderr, $exitCode)
+        if ($exitCode -ne 0) {
+            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
-        Wait-ForDockerHealth -Service "postgres"
-        Wait-ForDockerHealth -Service "redis"
-        Wait-ForDockerHealth -Service "minio"
-        & $BinaryPath "migrate" "up" 1>> $stdoutFile 2>> $stderrFile
-        if ($LASTEXITCODE -ne 0) {
-            throw "$BinaryPath migrate up failed with exit code $LASTEXITCODE"
+        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
+    }
+    Invoke-ReleaseStep -Step $steps[3] -Inspector {
+        param($stdout, $stderr, $exitCode)
+        if ($exitCode -ne 0) {
+            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
+        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
     }
-    $steps[2].detail = "Docker dependencies started and migrations applied."
-
-    Invoke-EnvironmentStep -Step $steps[3] -Action {
-        param($stdoutFile, $stderrFile)
-        $script:serverProcess = Invoke-CapturedCommand -FilePath $BinaryPath -StdoutPath $ServerStdoutPath -StderrPath $ServerStderrPath
-        Wait-ForHTTP -Url "$baseUrl/readyz" -TimeoutSeconds 120
-        Set-Content -LiteralPath $stdoutFile -Value "Server ready at $baseUrl/readyz"
-    }
-    $steps[3].detail = "Server reached /readyz."
-
     Invoke-ReleaseStep -Step $steps[4]
-    Invoke-ReleaseStep -Step $steps[5]
-    Invoke-ReleaseStep -Step $steps[6] -Inspector {
+    Invoke-ReleaseStep -Step $steps[5] -Inspector {
         param($stdout, $stderr, $exitCode)
         if ($exitCode -ne 0) {
             return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
         }
-        return Test-MigrateStatusJSON -Path $stdout
+        return Test-CEReleaseLoadReport -Path $stdout
     }
-    Invoke-ReleaseStep -Step $steps[7] -Inspector {
-        param($stdout, $stderr, $exitCode)
-        if ($exitCode -ne 0) {
-            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
-        }
-        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
-    }
-    Invoke-ReleaseStep -Step $steps[8] -Inspector {
-        param($stdout, $stderr, $exitCode)
-        if ($exitCode -ne 0) {
-            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
-        }
-        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
-    }
-    Invoke-ReleaseStep -Step $steps[9]
+    Stop-ProcessTree -Process $serverProcess
+    $serverProcess = $null
+    Invoke-ReleaseStep -Step $steps[6]
 
     $summary = Get-ReportSummary -Steps $steps
     $releasePassed = ($summary.failed.Count -eq 0)

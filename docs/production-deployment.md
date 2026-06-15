@@ -40,8 +40,6 @@ Nginx or Caddy process can terminate TLS and enforce path/IP boundaries.
 - `deployments/.env.production.example`: placeholder-only CE environment file.
 - `deployments/reverse-proxy/nginx.conf`: TLS reverse proxy sample.
 - `deployments/reverse-proxy/Caddyfile`: TLS reverse proxy sample.
-- `../hsync-enterprise/deployments/docker-compose.production.overlay.yml`:
-  Enterprise overlay that reuses the CE production template.
 
 ## First CE Deploy
 
@@ -104,57 +102,6 @@ Then verify the HTTPS URL that users will use:
 curl -fsS https://sync.example.com/healthz
 curl -fsS https://sync.example.com/readyz
 ```
-
-## Enterprise Deploy
-
-Enterprise uses the CE production template plus the Enterprise overlay. Fill
-both environment files:
-
-```bash
-cp ../hsync-server/deployments/.env.production.example \
-  ../hsync-server/deployments/.env.production
-cp deployments/.env.production.example deployments/.env.production
-```
-
-Before promoting an Enterprise RC, run the Enterprise release gate from the EE
-repository root with a valid signed `HSYNC_LICENSE_KEY`. That gate runs the CE
-release gate first, then the Enterprise checks for the same candidate commit.
-
-Run the same flow with both compose files and both env files:
-
-```bash
-# 1. doctor: merged CE + Enterprise preflight.
-docker compose \
-  --env-file ../hsync-server/deployments/.env.production \
-  --env-file deployments/.env.production \
-  -f ../hsync-server/deployments/docker-compose.production.yml \
-  -f deployments/docker-compose.production.overlay.yml \
-  run --rm doctor
-
-# 2. migrate: Enterprise applies pending CE migrations first, then pending EE migrations.
-docker compose \
-  --env-file ../hsync-server/deployments/.env.production \
-  --env-file deployments/.env.production \
-  -f ../hsync-server/deployments/docker-compose.production.yml \
-  -f deployments/docker-compose.production.overlay.yml \
-  run --rm migrate
-
-# 3. smoke: Enterprise smoke suite.
-make test-smoke
-
-# 4. start.
-docker compose \
-  --env-file ../hsync-server/deployments/.env.production \
-  --env-file deployments/.env.production \
-  -f ../hsync-server/deployments/docker-compose.production.yml \
-  -f deployments/docker-compose.production.overlay.yml \
-  up -d server
-```
-
-`hsync-enterprise migrate up` records CE migrations in `schema_migrations` and
-Enterprise migrations in `enterprise_schema_migrations`. For rollback planning,
-use `hsync-enterprise migrate status --json` or the overlay's migrate service
-with `command: ["migrate", "status", "--json"]`.
 
 ## Reverse Proxy
 

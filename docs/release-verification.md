@@ -69,15 +69,3 @@ The revision label must match the manifest `commit`.
 
 3. If the image has been pushed to a registry, compare any populated
 `RepoDigests` output with `image.repo_digests`.
-
-## Enterprise artifacts
-
-Enterprise follows the same pattern from `../hsync-enterprise`:
-
-- `make vuln-check`
-- `make sbom`
-- `build/release-artifact-manifest-ee.json`
-- `.\build\artifacts\hsync-enterprise.exe version --format json`
-
-For Enterprise, also verify that the manifest's `ce_dependency.commit` matches
-the CE checkout used for the build.

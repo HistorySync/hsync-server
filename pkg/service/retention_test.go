@@ -44,7 +44,7 @@ func (f *fakeRetentionStore) add(b model.BundleMeta) {
 	f.present[metaID(b.UserID, b.BundleID)] = true
 }
 
-func (f *fakeRetentionStore) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error) {
+func (f *fakeRetentionStore) ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.BundleMeta, error) {
 	f.listCalls++
 	var out []model.BundleMeta
 	for _, b := range f.rows {
@@ -55,7 +55,7 @@ func (f *fakeRetentionStore) ListDeletedBefore(ctx context.Context, before time.
 			continue
 		}
 		out = append(out, b)
-		if len(out) == 100 { // mirror the repository's LIMIT 100 page size
+		if int32(len(out)) == limit {
 			break
 		}
 	}
@@ -153,10 +153,8 @@ func TestPurgeExpiredBundlesBlobFailureLeavesRow(t *testing.T) {
 	if !f.present[metaID(user, "b2")] {
 		t.Fatal("b2 row was removed despite blob delete failure")
 	}
-	// The loop must terminate quickly: one page to purge, one to confirm only the
-	// stuck row remains.
-	if f.listCalls != 2 {
-		t.Fatalf("listCalls = %d, want 2 (no infinite retry)", f.listCalls)
+	if f.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 bounded batch", f.listCalls)
 	}
 }
 
@@ -178,12 +176,12 @@ func TestPurgeExpiredBundlesRowFailureLeavesRow(t *testing.T) {
 	if !f.present[metaID(user, "b1")] {
 		t.Fatal("b1 row was removed despite hard-delete failure")
 	}
-	if f.listCalls != 2 {
-		t.Fatalf("listCalls = %d, want 2 (no infinite retry)", f.listCalls)
+	if f.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 bounded batch", f.listCalls)
 	}
 }
 
-func TestPurgeExpiredBundlesPaging(t *testing.T) {
+func TestPurgeExpiredBundlesProcessesSingleBatch(t *testing.T) {
 	f := newFakeRetentionStore()
 	user := uuid.New()
 	past := time.Now().Add(-48 * time.Hour)
@@ -196,12 +194,11 @@ func TestPurgeExpiredBundlesPaging(t *testing.T) {
 	if err != nil {
 		t.Fatalf("purgeExpiredBundles() error = %v", err)
 	}
-	if report.ExpiredBundles != total || report.ExpiredBytes != total || report.Failed != 0 {
-		t.Fatalf("report = %+v, want bundles=%d bytes=%d failed=0", report, total, total)
+	if report.ExpiredBundles != int64(retentionCleanupBatchSize) || report.ExpiredBytes != int64(retentionCleanupBatchSize) || report.Failed != 0 {
+		t.Fatalf("report = %+v, want bundles=%d bytes=%d failed=0", report, retentionCleanupBatchSize, retentionCleanupBatchSize)
 	}
-	// 100 + 100 + 50 purged across three pages, then a fourth empty page ends it.
-	if f.listCalls != 4 {
-		t.Fatalf("listCalls = %d, want 4 for 250 rows at page size 100", f.listCalls)
+	if f.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 bounded batch", f.listCalls)
 	}
 }
 
@@ -287,7 +284,7 @@ func (f *fakeSnapshotStore) add(s model.SnapshotMeta) {
 	f.present[snapID(s.UserID, s.SnapshotID)] = true
 }
 
-func (f *fakeSnapshotStore) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error) {
+func (f *fakeSnapshotStore) ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.SnapshotMeta, error) {
 	f.listCalls++
 	var out []model.SnapshotMeta
 	for _, s := range f.rows {
@@ -298,7 +295,7 @@ func (f *fakeSnapshotStore) ListDeletedBefore(ctx context.Context, before time.T
 			continue
 		}
 		out = append(out, s)
-		if len(out) == 100 {
+		if int32(len(out)) == limit {
 			break
 		}
 	}
@@ -385,8 +382,8 @@ func TestPurgeExpiredSnapshotsBlobFailureLeavesRow(t *testing.T) {
 	if !f.present[snapID(user, "s2")] {
 		t.Fatal("s2 row was removed despite blob delete failure")
 	}
-	if f.listCalls != 2 {
-		t.Fatalf("listCalls = %d, want 2 (no infinite retry)", f.listCalls)
+	if f.listCalls != 1 {
+		t.Fatalf("listCalls = %d, want 1 bounded batch", f.listCalls)
 	}
 }
 

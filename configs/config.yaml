@@ -108,13 +108,17 @@ quota_reconcile_interval: "24h"
 #   1. set retention_cleanup_interval > 0 to run the task, AND
 #   2. set retention_dry_run: false to actually delete.
 # While retention_dry_run is true the task only logs how much WOULD be purged.
+# Each scheduler pass processes one bounded retention batch (currently 100
+# bundles and 100 snapshots) rather than draining the entire backlog at once.
 retention_cleanup_interval: "0"
 retention_grace_period: "720h"  # 30 days; only purge bundles soft-deleted longer ago than this
 retention_dry_run: true
 # Operational history retention covers audit logs, ops/consistency history, and
 # terminal notification outbox rows. Hot data remains in source tables for
 # existing queries; older rows move to *_archive tables; archive rows older than
-# the total retention window are safe to purge. This task is also off by default.
+# the total retention window are safe to purge. Each pass moves/purges at most
+# 500 rows per table, so large backlogs drain over multiple runs. This task is
+# also off by default.
 history_retention_interval: "0"
 history_hot_retention: "2160h"      # 90 days in hot operational tables
 history_archive_retention: "8760h"  # 365 days total retention before purge
@@ -132,7 +136,9 @@ ops_consistency_check_limit: 1000
 
 # User-facing notifications. Disabled by default in CE; when disabled, the
 # server keeps core flows working and logs notification events instead of
-# delivering mail. Enable SMTP to send password reset and quota emails.
+# delivering mail. Enable SMTP to send password reset and quota emails. The
+# background outbox worker processes one bounded batch per pass (currently 50
+# rows) to avoid long-lived database claims.
 notifications_enabled: false
 quota_warning_threshold: 80
 quota_exhausted_threshold: 100

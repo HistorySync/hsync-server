@@ -24,6 +24,8 @@ type OperationalHistoryRepo struct {
 	db operationalHistoryDB
 }
 
+const operationalHistoryRetentionBatchSize = int32(500)
+
 func NewOperationalHistoryRepo(pool *pgxpool.Pool) *OperationalHistoryRepo {
 	return &OperationalHistoryRepo{db: pool}
 }
@@ -97,7 +99,13 @@ func (r *OperationalHistoryRepo) ApplyRetention(ctx context.Context, hotCutoff, 
 	counts.ArchivedAuditLogs, err = execRows(ctx, r.db, `
 		WITH moved AS (
 			DELETE FROM audit_logs
-			WHERE created_at < $1
+			WHERE id IN (
+				SELECT id
+				FROM audit_logs
+				WHERE created_at < $1
+				ORDER BY created_at, id
+				LIMIT $2
+			)
 			RETURNING *
 		)
 		INSERT INTO audit_logs_archive (
@@ -105,14 +113,20 @@ func (r *OperationalHistoryRepo) ApplyRetention(ctx context.Context, hotCutoff, 
 		)
 		SELECT id, actor_user_id, event_type, target_type, target_id, ip, user_agent, metadata, created_at
 		FROM moved
-		ON CONFLICT (id) DO NOTHING`, hotCutoff)
+		ON CONFLICT (id) DO NOTHING`, hotCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("archive audit logs: %w", err)
 	}
 	counts.ArchivedOpsCheckRuns, err = execRows(ctx, r.db, `
 		WITH moved AS (
 			DELETE FROM ops_check_runs
-			WHERE started_at < $1
+			WHERE id IN (
+				SELECT id
+				FROM ops_check_runs
+				WHERE started_at < $1
+				ORDER BY started_at, id
+				LIMIT $2
+			)
 			RETURNING *
 		)
 		INSERT INTO ops_check_runs_archive (
@@ -122,14 +136,20 @@ func (r *OperationalHistoryRepo) ApplyRetention(ctx context.Context, hotCutoff, 
 		SELECT id, run_type, overall_status, started_at, finished_at, duration_millis,
 		       summarized_findings, artifact_counts, report_json, created_at
 		FROM moved
-		ON CONFLICT (id) DO NOTHING`, hotCutoff)
+		ON CONFLICT (id) DO NOTHING`, hotCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("archive ops check runs: %w", err)
 	}
 	counts.ArchivedNotificationOutboxRows, err = execRows(ctx, r.db, `
 		WITH moved AS (
 			DELETE FROM notification_outbox
-			WHERE status IN ('sent','discarded') AND updated_at < $1
+			WHERE id IN (
+				SELECT id
+				FROM notification_outbox
+				WHERE status IN ('sent','discarded') AND updated_at < $1
+				ORDER BY updated_at, id
+				LIMIT $2
+			)
 			RETURNING *
 		)
 		INSERT INTO notification_outbox_archive (
@@ -139,22 +159,43 @@ func (r *OperationalHistoryRepo) ApplyRetention(ctx context.Context, hotCutoff, 
 		SELECT id, user_id, channel, category, type, payload_json, status, attempt_count,
 		       next_retry_at, last_error, created_at, updated_at, sent_at
 		FROM moved
-		ON CONFLICT (id) DO NOTHING`, hotCutoff)
+		ON CONFLICT (id) DO NOTHING`, hotCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("archive notification outbox rows: %w", err)
 	}
 	counts.PurgedAuditLogArchives, err = execRows(ctx, r.db,
-		`DELETE FROM audit_logs_archive WHERE created_at < $1`, archiveCutoff)
+		`DELETE FROM audit_logs_archive
+		  WHERE id IN (
+			  SELECT id
+			  FROM audit_logs_archive
+			  WHERE created_at < $1
+			  ORDER BY created_at, id
+			  LIMIT $2
+		  )`, archiveCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("purge archived audit logs: %w", err)
 	}
 	counts.PurgedOpsCheckRunArchives, err = execRows(ctx, r.db,
-		`DELETE FROM ops_check_runs_archive WHERE started_at < $1`, archiveCutoff)
+		`DELETE FROM ops_check_runs_archive
+		  WHERE id IN (
+			  SELECT id
+			  FROM ops_check_runs_archive
+			  WHERE started_at < $1
+			  ORDER BY started_at, id
+			  LIMIT $2
+		  )`, archiveCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("purge archived ops check runs: %w", err)
 	}
 	counts.PurgedNotificationArchives, err = execRows(ctx, r.db,
-		`DELETE FROM notification_outbox_archive WHERE updated_at < $1`, archiveCutoff)
+		`DELETE FROM notification_outbox_archive
+		  WHERE id IN (
+			  SELECT id
+			  FROM notification_outbox_archive
+			  WHERE updated_at < $1
+			  ORDER BY updated_at, id
+			  LIMIT $2
+		  )`, archiveCutoff, operationalHistoryRetentionBatchSize)
 	if err != nil {
 		return counts, fmt.Errorf("purge archived notification outbox rows: %w", err)
 	}

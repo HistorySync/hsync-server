@@ -472,7 +472,7 @@ func (s *RetentionService) ReportExpiredBundles(ctx context.Context, grace time.
 // page through soft-deleted bundles and physically remove one. The concrete
 // *repository.BundleRepo satisfies it; tests supply an in-memory fake.
 type purgeableBundles interface {
-	ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error)
+	ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.BundleMeta, error)
 	HardDelete(ctx context.Context, userID uuid.UUID, bundleID string) error
 }
 
@@ -480,6 +480,8 @@ type purgeableBundles interface {
 type blobDeleter interface {
 	Delete(ctx context.Context, key string) error
 }
+
+const retentionCleanupBatchSize = int32(100)
 
 // PurgeExpiredBundles permanently deletes bundles that were soft-deleted longer
 // ago than the grace period, returning what was removed. It is the destructive
@@ -497,57 +499,34 @@ func (s *RetentionService) PurgeExpiredBundles(ctx context.Context, grace time.D
 // DeleteBundle already decremented it at soft-delete time, so the counters track
 // only live data and a second decrement here would double-count.
 //
-// It pages via ListDeletedBefore (which the repository caps and orders by deletion
-// time) and stops when a page yields no further progress, so a bundle whose blob
-// or row delete keeps failing is counted once in Failed and left for a later run
-// instead of looping forever.
+// It processes at most one bounded page per run so a single scheduler tick does
+// not try to drain an arbitrarily large backlog. A bundle whose blob or row
+// delete fails is counted once in Failed and left for a later run.
 func purgeExpiredBundles(ctx context.Context, bundles purgeableBundles, blobs blobDeleter, before time.Time) (RetentionReport, error) {
 	report := RetentionReport{Before: before}
-	// Bundles that failed this run, keyed by user/bundle, so a stuck row is retried
-	// at most once per run and bounds the loop.
-	failed := make(map[string]bool)
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-		batch, err := bundles.ListDeletedBefore(ctx, before)
-		if err != nil {
-			return report, fmt.Errorf("list expired bundles: %w", err)
-		}
-		if len(batch) == 0 {
-			return report, nil
-		}
-
-		progressed := 0
-		for _, b := range batch {
-			id := b.UserID.String() + "/" + b.BundleID
-			if failed[id] {
-				continue
-			}
-			// Blob before row: a crash after this point leaves a soft-deleted row
-			// that the next run retries, never an orphaned blob.
-			key := storage.BundleKey(b.UserID.String(), b.BundleID)
-			if err := blobs.Delete(ctx, key); err != nil {
-				failed[id] = true
-				report.Failed++
-				continue
-			}
-			if err := bundles.HardDelete(ctx, b.UserID, b.BundleID); err != nil {
-				failed[id] = true
-				report.Failed++
-				continue
-			}
-			report.ExpiredBundles++
-			report.ExpiredBytes += b.SizeBytes
-			progressed++
-		}
-
-		if progressed == 0 {
-			// The whole page was already-failed rows; stop rather than spin.
-			return report, nil
-		}
+	if err := ctx.Err(); err != nil {
+		return report, err
 	}
+	batch, err := bundles.ListDeletedBefore(ctx, before, retentionCleanupBatchSize)
+	if err != nil {
+		return report, fmt.Errorf("list expired bundles: %w", err)
+	}
+	for _, b := range batch {
+		// Blob before row: a crash after this point leaves a soft-deleted row
+		// that the next run retries, never an orphaned blob.
+		key := storage.BundleKey(b.UserID.String(), b.BundleID)
+		if err := blobs.Delete(ctx, key); err != nil {
+			report.Failed++
+			continue
+		}
+		if err := bundles.HardDelete(ctx, b.UserID, b.BundleID); err != nil {
+			report.Failed++
+			continue
+		}
+		report.ExpiredBundles++
+		report.ExpiredBytes += b.SizeBytes
+	}
+	return report, nil
 }
 
 // Snapshot Retention
@@ -574,14 +553,14 @@ func (s *RetentionService) ReportExpiredSnapshots(ctx context.Context, grace tim
 // purgeableSnapshots is the subset of snapshot persistence the retention purge
 // needs. The concrete *repository.SnapshotRepo satisfies it.
 type purgeableSnapshots interface {
-	ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error)
+	ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.SnapshotMeta, error)
 	HardDelete(ctx context.Context, userID uuid.UUID, snapshotID string) error
 }
 
 // PurgeExpiredSnapshots permanently deletes snapshots that were soft-deleted
 // longer ago than the grace period. Same safety properties as PurgeExpiredBundles:
 // blob before row, no storage_usage touch (UploadSnapshot already calls
-// RemoveSnapshotUsage on prune), no-progress break to bound retries.
+// RemoveSnapshotUsage on prune), and one bounded page per run.
 func (s *RetentionService) PurgeExpiredSnapshots(ctx context.Context, grace time.Duration) (SnapshotReport, error) {
 	before := time.Now().Add(-grace)
 	return purgeExpiredSnapshots(ctx, s.repos.Snapshots, s.blobStore, before)
@@ -591,46 +570,27 @@ func (s *RetentionService) PurgeExpiredSnapshots(ctx context.Context, grace time
 // the shared rationale.
 func purgeExpiredSnapshots(ctx context.Context, snapshots purgeableSnapshots, blobs blobDeleter, before time.Time) (SnapshotReport, error) {
 	report := SnapshotReport{Before: before}
-	failed := make(map[string]bool)
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-		batch, err := snapshots.ListDeletedBefore(ctx, before)
-		if err != nil {
-			return report, fmt.Errorf("list expired snapshots: %w", err)
-		}
-		if len(batch) == 0 {
-			return report, nil
-		}
-
-		progressed := 0
-		for _, s := range batch {
-			id := s.UserID.String() + "/" + s.SnapshotID
-			if failed[id] {
-				continue
-			}
-			key := storage.SnapshotKey(s.UserID.String(), s.SnapshotID)
-			if err := blobs.Delete(ctx, key); err != nil {
-				failed[id] = true
-				report.Failed++
-				continue
-			}
-			if err := snapshots.HardDelete(ctx, s.UserID, s.SnapshotID); err != nil {
-				failed[id] = true
-				report.Failed++
-				continue
-			}
-			report.ExpiredSnapshots++
-			report.ExpiredBytes += s.SizeBytes
-			progressed++
-		}
-
-		if progressed == 0 {
-			return report, nil
-		}
+	if err := ctx.Err(); err != nil {
+		return report, err
 	}
+	batch, err := snapshots.ListDeletedBefore(ctx, before, retentionCleanupBatchSize)
+	if err != nil {
+		return report, fmt.Errorf("list expired snapshots: %w", err)
+	}
+	for _, s := range batch {
+		key := storage.SnapshotKey(s.UserID.String(), s.SnapshotID)
+		if err := blobs.Delete(ctx, key); err != nil {
+			report.Failed++
+			continue
+		}
+		if err := snapshots.HardDelete(ctx, s.UserID, s.SnapshotID); err != nil {
+			report.Failed++
+			continue
+		}
+		report.ExpiredSnapshots++
+		report.ExpiredBytes += s.SizeBytes
+	}
+	return report, nil
 }
 
 // AuthService

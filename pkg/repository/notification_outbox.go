@@ -161,7 +161,7 @@ func (r *NotificationOutboxRepo) ClaimFailed(ctx context.Context, limit int32) (
 			SELECT id
 			FROM notification_outbox
 			WHERE status = 'failed'
-			ORDER BY updated_at DESC, created_at
+			ORDER BY updated_at DESC, created_at DESC, id DESC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
 		)
@@ -283,7 +283,7 @@ func (r *NotificationOutboxRepo) ListFailures(ctx context.Context, limit, offset
 		       created_at, updated_at, sent_at
 		FROM notification_outbox
 		WHERE status = 'failed'
-		ORDER BY updated_at DESC
+		ORDER BY updated_at DESC, created_at DESC, id DESC
 		LIMIT $1 OFFSET $2`
 	rows, err := r.db.Query(ctx, q, limit, offset)
 	if err != nil {

@@ -50,9 +50,13 @@ var allTables = []string{
 	"user_two_factor",
 	"user_two_factor_backup_codes",
 	"audit_logs",
+	"audit_logs_archive",
 	"user_notification_preferences",
 	"notification_outbox",
+	"notification_outbox_archive",
 	"account_erasure_jobs",
+	"ops_check_runs",
+	"ops_check_runs_archive",
 	"passkey_credentials",
 	"passkey_challenges",
 }

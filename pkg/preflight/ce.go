@@ -903,6 +903,10 @@ func CEDriftRequirements() []migrate.SchemaRequirement {
 		{Kind: migrate.SchemaRequirementIndex, Name: "idx_bundles_device_lamport", Severity: "warn", Action: "Run migrate up or recreate the index before accepting high-volume sync traffic."},
 		{Kind: migrate.SchemaRequirementIndex, Name: "idx_notification_outbox_due", Severity: "warn", Action: "Run migrate up or recreate the index before enabling notification workers."},
 		{Kind: migrate.SchemaRequirementIndex, Name: "idx_ops_check_runs_recent", Severity: "warn", Action: "Run migrate up or recreate the index before relying on ops history queries."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_ops_check_runs_started_at_recent", Severity: "warn", Action: "Run migrate up or recreate the index before relying on recent ops history queries under load."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_ops_check_runs_failed_recent", Severity: "warn", Action: "Run migrate up or recreate the index before relying on failed ops history queries under load."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_notification_outbox_failed_recent", Severity: "warn", Action: "Run migrate up or recreate the index before retrying or listing failed notifications at scale."},
+		{Kind: migrate.SchemaRequirementIndex, Name: "idx_account_erasure_jobs_user_recent", Severity: "warn", Action: "Run migrate up or recreate the index before relying on account erasure support lookups under load."},
 	}
 }
 

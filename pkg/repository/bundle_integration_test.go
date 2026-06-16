@@ -296,7 +296,7 @@ func TestBundleListDeletedBefore(t *testing.T) {
 	}
 
 	// Future cutoff: both soft-deleted bundles are returned, the live one is not.
-	deleted, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
+	deleted, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(time.Hour), defaultRetentionBatchLimit)
 	if err != nil {
 		t.Fatalf("ListDeletedBefore(future): %v", err)
 	}
@@ -312,7 +312,7 @@ func TestBundleListDeletedBefore(t *testing.T) {
 	}
 
 	// Past cutoff: nothing qualifies.
-	none, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(-time.Hour))
+	none, err := repos.Bundles.ListDeletedBefore(ctx, time.Now().Add(-time.Hour), defaultRetentionBatchLimit)
 	if err != nil {
 		t.Fatalf("ListDeletedBefore(past): %v", err)
 	}

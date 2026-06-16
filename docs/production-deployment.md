@@ -145,6 +145,21 @@ configured pool values plus a safe runtime snapshot so operators can confirm
 whether PostgreSQL is close to the configured ceiling without exposing the raw
 DSN, password, or host secrets.
 
+## Background Batch Bounds
+
+The CE background workers intentionally avoid draining unlimited PostgreSQL
+backlogs in one scheduler pass:
+
+- Notification outbox processing claims at most 50 rows per pass.
+- Bundle retention cleanup purges at most 100 bundles per pass.
+- Snapshot retention cleanup purges at most 100 snapshots per pass.
+- Operational history retention moves or purges at most 500 rows per table per pass.
+- Account erasure processing checks at most 50 jobs per pass.
+
+If a deployment has a larger backlog, the worker keeps chipping away across
+multiple intervals instead of holding large delete/update transactions open for
+one long run.
+
 ## Reverse Proxy
 
 Use either sample as a starting point:

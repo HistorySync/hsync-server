@@ -785,15 +785,16 @@ func (r *BundleRepo) ListForOpsRestoreManifest(ctx context.Context, limit int32)
 }
 
 // ListDeletedBefore returns bundles soft-deleted before the given time (for cleanup).
-func (r *BundleRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.BundleMeta, error) {
+func (r *BundleRepo) ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.BundleMeta, error) {
+	limit = normalizeRetentionBatchLimit(limit)
 	const q = `
 		SELECT bundle_id, user_id, uploader_device_uuid,
 		       lamport_lo, lamport_hi, event_count, size_bytes,
 		       cipher_id, key_generation, uploaded_at, deleted_at
 		FROM bundles WHERE deleted_at IS NOT NULL AND deleted_at < $1
-		ORDER BY deleted_at LIMIT 100`
+		ORDER BY deleted_at LIMIT $2`
 
-	rows, err := r.pool.Query(ctx, q, before)
+	rows, err := r.pool.Query(ctx, q, before, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list deleted bundles: %w", err)
 	}
@@ -1119,13 +1120,14 @@ func (r *SnapshotRepo) CountByUserIncludingDeleted(ctx context.Context, userID u
 // ListDeletedBefore returns snapshots soft-deleted before the given time (for
 // cleanup). It pages in batches of 100, ordered by deletion time, to bound the
 // transaction scope during hard-delete purges.
-func (r *SnapshotRepo) ListDeletedBefore(ctx context.Context, before time.Time) ([]model.SnapshotMeta, error) {
+func (r *SnapshotRepo) ListDeletedBefore(ctx context.Context, before time.Time, limit int32) ([]model.SnapshotMeta, error) {
+	limit = normalizeRetentionBatchLimit(limit)
 	const q = `
 		SELECT snapshot_id, user_id, base_hlc, size_bytes, cipher_id, key_generation, created_at, deleted_at
 		FROM snapshots WHERE deleted_at IS NOT NULL AND deleted_at < $1
-		ORDER BY deleted_at LIMIT 100`
+		ORDER BY deleted_at LIMIT $2`
 
-	rows, err := r.pool.Query(ctx, q, before)
+	rows, err := r.pool.Query(ctx, q, before, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list deleted snapshots: %w", err)
 	}
@@ -1141,6 +1143,21 @@ func (r *SnapshotRepo) ListDeletedBefore(ctx context.Context, before time.Time) 
 		snapshots = append(snapshots, s)
 	}
 	return snapshots, rows.Err()
+}
+
+const (
+	defaultRetentionBatchLimit = int32(100)
+	maxRetentionBatchLimit     = int32(1000)
+)
+
+func normalizeRetentionBatchLimit(limit int32) int32 {
+	if limit <= 0 {
+		return defaultRetentionBatchLimit
+	}
+	if limit > maxRetentionBatchLimit {
+		return maxRetentionBatchLimit
+	}
+	return limit
 }
 
 // QuotaRepo

@@ -68,7 +68,7 @@ func (r *OpsHistoryRepo) ListRecent(ctx context.Context, limit int32) ([]model.O
 		SELECT id, run_type, overall_status, started_at, finished_at, duration_millis,
 		       summarized_findings, artifact_counts, report_json, created_at
 		FROM ops_check_runs
-		ORDER BY started_at DESC
+		ORDER BY started_at DESC, id DESC
 		LIMIT $1`
 	rows, err := r.db.Query(ctx, q, limit)
 	if err != nil {
@@ -88,7 +88,7 @@ func (r *OpsHistoryRepo) ListRecentFailures(ctx context.Context, limit int32) ([
 		       summarized_findings, artifact_counts, report_json, created_at
 		FROM ops_check_runs
 		WHERE overall_status <> 'ok'
-		ORDER BY started_at DESC
+		ORDER BY started_at DESC, id DESC
 		LIMIT $1`
 	rows, err := r.db.Query(ctx, q, limit)
 	if err != nil {

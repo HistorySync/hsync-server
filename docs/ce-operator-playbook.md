@@ -305,6 +305,15 @@ Cut traffic over only after restore verification is `ok`, or after every
 5. Keep the source backup and baseline manifest until the new environment has
    passed its retention and rollback window.
 
+The built-in background workers deliberately process bounded batches per pass so
+one scheduler tick does not monopolize PostgreSQL:
+
+- notification outbox: 50 rows per pass
+- bundle retention purge: 100 rows per pass
+- snapshot retention purge: 100 rows per pass
+- operational history archive/purge: 500 rows per table per pass
+- account erasure jobs: 50 jobs per pass
+
 ## 2. Admin console
 
 The CE console is a lightweight operator shell, not a separate frontend app.

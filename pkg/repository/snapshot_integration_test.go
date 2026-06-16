@@ -165,7 +165,7 @@ func TestSnapshotListDeletedBefore(t *testing.T) {
 	}
 
 	// Future cutoff: all three soft-deleted snapshots qualify.
-	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
+	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour), defaultRetentionBatchLimit)
 	if err != nil {
 		t.Fatalf("ListDeletedBefore(future): %v", err)
 	}
@@ -181,7 +181,7 @@ func TestSnapshotListDeletedBefore(t *testing.T) {
 	}
 
 	// Past cutoff: nothing qualifies.
-	none, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(-time.Hour))
+	none, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(-time.Hour), defaultRetentionBatchLimit)
 	if err != nil {
 		t.Fatalf("ListDeletedBefore(past): %v", err)
 	}
@@ -217,7 +217,7 @@ func TestSnapshotHardDelete(t *testing.T) {
 	}
 
 	// After hard delete, the row must not appear in ListDeletedBefore.
-	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour))
+	deleted, err := repos.Snapshots.ListDeletedBefore(ctx, time.Now().Add(time.Hour), defaultRetentionBatchLimit)
 	if err != nil {
 		t.Fatalf("ListDeletedBefore after hard delete: %v", err)
 	}

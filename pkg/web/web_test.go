@@ -251,6 +251,38 @@ func TestLandingPageIncludesAdminConsoleInteractions(t *testing.T) {
 	}
 }
 
+func TestLandingPageIncludesTimelineLookupPanel(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`href="#support-timeline"`,
+		`id="support-timeline"`,
+		`id="support-timeline-form"`,
+		`id="support-timeline-user-id" name="user_id"`,
+		`id="support-timeline-email" name="email"`,
+		`id="support-timeline-limit" name="limit" type="number"`,
+		`id="support-timeline-detail-grid"`,
+		`id="support-timeline-action-rows"`,
+		`id="support-timeline-job-rows"`,
+		`requestAdmin(adminPath+"/support/context?"+params.toString())`,
+		`renderSupportTimelineLookup(response.body.context||null);`,
+		`["timeline lookup",loadSupportTimelineLookup]`,
+		`Timeline lookup loaded and audited.`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing %q", check)
+		}
+	}
+}
+
 func TestJSStringLiteralEscapesScriptBreakout(t *testing.T) {
 	got := jsStringLiteral(`</script><script>alert("x")</script>`)
 	if strings.Contains(got, "</script>") {

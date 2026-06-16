@@ -456,6 +456,105 @@ tbody.appendChild(tr);
 }
 }
 
+async function loadSupportTimelineLookup(){
+const form=document.getElementById("support-timeline-form");
+const params=new URLSearchParams();
+for(const field of ["user_id","email","limit"]){
+const input=form&&form.querySelector('[name="'+field+'"]');
+const value=input&&input.value.trim();
+if(value){params.set(field,value);}
+}
+const response=await requestAdmin(adminPath+"/support/context?"+params.toString());
+renderSupportTimelineLookup(response.body.context||null);
+setBanner("Timeline lookup loaded and audited.","");
+}
+
+function renderSupportTimelineLookup(context){
+text("support-timeline-user-card",context&&context.user?(context.user.email||shortID(context.user.id)):"no match");
+const erasure=context&&context.erasure_status||{};
+let erasureState="not requested";
+if(erasure.completed){erasureState="completed";}
+else if(erasure.in_progress){erasureState="in progress";}
+else if(erasure.requested){erasureState="requested";}
+text("support-timeline-erasure-card",erasureState);
+text("support-timeline-job-card",context?numberValue((context.job_status||[]).length):"0");
+text("support-timeline-action-card",context?numberValue((context.recent_actions||[]).length):"0");
+renderSupportTimelineDetails(context);
+renderSupportTimelineActions(context&&context.recent_actions||[]);
+renderSupportTimelineJobs(context&&context.job_status||[]);
+writeJSON(document.getElementById("support-timeline-json"),context||{status:"no lookup"});
+}
+
+function renderSupportTimelineDetails(context){
+const grid=document.getElementById("support-timeline-detail-grid");
+if(!grid){return;}
+grid.textContent="";
+if(!context){
+grid.appendChild(detailItem("Lookup","No lookup yet"));
+return;
+}
+const user=context.user||{};
+const quota=context.quota||{};
+const usage=quota.usage||{};
+const limit=quota.effective_limit||{};
+grid.appendChild(detailItem("User",user.email||user.id||"n/a"));
+grid.appendChild(detailItem("Tier",user.tier||"n/a"));
+grid.appendChild(detailItem("Status",user.status||"n/a"));
+grid.appendChild(detailItem("Storage",quota.usage?bytesValue(usage.total_bytes||0)+" / "+bytesValue(limit.storage_limit_bytes||0):"n/a"));
+grid.appendChild(detailItem("Devices",numberValue((context.devices||[]).length)));
+grid.appendChild(detailItem("Erasure jobs",numberValue((context.erasure_jobs||[]).length)));
+grid.appendChild(detailItem("Account changes",numberValue((context.account_changes||[]).length)));
+grid.appendChild(detailItem("Timeline events",context.incident_timeline?numberValue(context.incident_timeline.total):"0"));
+}
+
+function detailItem(label,value){
+const item=document.createElement("div");
+item.className="detail-item";
+const span=document.createElement("span");
+span.textContent=label;
+const strong=document.createElement("strong");
+strong.textContent=value===null||value===undefined||value===""?"n/a":String(value);
+item.appendChild(span);
+item.appendChild(strong);
+return item;
+}
+
+function renderSupportTimelineActions(actions){
+const tbody=document.getElementById("support-timeline-action-rows");
+if(!tbody){return;}
+tbody.textContent="";
+if(!actions.length){
+emptyRow(tbody,4,"no recent actions");
+return;
+}
+for(const action of actions){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(dateValue(action.created_at)));
+tr.appendChild(makeCell(action.action,"mono"));
+tr.appendChild(makeCell(action.category||"n/a"));
+tr.appendChild(makeCell((action.target_type||"n/a")+" / "+(action.target_id||"n/a"),"mono"));
+tbody.appendChild(tr);
+}
+}
+
+function renderSupportTimelineJobs(jobs){
+const tbody=document.getElementById("support-timeline-job-rows");
+if(!tbody){return;}
+tbody.textContent="";
+if(!jobs.length){
+emptyRow(tbody,4,"no job status");
+return;
+}
+for(const job of jobs){
+const tr=document.createElement("tr");
+tr.appendChild(makeCell(dateValue(job.updated_at)));
+tr.appendChild(makeCell(job.name,"mono"));
+tr.appendChild(makeCell(job.status||"n/a"));
+tr.appendChild(makeCell(job.detail||JSON.stringify(job.summary||{}),"mono json-cell"));
+tbody.appendChild(tr);
+}
+}
+
 async function loadSecurity(){
 const response=await requestAdmin(apiPrefix+"/admin/security/stats");
 renderSecurity(response.body||{});
@@ -636,6 +735,7 @@ setBanner("","");
 const tasks=[
 ["build info",loadBuildInfo],
 ["overview",loadOverview],
+["timeline lookup",loadSupportTimelineLookup],
 ["settings",loadSettings],
 ["audit logs",loadAuditLogs],
 ["security stats",loadSecurity],
@@ -663,6 +763,12 @@ setBanner(failures.join("; "),"warn");
 
 document.getElementById("refresh-all").addEventListener("click",loadAll);
 document.getElementById("refresh-overview").addEventListener("click",function(){loadOverview().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("support-timeline-form").addEventListener("submit",function(event){event.preventDefault();loadSupportTimelineLookup().catch(function(error){writeJSON(document.getElementById("support-timeline-json"),{error:error.message,body:error.body||{}});setBanner(error.message,"err");});});
+document.getElementById("refresh-support-timeline").addEventListener("click",function(){loadSupportTimelineLookup().catch(function(error){writeJSON(document.getElementById("support-timeline-json"),{error:error.message,body:error.body||{}});setBanner(error.message,"err");});});
+document.getElementById("clear-support-timeline").addEventListener("click",function(){
+for(const input of document.querySelectorAll("#support-timeline-form input")){input.value=input.name==="limit"?"10":"";}
+renderSupportTimelineLookup(null);
+});
 document.getElementById("refresh-settings").addEventListener("click",function(){loadSettings().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-ops").addEventListener("click",function(){loadOps().catch(function(error){setBanner(error.message,"err");});});

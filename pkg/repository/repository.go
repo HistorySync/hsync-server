@@ -18,6 +18,21 @@ import (
 	"github.com/historysync/hsync-server/pkg/model"
 )
 
+type PGXPoolConfig struct {
+	MaxConns          int32
+	MinConns          int32
+	MaxConnLifetime   time.Duration
+	MaxConnIdleTime   time.Duration
+	HealthCheckPeriod time.Duration
+}
+
+func DefaultPGXPoolConfig() PGXPoolConfig {
+	return PGXPoolConfig{
+		MaxConns: 20,
+		MinConns: 2,
+	}
+}
+
 // Repos aggregates all repository instances.
 type Repos struct {
 	Users              *UserRepo
@@ -68,12 +83,28 @@ func New(pgPool *pgxpool.Pool, redisClient *redis.Client) *Repos {
 
 // NewPGXPool creates a PostgreSQL connection pool.
 func NewPGXPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
+	return NewPGXPoolWithConfig(ctx, databaseURL, DefaultPGXPoolConfig())
+}
+
+// NewPGXPoolWithConfig creates a PostgreSQL connection pool with configurable
+// pool sizing and lifecycle settings.
+func NewPGXPoolWithConfig(ctx context.Context, databaseURL string, poolConfig PGXPoolConfig) (*pgxpool.Pool, error) {
 	config, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
-	config.MaxConns = 20
-	config.MinConns = 2
+	poolConfig = normalizePGXPoolConfig(poolConfig)
+	config.MaxConns = poolConfig.MaxConns
+	config.MinConns = poolConfig.MinConns
+	if poolConfig.MaxConnLifetime > 0 {
+		config.MaxConnLifetime = poolConfig.MaxConnLifetime
+	}
+	if poolConfig.MaxConnIdleTime > 0 {
+		config.MaxConnIdleTime = poolConfig.MaxConnIdleTime
+	}
+	if poolConfig.HealthCheckPeriod > 0 {
+		config.HealthCheckPeriod = poolConfig.HealthCheckPeriod
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
@@ -86,6 +117,20 @@ func NewPGXPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) 
 	}
 
 	return pool, nil
+}
+
+func normalizePGXPoolConfig(poolConfig PGXPoolConfig) PGXPoolConfig {
+	defaults := DefaultPGXPoolConfig()
+	if poolConfig.MaxConns <= 0 {
+		poolConfig.MaxConns = defaults.MaxConns
+	}
+	if poolConfig.MinConns < 0 {
+		poolConfig.MinConns = defaults.MinConns
+	}
+	if poolConfig.MinConns > poolConfig.MaxConns {
+		poolConfig.MinConns = poolConfig.MaxConns
+	}
+	return poolConfig
 }
 
 // NewRedisClient creates a Redis client and verifies connectivity.

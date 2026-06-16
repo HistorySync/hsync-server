@@ -93,7 +93,13 @@ func migrateStatus(args []string, forceHuman bool) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := repository.NewPGXPool(ctx, cfg.DatabaseURL)
+	pool, err := repository.NewPGXPoolWithConfig(ctx, cfg.DatabaseURL, repository.PGXPoolConfig{
+		MaxConns:          cfg.DatabasePoolMaxConns,
+		MinConns:          cfg.DatabasePoolMinConns,
+		MaxConnLifetime:   cfg.DatabasePoolMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DatabasePoolMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DatabasePoolHealthCheckPeriod,
+	})
 	if err != nil {
 		log.Error().Err(err).Msg("failed to connect to postgresql")
 		return 1
@@ -131,7 +137,13 @@ func migrateUpOrDown(up bool, n int) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	pool, err := repository.NewPGXPool(ctx, cfg.DatabaseURL)
+	pool, err := repository.NewPGXPoolWithConfig(ctx, cfg.DatabaseURL, repository.PGXPoolConfig{
+		MaxConns:          cfg.DatabasePoolMaxConns,
+		MinConns:          cfg.DatabasePoolMinConns,
+		MaxConnLifetime:   cfg.DatabasePoolMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DatabasePoolMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DatabasePoolHealthCheckPeriod,
+	})
 	if err != nil {
 		log.Error().Err(err).Msg("failed to connect to postgresql")
 		return 1

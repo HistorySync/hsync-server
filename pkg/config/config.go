@@ -7,8 +7,8 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"fmt"
-	"os"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -31,7 +31,12 @@ type Config struct {
 	MetricsAllowedCIDRs []string `mapstructure:"metrics_allowed_cidrs"`
 
 	// Database
-	DatabaseURL string `mapstructure:"database_url"`
+	DatabaseURL                   string        `mapstructure:"database_url"`
+	DatabasePoolMaxConns          int32         `mapstructure:"database_pool_max_conns"`
+	DatabasePoolMinConns          int32         `mapstructure:"database_pool_min_conns"`
+	DatabasePoolMaxConnLifetime   time.Duration `mapstructure:"database_pool_max_conn_lifetime"`
+	DatabasePoolMaxConnIdleTime   time.Duration `mapstructure:"database_pool_max_conn_idle_time"`
+	DatabasePoolHealthCheckPeriod time.Duration `mapstructure:"database_pool_health_check_period"`
 
 	// Redis
 	RedisURL string `mapstructure:"redis_url"`
@@ -145,6 +150,8 @@ func DefaultConfig() *Config {
 			"192.168.0.0/16",
 		},
 		DatabaseURL:                        "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable",
+		DatabasePoolMaxConns:               20,
+		DatabasePoolMinConns:               2,
 		RedisURL:                           "redis://localhost:6379/0",
 		RateLimitFailMode:                  "fail_open",
 		RateLimitPublicAuthFailMode:        "fail_open",
@@ -272,6 +279,11 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("metrics_path", cfg.MetricsPath)
 	v.SetDefault("metrics_allowed_cidrs", cfg.MetricsAllowedCIDRs)
 	v.SetDefault("database_url", cfg.DatabaseURL)
+	v.SetDefault("database_pool_max_conns", cfg.DatabasePoolMaxConns)
+	v.SetDefault("database_pool_min_conns", cfg.DatabasePoolMinConns)
+	v.SetDefault("database_pool_max_conn_lifetime", cfg.DatabasePoolMaxConnLifetime)
+	v.SetDefault("database_pool_max_conn_idle_time", cfg.DatabasePoolMaxConnIdleTime)
+	v.SetDefault("database_pool_health_check_period", cfg.DatabasePoolHealthCheckPeriod)
 	v.SetDefault("redis_url", cfg.RedisURL)
 	v.SetDefault("rate_limit_fail_mode", cfg.RateLimitFailMode)
 	v.SetDefault("rate_limit_public_auth_fail_mode", cfg.RateLimitPublicAuthFailMode)
@@ -383,6 +395,24 @@ func (c *Config) Validate() error {
 
 	if c.DatabaseURL == "" {
 		errs = append(errs, "database_url is required")
+	}
+	if c.DatabasePoolMaxConns <= 0 {
+		errs = append(errs, "database_pool_max_conns must be greater than 0")
+	}
+	if c.DatabasePoolMinConns < 0 {
+		errs = append(errs, "database_pool_min_conns must be zero or greater")
+	}
+	if c.DatabasePoolMaxConns > 0 && c.DatabasePoolMinConns > c.DatabasePoolMaxConns {
+		errs = append(errs, "database_pool_min_conns must be less than or equal to database_pool_max_conns")
+	}
+	if c.DatabasePoolMaxConnLifetime < 0 {
+		errs = append(errs, "database_pool_max_conn_lifetime must be zero or greater")
+	}
+	if c.DatabasePoolMaxConnIdleTime < 0 {
+		errs = append(errs, "database_pool_max_conn_idle_time must be zero or greater")
+	}
+	if c.DatabasePoolHealthCheckPeriod < 0 {
+		errs = append(errs, "database_pool_health_check_period must be zero or greater")
 	}
 
 	if c.S3Bucket == "" {

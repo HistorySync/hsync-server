@@ -92,6 +92,9 @@ review:
   plaintext.
 - Audit metadata is not exported as a raw sensitive-value dump; values matching
   the redaction policy are masked.
+- PostgreSQL pool settings and a safe runtime snapshot are included so support
+  can see whether the deployment is near pool saturation without seeing the raw
+  DSN password or other secret material.
 
 The bundle still reveals operational posture, dependency health, feature
 enablement, counts, and timing. Review it before forwarding outside the
@@ -132,7 +135,8 @@ CE preflight checks cover:
 - JWT signing key and `security_secret` decoding.
 - `admin_key` presence, obvious weak-format warnings, and admin route exposure
   guidance.
-- PostgreSQL connectivity and Redis optional degraded mode.
+- PostgreSQL connectivity, configured pool sizing/lifecycle values, and a safe
+  runtime pool snapshot alongside Redis optional degraded mode.
 - Rate-limit fixed-window mode, limiter error fail mode, and Redis-unavailable
   fallback risk.
 - CE migration readiness: `schema_migrations` consistency with embedded
@@ -553,6 +557,15 @@ The route only exists when `metrics_enabled=true`.
 - `hsync_rate_limit_redis_fallback_active`
 - `hsync_websocket_connections_active`
 - `hsync_websocket_upgrade_rejections_total`
+- `hsync_db_pool_acquired_connections`
+- `hsync_db_pool_idle_connections`
+- `hsync_db_pool_total_connections`
+- `hsync_db_pool_max_connections`
+- `hsync_db_pool_constructing_connections`
+- `hsync_db_pool_acquire_total`
+- `hsync_db_pool_canceled_acquire_total`
+- `hsync_db_pool_empty_acquire_total`
+- `hsync_db_pool_empty_acquire_wait_seconds_total`
 
 ### Common states
 
@@ -579,6 +592,10 @@ The route only exists when `metrics_enabled=true`.
 3. Check `/readyz` for the same dependency family.
 4. Check scheduler metrics if the symptom involves periodic work.
 5. Check notification delivery metrics if the symptom involves outbox failures.
+6. For PostgreSQL pressure, compare `hsync_db_pool_acquired_connections` and
+   `hsync_db_pool_total_connections` against `hsync_db_pool_max_connections`,
+   then look for growth in `hsync_db_pool_empty_acquire_total` or
+   `hsync_db_pool_empty_acquire_wait_seconds_total`.
 
 ### Alert coverage
 

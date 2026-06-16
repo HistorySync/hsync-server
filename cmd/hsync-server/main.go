@@ -64,11 +64,19 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	pgPool, err := repository.NewPGXPool(ctx, cfg.DatabaseURL)
+	pgPool, err := repository.NewPGXPoolWithConfig(ctx, cfg.DatabaseURL, repository.PGXPoolConfig{
+		MaxConns:          cfg.DatabasePoolMaxConns,
+		MinConns:          cfg.DatabasePoolMinConns,
+		MaxConnLifetime:   cfg.DatabasePoolMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DatabasePoolMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DatabasePoolHealthCheckPeriod,
+	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to connect to postgresql")
 	}
 	defer pgPool.Close()
+	observability.BindPGXPool(pgPool)
+	defer observability.BindPGXPool(nil)
 	log.Info().Msg("connected to PostgreSQL")
 
 	// Connect to Redis
@@ -185,7 +193,20 @@ func main() {
 		Config:         cfg,
 		DatabasePing:   databasePing,
 		RedisPing:      redisPing,
-		Notifier:       notifier,
+		DatabasePoolStats: func() observability.DatabasePoolStatsSnapshot {
+			return observability.DatabasePoolStatsSnapshot{
+				AcquiredConns:           pgPool.Stat().AcquiredConns(),
+				CanceledAcquireCount:    pgPool.Stat().CanceledAcquireCount(),
+				ConstructingConns:       pgPool.Stat().ConstructingConns(),
+				EmptyAcquireCount:       pgPool.Stat().EmptyAcquireCount(),
+				EmptyAcquireWaitSeconds: pgPool.Stat().EmptyAcquireWaitTime().Seconds(),
+				IdleConns:               pgPool.Stat().IdleConns(),
+				MaxConns:                pgPool.Stat().MaxConns(),
+				TotalConns:              pgPool.Stat().TotalConns(),
+				AcquireCount:            pgPool.Stat().AcquireCount(),
+			}
+		},
+		Notifier: notifier,
 		Notification: service.NotificationConfig{
 			Enabled:            cfg.NotificationsEnabled,
 			AppName:            cfg.WebAppName,

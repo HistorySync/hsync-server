@@ -17,6 +17,7 @@ import (
 	"github.com/historysync/hsync-server/pkg/buildinfo"
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/repository"
 	"github.com/historysync/hsync-server/pkg/storage"
@@ -74,36 +75,38 @@ type OpsAlertConfig struct {
 // surface. The active probes are intentionally dependency-injected so tests and
 // Enterprise wrappers can provide narrow fakes.
 type OpsDeps struct {
-	Config           *config.Config
-	BuildInfo        buildinfo.Info
-	Repos            *repository.Repos
-	BlobStore        storage.BlobStorage
-	DatabasePing     PingFunc
-	RedisPing        PingFunc
-	BundleMetadata   opsBundleMetadataStore
-	SnapshotMetadata opsSnapshotMetadataStore
-	History          opsHistoryStore
-	Alert            OpsAlertConfig
-	Notifier         provider.Notifier
-	Webhook          provider.WebhookProvider
-	Now              func() time.Time
+	Config            *config.Config
+	BuildInfo         buildinfo.Info
+	Repos             *repository.Repos
+	BlobStore         storage.BlobStorage
+	DatabasePing      PingFunc
+	RedisPing         PingFunc
+	DatabasePoolStats func() observability.DatabasePoolStatsSnapshot
+	BundleMetadata    opsBundleMetadataStore
+	SnapshotMetadata  opsSnapshotMetadataStore
+	History           opsHistoryStore
+	Alert             OpsAlertConfig
+	Notifier          provider.Notifier
+	Webhook           provider.WebhookProvider
+	Now               func() time.Time
 }
 
 // OpsService builds operator-facing summaries and dependency probes.
 type OpsService struct {
-	cfg          *config.Config
-	buildInfo    buildinfo.Info
-	repos        *repository.Repos
-	blobStore    storage.BlobStorage
-	databasePing PingFunc
-	redisPing    PingFunc
-	bundles      opsBundleMetadataStore
-	snapshots    opsSnapshotMetadataStore
-	history      opsHistoryStore
-	alert        OpsAlertConfig
-	notifier     provider.Notifier
-	webhook      provider.WebhookProvider
-	now          func() time.Time
+	cfg               *config.Config
+	buildInfo         buildinfo.Info
+	repos             *repository.Repos
+	blobStore         storage.BlobStorage
+	databasePing      PingFunc
+	redisPing         PingFunc
+	databasePoolStats func() observability.DatabasePoolStatsSnapshot
+	bundles           opsBundleMetadataStore
+	snapshots         opsSnapshotMetadataStore
+	history           opsHistoryStore
+	alert             OpsAlertConfig
+	notifier          provider.Notifier
+	webhook           provider.WebhookProvider
+	now               func() time.Time
 
 	mu              sync.Mutex
 	lastDependency  *OpsDependencyReport
@@ -129,19 +132,20 @@ func NewOpsService(deps OpsDeps) *OpsService {
 		}
 	}
 	return &OpsService{
-		cfg:          deps.Config,
-		buildInfo:    normalizeBuildInfo(deps.BuildInfo),
-		repos:        deps.Repos,
-		blobStore:    deps.BlobStore,
-		databasePing: deps.DatabasePing,
-		redisPing:    deps.RedisPing,
-		bundles:      bundles,
-		snapshots:    snapshots,
-		history:      deps.History,
-		alert:        deps.Alert,
-		notifier:     deps.Notifier,
-		webhook:      deps.Webhook,
-		now:          now,
+		cfg:               deps.Config,
+		buildInfo:         normalizeBuildInfo(deps.BuildInfo),
+		repos:             deps.Repos,
+		blobStore:         deps.BlobStore,
+		databasePing:      deps.DatabasePing,
+		redisPing:         deps.RedisPing,
+		databasePoolStats: deps.DatabasePoolStats,
+		bundles:           bundles,
+		snapshots:         snapshots,
+		history:           deps.History,
+		alert:             deps.Alert,
+		notifier:          deps.Notifier,
+		webhook:           deps.Webhook,
+		now:               now,
 	}
 }
 
@@ -766,7 +770,7 @@ func (s *OpsService) configSummary() OpsConfigSummary {
 		}
 	}
 
-	return OpsConfigSummary{
+	summary := OpsConfigSummary{
 		Server: map[string]any{
 			"listen_addr":       cfg.ListenAddr,
 			"public_url":        cfg.PublicURL,
@@ -777,7 +781,12 @@ func (s *OpsService) configSummary() OpsConfigSummary {
 			"metrics_path":      cfg.MetricsPath,
 		},
 		Database: map[string]any{
-			"database_url": redactConnectionURL(cfg.DatabaseURL),
+			"database_url":                      redactConnectionURL(cfg.DatabaseURL),
+			"database_pool_max_conns":           cfg.DatabasePoolMaxConns,
+			"database_pool_min_conns":           cfg.DatabasePoolMinConns,
+			"database_pool_max_conn_lifetime":   durationSummary(cfg.DatabasePoolMaxConnLifetime),
+			"database_pool_max_conn_idle_time":  durationSummary(cfg.DatabasePoolMaxConnIdleTime),
+			"database_pool_health_check_period": durationSummary(cfg.DatabasePoolHealthCheckPeriod),
 		},
 		Redis: map[string]any{
 			"redis_url": redactConnectionURL(cfg.RedisURL),
@@ -837,6 +846,30 @@ func (s *OpsService) configSummary() OpsConfigSummary {
 			"ops_alert_webhook_secret":  maskSecret(cfg.OpsAlertWebhookSecret),
 		},
 	}
+
+	if s != nil && s.databasePoolStats != nil {
+		stats := s.databasePoolStats()
+		summary.Database["database_pool_runtime"] = map[string]any{
+			"acquired_conns":             stats.AcquiredConns,
+			"idle_conns":                 stats.IdleConns,
+			"total_conns":                stats.TotalConns,
+			"max_conns":                  stats.MaxConns,
+			"constructing_conns":         stats.ConstructingConns,
+			"acquire_count":              stats.AcquireCount,
+			"empty_acquire_count":        stats.EmptyAcquireCount,
+			"canceled_acquire_count":     stats.CanceledAcquireCount,
+			"empty_acquire_wait_seconds": stats.EmptyAcquireWaitSeconds,
+		}
+	}
+
+	return summary
+}
+
+func durationSummary(value time.Duration) string {
+	if value <= 0 {
+		return "pgx_default"
+	}
+	return value.String()
 }
 
 func (s *OpsService) backupGuidance(last *OpsDependencyReport) OpsBackupGuidance {

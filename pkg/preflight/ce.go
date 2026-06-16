@@ -200,7 +200,13 @@ func checkPostgres(ctx context.Context, report *Report, cfg *config.Config) (*pg
 		})
 		return nil, false
 	}
-	pool, err := repository.NewPGXPool(ctx, cfg.DatabaseURL)
+	pool, err := repository.NewPGXPoolWithConfig(ctx, cfg.DatabaseURL, repository.PGXPoolConfig{
+		MaxConns:          cfg.DatabasePoolMaxConns,
+		MinConns:          cfg.DatabasePoolMinConns,
+		MaxConnLifetime:   cfg.DatabasePoolMaxConnLifetime,
+		MaxConnIdleTime:   cfg.DatabasePoolMaxConnIdleTime,
+		HealthCheckPeriod: cfg.DatabasePoolHealthCheckPeriod,
+	})
 	if err != nil {
 		report.Add(Check{
 			ID:       "postgres",
@@ -209,8 +215,13 @@ func checkPostgres(ctx context.Context, report *Report, cfg *config.Config) (*pg
 			Message:  "PostgreSQL is configured but unreachable.",
 			Action:   "Verify the DSN, network path, credentials, TLS settings, and that migrations have run.",
 			Details: map[string]any{
-				"database_url": RedactURL(cfg.DatabaseURL),
-				"error":        err.Error(),
+				"database_url":                      RedactURL(cfg.DatabaseURL),
+				"database_pool_max_conns":           cfg.DatabasePoolMaxConns,
+				"database_pool_min_conns":           cfg.DatabasePoolMinConns,
+				"database_pool_max_conn_lifetime":   doctorDurationValue(cfg.DatabasePoolMaxConnLifetime),
+				"database_pool_max_conn_idle_time":  doctorDurationValue(cfg.DatabasePoolMaxConnIdleTime),
+				"database_pool_health_check_period": doctorDurationValue(cfg.DatabasePoolHealthCheckPeriod),
+				"error":                             err.Error(),
 			},
 		})
 		return nil, false
@@ -220,9 +231,34 @@ func checkPostgres(ctx context.Context, report *Report, cfg *config.Config) (*pg
 		Scope:    "database",
 		Severity: SeverityOK,
 		Message:  "PostgreSQL connection succeeded.",
-		Details:  map[string]any{"database_url": RedactURL(cfg.DatabaseURL)},
+		Details: map[string]any{
+			"database_url":                      RedactURL(cfg.DatabaseURL),
+			"database_pool_max_conns":           cfg.DatabasePoolMaxConns,
+			"database_pool_min_conns":           cfg.DatabasePoolMinConns,
+			"database_pool_max_conn_lifetime":   doctorDurationValue(cfg.DatabasePoolMaxConnLifetime),
+			"database_pool_max_conn_idle_time":  doctorDurationValue(cfg.DatabasePoolMaxConnIdleTime),
+			"database_pool_health_check_period": doctorDurationValue(cfg.DatabasePoolHealthCheckPeriod),
+			"pool_runtime": map[string]any{
+				"acquired_conns":             pool.Stat().AcquiredConns(),
+				"idle_conns":                 pool.Stat().IdleConns(),
+				"total_conns":                pool.Stat().TotalConns(),
+				"max_conns":                  pool.Stat().MaxConns(),
+				"constructing_conns":         pool.Stat().ConstructingConns(),
+				"acquire_count":              pool.Stat().AcquireCount(),
+				"empty_acquire_count":        pool.Stat().EmptyAcquireCount(),
+				"canceled_acquire_count":     pool.Stat().CanceledAcquireCount(),
+				"empty_acquire_wait_seconds": pool.Stat().EmptyAcquireWaitTime().Seconds(),
+			},
+		},
 	})
 	return pool, true
+}
+
+func doctorDurationValue(value time.Duration) string {
+	if value <= 0 {
+		return "pgx_default"
+	}
+	return value.String()
 }
 
 func checkRedis(ctx context.Context, report *Report, cfg *config.Config) {

@@ -9,6 +9,8 @@ stripe_disabled: true
 # database_url, s3_*, jwt_private_key, and security_secret should come from
 # HSYNC_* env vars. CE billing is a no-op extension seam; commercial billing
 # secrets are configured by HistorySync Enterprise, not this CE config.
+# PostgreSQL pool sizing is also configurable through HSYNC_DATABASE_POOL_* env
+# vars. Defaults stay at max=20 and min=2 when the pool settings are omitted.
 
 # Background maintenance runs by default (leader-elected). Retention purge is
 # opt-in and destructive; enable it only after reviewing the dry-run logs:

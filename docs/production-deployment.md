@@ -103,6 +103,48 @@ curl -fsS https://sync.example.com/healthz
 curl -fsS https://sync.example.com/readyz
 ```
 
+## PostgreSQL Pool Tuning
+
+CE now exposes the PostgreSQL pool sizing through normal config/env loading so
+operators do not stay pinned to the historical hard-coded `max=20` / `min=2`
+across every deployment:
+
+- `database_pool_max_conns`
+- `database_pool_min_conns`
+- `database_pool_max_conn_lifetime`
+- `database_pool_max_conn_idle_time`
+- `database_pool_health_check_period`
+
+The defaults remain compatible with previous behavior when these settings are
+omitted. Keep the duration settings at `0` to preserve pgxpool's own defaults.
+For compose/env based deployments, the matching variables are:
+
+- `HSYNC_DATABASE_POOL_MAX_CONNS`
+- `HSYNC_DATABASE_POOL_MIN_CONNS`
+- `HSYNC_DATABASE_POOL_MAX_CONN_LIFETIME`
+- `HSYNC_DATABASE_POOL_MAX_CONN_IDLE_TIME`
+- `HSYNC_DATABASE_POOL_HEALTH_CHECK_PERIOD`
+
+## Watching Pool Pressure
+
+When `metrics_enabled=true`, `/metrics` now exposes low-cardinality database
+pool series for quick saturation checks:
+
+- `hsync_db_pool_acquired_connections`
+- `hsync_db_pool_idle_connections`
+- `hsync_db_pool_total_connections`
+- `hsync_db_pool_max_connections`
+- `hsync_db_pool_constructing_connections`
+- `hsync_db_pool_acquire_total`
+- `hsync_db_pool_canceled_acquire_total`
+- `hsync_db_pool_empty_acquire_total`
+- `hsync_db_pool_empty_acquire_wait_seconds_total`
+
+The redacted `doctor` output, ops summary, and support bundle also include the
+configured pool values plus a safe runtime snapshot so operators can confirm
+whether PostgreSQL is close to the configured ceiling without exposing the raw
+DSN, password, or host secrets.
+
 ## Reverse Proxy
 
 Use either sample as a starting point:

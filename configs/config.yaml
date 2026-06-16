@@ -28,6 +28,13 @@ log_level: "info"
 
 # PostgreSQL connection
 database_url: "postgres://hsync:hsync@localhost:5432/hsync?sslmode=disable"
+# Connection pool sizing defaults match the historical hard-coded behavior.
+# Set lifetime/idle/health-check durations to "0" to keep pgxpool defaults.
+database_pool_max_conns: 20
+database_pool_min_conns: 2
+database_pool_max_conn_lifetime: "0"
+database_pool_max_conn_idle_time: "0"
+database_pool_health_check_period: "0"
 
 # Redis connection. When Redis is unavailable, rate limiting follows the
 # rate_limit_redis_unavailable_fallback setting below.

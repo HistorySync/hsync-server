@@ -289,7 +289,13 @@ func runtimeFor(ctx context.Context, opts Options) (*Runtime, error) {
 	if opts.Config == nil {
 		return nil, errors.New("config is not loaded")
 	}
-	pool, err := repository.NewPGXPool(ctx, opts.Config.DatabaseURL)
+	pool, err := repository.NewPGXPoolWithConfig(ctx, opts.Config.DatabaseURL, repository.PGXPoolConfig{
+		MaxConns:          opts.Config.DatabasePoolMaxConns,
+		MinConns:          opts.Config.DatabasePoolMinConns,
+		MaxConnLifetime:   opts.Config.DatabasePoolMaxConnLifetime,
+		MaxConnIdleTime:   opts.Config.DatabasePoolMaxConnIdleTime,
+		HealthCheckPeriod: opts.Config.DatabasePoolHealthCheckPeriod,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("connect postgresql: %w", err)
 	}

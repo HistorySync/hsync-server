@@ -65,6 +65,9 @@ func TestGenerateSupportBundleRedactsConfigAndHonorsSince(t *testing.T) {
 	if !strings.Contains(text, `"since":"2026-06-08T00:00:00Z"`) {
 		t.Fatalf("bundle missing since: %s", text)
 	}
+	if !strings.Contains(text, `"database_pool_max_conns":20`) || !strings.Contains(text, `"database_pool_min_conns":2`) {
+		t.Fatalf("bundle missing database pool summary: %s", text)
+	}
 	if !strings.Contains(text, `"includes_blob_contents":false`) {
 		t.Fatalf("bundle missing safe boundary: %s", text)
 	}

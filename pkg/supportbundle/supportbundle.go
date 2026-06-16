@@ -209,7 +209,12 @@ func summarizeConfigPresence(cfg *config.Config) ConfigPresence {
 			"metrics_path_set":     present(cfg.MetricsPath),
 		},
 		Database: map[string]any{
-			"database_url": present(cfg.DatabaseURL),
+			"database_url":                      present(cfg.DatabaseURL),
+			"database_pool_max_conns":           cfg.DatabasePoolMaxConns,
+			"database_pool_min_conns":           cfg.DatabasePoolMinConns,
+			"database_pool_max_conn_lifetime":   durationPresence(cfg.DatabasePoolMaxConnLifetime),
+			"database_pool_max_conn_idle_time":  durationPresence(cfg.DatabasePoolMaxConnIdleTime),
+			"database_pool_health_check_period": durationPresence(cfg.DatabasePoolHealthCheckPeriod),
 		},
 		Redis: map[string]any{
 			"redis_url": present(cfg.RedisURL),
@@ -260,4 +265,11 @@ func present(value string) string {
 		return "missing"
 	}
 	return "present"
+}
+
+func durationPresence(value time.Duration) string {
+	if value <= 0 {
+		return "pgx_default"
+	}
+	return value.String()
 }

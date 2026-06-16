@@ -87,20 +87,21 @@ var (
 
 // Deps holds all dependencies needed by the service layer.
 type Deps struct {
-	Repos          *repository.Repos
-	TokenManager   *auth.TokenManager
-	BlobStore      storage.BlobStorage
-	StripeKey      string
-	StripeWebhook  string
-	StripeDisabled bool
-	Reservation    UsageReservationHook
-	Notifier       provider.Notifier
-	Webhook        provider.WebhookProvider
-	Notification   NotificationConfig
-	SecuritySecret string
-	Config         *config.Config
-	DatabasePing   PingFunc
-	RedisPing      PingFunc
+	Repos             *repository.Repos
+	TokenManager      *auth.TokenManager
+	BlobStore         storage.BlobStorage
+	StripeKey         string
+	StripeWebhook     string
+	StripeDisabled    bool
+	Reservation       UsageReservationHook
+	Notifier          provider.Notifier
+	Webhook           provider.WebhookProvider
+	Notification      NotificationConfig
+	SecuritySecret    string
+	Config            *config.Config
+	DatabasePing      PingFunc
+	RedisPing         PingFunc
+	DatabasePoolStats func() observability.DatabasePoolStatsSnapshot
 }
 
 // ReservationRequest carries upload context for a storage reservation so the
@@ -194,25 +195,25 @@ func reservationCategory(req ReservationRequest) string {
 
 // Services aggregates all business service instances.
 type Services struct {
-	Repos         *repository.Repos
-	Account       *AccountService
-	Auth          *AuthService
-	Bundle        *BundleService
-	Snapshot      *SnapshotService
-	Quota         *QuotaService
-	Billing       *BillingService
-	Notification  *NotificationService
-	Retention     *RetentionService
-	History       *OperationalHistoryRetentionService
-	TwoFactor     *TwoFactorService
-	Passkey       *PasskeyService
-	Audit         *AuditService
-	SecurityStats *SecurityStatsService
+	Repos            *repository.Repos
+	Account          *AccountService
+	Auth             *AuthService
+	Bundle           *BundleService
+	Snapshot         *SnapshotService
+	Quota            *QuotaService
+	Billing          *BillingService
+	Notification     *NotificationService
+	Retention        *RetentionService
+	History          *OperationalHistoryRetentionService
+	TwoFactor        *TwoFactorService
+	Passkey          *PasskeyService
+	Audit            *AuditService
+	SecurityStats    *SecurityStatsService
 	SecurityTimeline *SecurityTimelineService
-	Settings      *SettingsService
-	Idempotency   *IdempotencyService
-	Ops           *OpsService
-	Support       *SupportContextService
+	Settings         *SettingsService
+	Idempotency      *IdempotencyService
+	Ops              *OpsService
+	Support          *SupportContextService
 }
 
 // New creates all service instances with their dependencies.
@@ -321,12 +322,13 @@ func New(deps Deps) *Services {
 		idempotencySvc = NewIdempotencyService(deps.Repos.Idempotency)
 	}
 	opsSvc := NewOpsService(OpsDeps{
-		Config:       deps.Config,
-		BuildInfo:    buildinfo.Current(),
-		Repos:        deps.Repos,
-		BlobStore:    deps.BlobStore,
-		DatabasePing: deps.DatabasePing,
-		RedisPing:    deps.RedisPing,
+		Config:            deps.Config,
+		BuildInfo:         buildinfo.Current(),
+		Repos:             deps.Repos,
+		BlobStore:         deps.BlobStore,
+		DatabasePing:      deps.DatabasePing,
+		RedisPing:         deps.RedisPing,
+		DatabasePoolStats: deps.DatabasePoolStats,
 		Alert: OpsAlertConfig{
 			Email:         opsAlertEmail(deps.Config),
 			WebhookURL:    opsAlertWebhookURL(deps.Config),
@@ -376,25 +378,25 @@ func New(deps Deps) *Services {
 	})
 
 	return &Services{
-		Repos:         deps.Repos,
-		Account:       accountSvc,
-		Auth:          authSvc,
-		Bundle:        bundleSvc,
-		Snapshot:      snapshotSvc,
-		Quota:         quotaSvc,
-		Billing:       billingSvc,
-		Notification:  notifSvc,
-		Retention:     retentionSvc,
-		History:       historySvc,
-		TwoFactor:     twoFactorSvc,
-		Passkey:       passkeySvc,
-		Audit:         auditSvc,
-		SecurityStats: securityStatsSvc,
+		Repos:            deps.Repos,
+		Account:          accountSvc,
+		Auth:             authSvc,
+		Bundle:           bundleSvc,
+		Snapshot:         snapshotSvc,
+		Quota:            quotaSvc,
+		Billing:          billingSvc,
+		Notification:     notifSvc,
+		Retention:        retentionSvc,
+		History:          historySvc,
+		TwoFactor:        twoFactorSvc,
+		Passkey:          passkeySvc,
+		Audit:            auditSvc,
+		SecurityStats:    securityStatsSvc,
 		SecurityTimeline: securityTimelineSvc,
-		Settings:      settingsSvc,
-		Idempotency:   idempotencySvc,
-		Ops:           opsSvc,
-		Support:       supportSvc,
+		Settings:         settingsSvc,
+		Idempotency:      idempotencySvc,
+		Ops:              opsSvc,
+		Support:          supportSvc,
 	}
 }
 

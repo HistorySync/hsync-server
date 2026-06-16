@@ -15,6 +15,7 @@ import (
 
 	"github.com/historysync/hsync-server/pkg/config"
 	"github.com/historysync/hsync-server/pkg/model"
+	"github.com/historysync/hsync-server/pkg/observability"
 	"github.com/historysync/hsync-server/pkg/provider"
 	"github.com/historysync/hsync-server/pkg/storage"
 )
@@ -262,51 +263,71 @@ func (p *captureOpsWebhookProvider) Send(_ context.Context, webhookURL, secret s
 
 func testOpsConfig() *config.Config {
 	return &config.Config{
-		ListenAddr:                 ":8080",
-		LogLevel:                   zerolog.InfoLevel,
-		WebEnabled:                 true,
-		WebConsolePath:             "/console",
-		WebSupportEmail:            "ops@example.com",
-		PublicURL:                  "https://history.example",
-		MetricsEnabled:             true,
-		MetricsPath:                "/metrics",
-		DatabaseURL:                "postgres://hsync:db-secret@example-db:5432/hsync?sslmode=disable",
-		RedisURL:                   "redis://:redis-secret@example-redis:6379/0",
-		S3Endpoint:                 "minio.example:9000",
-		S3Bucket:                   "hsync-bundles",
-		S3UseSSL:                   true,
-		S3AccessKey:                "access-secret",
-		S3SecretKey:                "storage-secret",
-		JWTPrivateKey:              "jwt-secret",
-		SecuritySecret:             "security-secret",
-		StripeSecretKey:            "stripe-secret",
-		StripeWebhookSecret:        "webhook-secret",
-		AdminKey:                   "admin-secret",
-		OIDCClientSecret:           "oidc-secret",
-		TurnstileSecret:            "turnstile-secret",
-		BackgroundTasksEnabled:     true,
-		QuotaReconcileInterval:     time.Hour,
-		RetentionCleanupInterval:   2 * time.Hour,
-		RetentionGracePeriod:       30 * 24 * time.Hour,
-		NotificationOutboxInterval: time.Minute,
-		NotificationsEnabled:       true,
-		QuotaWarningThreshold:      80,
-		QuotaExhaustedThreshold:    95,
-		EmailVerificationPath:      "/verify-email",
-		PasswordResetPath:          "/reset-password",
-		SMTPEnabled:                true,
-		SMTPServer:                 "smtp.example",
-		SMTPPort:                   587,
-		SMTPUsername:               "mailer",
-		SMTPPassword:               "smtp-secret",
-		SMTPFrom:                   "noreply@example.com",
-		SMTPFromName:               "HistorySync",
-		SMTPTLSMode:                "starttls",
+		ListenAddr:                    ":8080",
+		LogLevel:                      zerolog.InfoLevel,
+		WebEnabled:                    true,
+		WebConsolePath:                "/console",
+		WebSupportEmail:               "ops@example.com",
+		PublicURL:                     "https://history.example",
+		MetricsEnabled:                true,
+		MetricsPath:                   "/metrics",
+		DatabaseURL:                   "postgres://hsync:db-secret@example-db:5432/hsync?sslmode=disable",
+		DatabasePoolMaxConns:          48,
+		DatabasePoolMinConns:          6,
+		DatabasePoolMaxConnLifetime:   45 * time.Minute,
+		DatabasePoolMaxConnIdleTime:   15 * time.Minute,
+		DatabasePoolHealthCheckPeriod: 2 * time.Minute,
+		RedisURL:                      "redis://:redis-secret@example-redis:6379/0",
+		S3Endpoint:                    "minio.example:9000",
+		S3Bucket:                      "hsync-bundles",
+		S3UseSSL:                      true,
+		S3AccessKey:                   "access-secret",
+		S3SecretKey:                   "storage-secret",
+		JWTPrivateKey:                 "jwt-secret",
+		SecuritySecret:                "security-secret",
+		StripeSecretKey:               "stripe-secret",
+		StripeWebhookSecret:           "webhook-secret",
+		AdminKey:                      "admin-secret",
+		OIDCClientSecret:              "oidc-secret",
+		TurnstileSecret:               "turnstile-secret",
+		BackgroundTasksEnabled:        true,
+		QuotaReconcileInterval:        time.Hour,
+		RetentionCleanupInterval:      2 * time.Hour,
+		RetentionGracePeriod:          30 * 24 * time.Hour,
+		NotificationOutboxInterval:    time.Minute,
+		NotificationsEnabled:          true,
+		QuotaWarningThreshold:         80,
+		QuotaExhaustedThreshold:       95,
+		EmailVerificationPath:         "/verify-email",
+		PasswordResetPath:             "/reset-password",
+		SMTPEnabled:                   true,
+		SMTPServer:                    "smtp.example",
+		SMTPPort:                      587,
+		SMTPUsername:                  "mailer",
+		SMTPPassword:                  "smtp-secret",
+		SMTPFrom:                      "noreply@example.com",
+		SMTPFromName:                  "HistorySync",
+		SMTPTLSMode:                   "starttls",
 	}
 }
 
 func TestOpsSummaryMasksSensitiveConfig(t *testing.T) {
-	svc := NewOpsService(OpsDeps{Config: testOpsConfig()})
+	svc := NewOpsService(OpsDeps{
+		Config: testOpsConfig(),
+		DatabasePoolStats: func() observability.DatabasePoolStatsSnapshot {
+			return observability.DatabasePoolStatsSnapshot{
+				AcquiredConns:           4,
+				IdleConns:               12,
+				TotalConns:              16,
+				MaxConns:                48,
+				ConstructingConns:       1,
+				AcquireCount:            99,
+				EmptyAcquireCount:       3,
+				CanceledAcquireCount:    1,
+				EmptyAcquireWaitSeconds: 2.5,
+			}
+		},
+	})
 
 	summary := svc.Summary(context.Background())
 	body, err := json.Marshal(summary)
@@ -334,6 +355,12 @@ func TestOpsSummaryMasksSensitiveConfig(t *testing.T) {
 	}
 	if !strings.Contains(text, "postgres://hsync:redacted@example-db:5432/hsync") {
 		t.Fatalf("database URL was not usefully redacted: %s", text)
+	}
+	if !strings.Contains(text, `"database_pool_max_conns":48`) || !strings.Contains(text, `"database_pool_min_conns":6`) {
+		t.Fatalf("summary missing database pool config: %s", text)
+	}
+	if !strings.Contains(text, `"database_pool_runtime":{"acquire_count":99`) {
+		t.Fatalf("summary missing database pool runtime summary: %s", text)
 	}
 	if !strings.Contains(text, `"s3_bucket":"hsync-bundles"`) {
 		t.Fatalf("summary missing non-sensitive S3 bucket: %s", text)

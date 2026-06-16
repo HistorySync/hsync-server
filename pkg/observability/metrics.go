@@ -4,8 +4,10 @@ package observability
 
 import (
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -82,6 +84,54 @@ var (
 		Name: "hsync_rate_limit_redis_fallback_active",
 		Help: "Whether a Redis-unavailable rate-limit fallback mode is active in this process.",
 	}, []string{"mode"})
+
+	dbPoolStatsMu       sync.RWMutex
+	dbPoolStatsProvider = func() DatabasePoolStatsSnapshot { return DatabasePoolStatsSnapshot{} }
+
+	dbPoolAcquiredConns = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_acquired_connections",
+		Help: "Current database pool connections acquired by callers.",
+	}, func() float64 { return float64(currentDBPoolStats().AcquiredConns) })
+
+	dbPoolIdleConns = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_idle_connections",
+		Help: "Current idle database pool connections.",
+	}, func() float64 { return float64(currentDBPoolStats().IdleConns) })
+
+	dbPoolTotalConns = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_total_connections",
+		Help: "Current total database pool connections.",
+	}, func() float64 { return float64(currentDBPoolStats().TotalConns) })
+
+	dbPoolMaxConns = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_max_connections",
+		Help: "Configured maximum database pool connections.",
+	}, func() float64 { return float64(currentDBPoolStats().MaxConns) })
+
+	dbPoolConstructingConns = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_constructing_connections",
+		Help: "Current database pool connections being established.",
+	}, func() float64 { return float64(currentDBPoolStats().ConstructingConns) })
+
+	dbPoolAcquireCount = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_acquire_total",
+		Help: "Total database pool acquires observed by this process.",
+	}, func() float64 { return float64(currentDBPoolStats().AcquireCount) })
+
+	dbPoolCanceledAcquireCount = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_canceled_acquire_total",
+		Help: "Total canceled database pool acquires observed by this process.",
+	}, func() float64 { return float64(currentDBPoolStats().CanceledAcquireCount) })
+
+	dbPoolEmptyAcquireCount = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_empty_acquire_total",
+		Help: "Total database pool acquires that waited for a connection.",
+	}, func() float64 { return float64(currentDBPoolStats().EmptyAcquireCount) })
+
+	dbPoolEmptyAcquireWaitSeconds = prometheus.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "hsync_db_pool_empty_acquire_wait_seconds_total",
+		Help: "Total time spent waiting for database pool acquires when the pool was empty.",
+	}, func() float64 { return currentDBPoolStats().EmptyAcquireWaitSeconds })
 )
 
 func init() {
@@ -100,12 +150,68 @@ func init() {
 		websocketUpgradeRejections,
 		rateLimitErrors,
 		rateLimitRedisFallbackActive,
+		dbPoolAcquiredConns,
+		dbPoolIdleConns,
+		dbPoolTotalConns,
+		dbPoolMaxConns,
+		dbPoolConstructingConns,
+		dbPoolAcquireCount,
+		dbPoolCanceledAcquireCount,
+		dbPoolEmptyAcquireCount,
+		dbPoolEmptyAcquireWaitSeconds,
 	)
+}
+
+type DatabasePoolStatsSnapshot struct {
+	AcquiredConns           int32
+	CanceledAcquireCount    int64
+	ConstructingConns       int32
+	EmptyAcquireCount       int64
+	EmptyAcquireWaitSeconds float64
+	IdleConns               int32
+	MaxConns                int32
+	TotalConns              int32
+	AcquireCount            int64
 }
 
 // Registry returns the process-local Prometheus registry for /metrics.
 func Registry() *prometheus.Registry {
 	return registry
+}
+
+// BindPGXPool exposes pgxpool runtime statistics through the shared Prometheus
+// registry. Passing nil clears the bound provider.
+func BindPGXPool(pool *pgxpool.Pool) {
+	dbPoolStatsMu.Lock()
+	defer dbPoolStatsMu.Unlock()
+	if pool == nil {
+		dbPoolStatsProvider = func() DatabasePoolStatsSnapshot { return DatabasePoolStatsSnapshot{} }
+		return
+	}
+	dbPoolStatsProvider = func() DatabasePoolStatsSnapshot {
+		stat := pool.Stat()
+		return DatabasePoolStatsSnapshot{
+			AcquiredConns:           stat.AcquiredConns(),
+			CanceledAcquireCount:    stat.CanceledAcquireCount(),
+			ConstructingConns:       stat.ConstructingConns(),
+			EmptyAcquireCount:       stat.EmptyAcquireCount(),
+			EmptyAcquireWaitSeconds: stat.EmptyAcquireWaitTime().Seconds(),
+			IdleConns:               stat.IdleConns(),
+			MaxConns:                stat.MaxConns(),
+			TotalConns:              stat.TotalConns(),
+			AcquireCount:            stat.AcquireCount(),
+		}
+	}
+}
+
+func currentDBPoolStats() DatabasePoolStatsSnapshot {
+	dbPoolStatsMu.RLock()
+	provider := dbPoolStatsProvider
+	dbPoolStatsMu.RUnlock()
+	if provider == nil {
+		return DatabasePoolStatsSnapshot{}
+	}
+	return provider()
 }
 
 func RecordHTTPRequest(route, method string, status int) {

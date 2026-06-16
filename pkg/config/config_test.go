@@ -35,6 +35,25 @@ func TestDefaultConfigDisablesStripeBilling(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigSetsDatabasePoolDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.DatabasePoolMaxConns != 20 {
+		t.Fatalf("DatabasePoolMaxConns = %d, want 20", cfg.DatabasePoolMaxConns)
+	}
+	if cfg.DatabasePoolMinConns != 2 {
+		t.Fatalf("DatabasePoolMinConns = %d, want 2", cfg.DatabasePoolMinConns)
+	}
+	if cfg.DatabasePoolMaxConnLifetime != 0 {
+		t.Fatalf("DatabasePoolMaxConnLifetime = %v, want pgx default sentinel 0", cfg.DatabasePoolMaxConnLifetime)
+	}
+	if cfg.DatabasePoolMaxConnIdleTime != 0 {
+		t.Fatalf("DatabasePoolMaxConnIdleTime = %v, want pgx default sentinel 0", cfg.DatabasePoolMaxConnIdleTime)
+	}
+	if cfg.DatabasePoolHealthCheckPeriod != 0 {
+		t.Fatalf("DatabasePoolHealthCheckPeriod = %v, want pgx default sentinel 0", cfg.DatabasePoolHealthCheckPeriod)
+	}
+}
+
 func TestLoadWithExtraFilesMergesEnterpriseOverrides(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "configs"), 0o755); err != nil {
@@ -388,6 +407,32 @@ func TestValidateRejectsInvalidNotificationThresholds(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "quota_warning_threshold") {
 		t.Fatalf("Validate() error = %v, want quota threshold error", err)
+	}
+}
+
+func TestValidateRejectsInvalidDatabasePoolSettings(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.JWTPrivateKey = base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	cfg.SecuritySecret = base64.StdEncoding.EncodeToString(make([]byte, 32))
+	cfg.DatabasePoolMaxConns = 0
+	cfg.DatabasePoolMinConns = 5
+	cfg.DatabasePoolMaxConnLifetime = -time.Minute
+	cfg.DatabasePoolMaxConnIdleTime = -time.Minute
+	cfg.DatabasePoolHealthCheckPeriod = -time.Minute
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want database pool errors")
+	}
+	for _, want := range []string{
+		"database_pool_max_conns",
+		"database_pool_max_conn_lifetime",
+		"database_pool_max_conn_idle_time",
+		"database_pool_health_check_period",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want %s", err, want)
+		}
 	}
 }
 

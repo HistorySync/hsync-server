@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -193,6 +194,109 @@ func TestSchedulerRunOnceUsesAdvisoryLockAcrossInstances(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("scheduler workers did not stop")
+	}
+}
+
+type integrationBlockingOpsRunner struct {
+	svc     *OpsService
+	started chan struct{}
+	release chan struct{}
+	calls   atomic.Int32
+}
+
+func (r *integrationBlockingOpsRunner) RunScheduledDependencyCheck(ctx context.Context) {
+	r.calls.Add(1)
+	r.svc.RunScheduledDependencyCheck(ctx)
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-r.release
+}
+
+func (r *integrationBlockingOpsRunner) RunScheduledConsistencyCheck(context.Context, int32) {}
+
+func TestOpsSchedulerDependencyCheckRunsOnceAcrossInstancesWithRedisUnavailable(t *testing.T) {
+	repos := serviceRepos(t)
+	store := newFakeOpsBlobStore()
+	opsSvc := NewOpsService(OpsDeps{
+		Config:           testOpsConfig(),
+		Repos:            repos,
+		BlobStore:        store,
+		DatabasePing:     func(context.Context) error { return nil },
+		RedisPing:        func(context.Context) error { return errors.New("redis unavailable") },
+		BundleMetadata:   fakeOpsBundleMetadata{},
+		SnapshotMetadata: fakeOpsSnapshotMetadata{},
+		History:          repos.OpsHistory,
+	})
+	runner := &integrationBlockingOpsRunner{
+		svc:     opsSvc,
+		started: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
+	tasks := scheduler.OpsTasks(runner, scheduler.OpsTaskConfig{
+		DependencyInterval: time.Millisecond,
+	})
+	if len(tasks) != 2 {
+		t.Fatalf("ops tasks = %d, want 2", len(tasks))
+	}
+
+	s1 := scheduler.New(serviceTestPool, zerolog.Nop(), tasks...)
+	s2 := scheduler.New(serviceTestPool, zerolog.Nop(), tasks...)
+
+	ctx, cancel := context.WithCancel(serviceTestContext(t))
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		s1.Run(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		s2.Run(ctx)
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ops dependency scheduler task never started")
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("dependency task calls while lock held = %d, want 1", got)
+	}
+	if store.puts != 1 || store.gets != 1 || store.deletes != 1 {
+		t.Fatalf("storage probe ops puts=%d gets=%d deletes=%d, want 1 each", store.puts, store.gets, store.deletes)
+	}
+
+	history, err := repos.OpsHistory.ListRecent(serviceTestContext(t), 10)
+	if err != nil {
+		t.Fatalf("ListRecent() error = %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("ops history runs = %d, want 1", len(history))
+	}
+	if history[0].RunType != model.OpsRunTypeDependency || history[0].OverallStatus != OpsStatusDegraded {
+		t.Fatalf("ops history run = %+v, want degraded dependency run", history[0])
+	}
+	if !json.Valid(history[0].ReportJSON) || !bytes.Contains(history[0].ReportJSON, []byte(`"redis"`)) {
+		t.Fatalf("ops history report = %s, want persisted redis dependency details", history[0].ReportJSON)
+	}
+
+	close(runner.release)
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ops scheduler workers did not stop")
 	}
 }
 
@@ -499,5 +603,196 @@ func TestNotificationServiceProcessOutboxWorkersDoNotDoubleDeliver(t *testing.T)
 	}
 	if stored == nil || stored.Status != model.NotificationOutboxSent {
 		t.Fatalf("stored item = %+v, want sent", stored)
+	}
+}
+
+type integrationFlakyNotifier struct {
+	calls atomic.Int32
+}
+
+func (n *integrationFlakyNotifier) DeliveryEnabled() bool { return true }
+func (n *integrationFlakyNotifier) SendWelcome(context.Context, provider.WelcomeParams) error {
+	return nil
+}
+func (n *integrationFlakyNotifier) SendEmailVerification(context.Context, provider.EmailVerificationParams) error {
+	return nil
+}
+func (n *integrationFlakyNotifier) SendPasswordReset(context.Context, provider.PasswordResetParams) error {
+	return nil
+}
+func (n *integrationFlakyNotifier) SendQuotaWarning(context.Context, provider.QuotaWarningParams) error {
+	return n.failOnce()
+}
+func (n *integrationFlakyNotifier) SendQuotaExhausted(context.Context, provider.QuotaExhaustedParams) error {
+	return n.failOnce()
+}
+func (n *integrationFlakyNotifier) SendQuotaRestored(context.Context, provider.QuotaRestoredParams) error {
+	return n.failOnce()
+}
+func (n *integrationFlakyNotifier) SendNotification(context.Context, provider.NotificationParams) error {
+	return n.failOnce()
+}
+
+func (n *integrationFlakyNotifier) failOnce() error {
+	if n.calls.Add(1) == 1 {
+		return errors.New("worker crashed after claiming notification")
+	}
+	return nil
+}
+
+func TestNotificationOutboxFailureCanBeRetriedByAnotherWorker(t *testing.T) {
+	repos := serviceRepos(t)
+	user := seedServiceUser(t, repos, "retry-notify@example.com")
+	if err := repos.NotificationPrefs.Upsert(serviceTestContext(t), &model.NotificationPreferences{
+		UserID:        user.ID,
+		SecurityEmail: true,
+	}); err != nil {
+		t.Fatalf("upsert prefs: %v", err)
+	}
+	item := &model.NotificationOutbox{
+		UserID:      user.ID,
+		Channel:     model.NotificationChannelEmail,
+		Category:    "security",
+		Type:        "security.retry",
+		PayloadJSON: json.RawMessage(`{"subject":"Retry","message":"Deliver","email_kind":"generic"}`),
+		NextRetryAt: time.Now().UTC().Add(-time.Minute),
+	}
+	if err := repos.NotificationOutbox.Enqueue(serviceTestContext(t), item); err != nil {
+		t.Fatalf("enqueue outbox item: %v", err)
+	}
+
+	notifier := &integrationFlakyNotifier{}
+	svc := NewNotificationServiceWithStoresAndOutbox(repos.Users, repos.NotificationPrefs, repos.NotificationOutbox, notifier, nil, NotificationConfig{Enabled: true})
+
+	first, err := svc.ProcessOutbox(serviceTestContext(t), 1)
+	if err != nil {
+		t.Fatalf("first ProcessOutbox() error = %v", err)
+	}
+	if first.Claimed != 1 || first.Retried != 1 || first.Sent != 0 || first.Failed != 0 {
+		t.Fatalf("first result = %+v, want one claimed retry", first)
+	}
+
+	failedState, err := repos.NotificationOutbox.GetByID(serviceTestContext(t), item.ID)
+	if err != nil {
+		t.Fatalf("GetByID() after failure error = %v", err)
+	}
+	if failedState == nil || failedState.Status != model.NotificationOutboxPending || failedState.AttemptCount != 1 {
+		t.Fatalf("failed state = %+v, want pending attempt_count=1", failedState)
+	}
+
+	if _, err := serviceTestPool.Exec(serviceTestContext(t),
+		`UPDATE notification_outbox SET next_retry_at = $2 WHERE id = $1`,
+		item.ID, time.Now().UTC().Add(-time.Second)); err != nil {
+		t.Fatalf("force retry due: %v", err)
+	}
+
+	second, err := svc.ProcessOutbox(serviceTestContext(t), 1)
+	if err != nil {
+		t.Fatalf("second ProcessOutbox() error = %v", err)
+	}
+	if second.Claimed != 1 || second.Sent != 1 {
+		t.Fatalf("second result = %+v, want one claimed sent retry", second)
+	}
+	if notifier.calls.Load() != 2 {
+		t.Fatalf("delivery calls = %d, want 2 (failed once then retried once)", notifier.calls.Load())
+	}
+
+	stored, err := repos.NotificationOutbox.GetByID(serviceTestContext(t), item.ID)
+	if err != nil {
+		t.Fatalf("GetByID() after retry error = %v", err)
+	}
+	if stored == nil || stored.Status != model.NotificationOutboxSent || stored.AttemptCount != 1 {
+		t.Fatalf("stored item after retry = %+v, want sent attempt_count=1", stored)
+	}
+}
+
+type integrationIdempotentResult struct {
+	Value string `json:"value"`
+}
+
+func TestPostgresIdempotencyHandlesInProgressReplayAndConflict(t *testing.T) {
+	repos := serviceRepos(t)
+	svc := NewIdempotencyService(repos.Idempotency)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var executions atomic.Int32
+
+	firstResult := make(chan *IdempotencyExecution[integrationIdempotentResult], 1)
+	firstErr := make(chan error, 1)
+	go func() {
+		result, err := ExecuteIdempotent(serviceTestContext(t), svc, IdempotencyOptions{
+			Scope:          "admin.notification.retry",
+			IdempotencyKey: "same-key",
+			Payload:        map[string]any{"notification_id": "n-1"},
+			RequireKey:     true,
+		}, func(context.Context) (*integrationIdempotentResult, int, error) {
+			executions.Add(1)
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			<-release
+			return &integrationIdempotentResult{Value: "ok"}, 202, nil
+		})
+		firstResult <- result
+		firstErr <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first idempotent execution never started")
+	}
+
+	if _, err := ExecuteIdempotent(serviceTestContext(t), svc, IdempotencyOptions{
+		Scope:          "admin.notification.retry",
+		IdempotencyKey: "same-key",
+		Payload:        map[string]any{"notification_id": "n-1"},
+		RequireKey:     true,
+	}, func(context.Context) (*integrationIdempotentResult, int, error) {
+		t.Fatal("duplicate in-progress execution should not run")
+		return nil, 0, nil
+	}); !errors.Is(err, ErrIdempotencyInProgress) {
+		t.Fatalf("concurrent execution error = %v, want ErrIdempotencyInProgress", err)
+	}
+
+	close(release)
+	first := <-firstResult
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first ExecuteIdempotent() error = %v", err)
+	}
+	if first == nil || first.Data == nil || first.Data.Value != "ok" || first.ResponseStatus != 202 || first.Replayed {
+		t.Fatalf("first execution = %+v, want fresh 202 ok", first)
+	}
+
+	replayed, err := ExecuteIdempotent(serviceTestContext(t), svc, IdempotencyOptions{
+		Scope:          "admin.notification.retry",
+		IdempotencyKey: "same-key",
+		Payload:        map[string]any{"notification_id": "n-1"},
+		RequireKey:     true,
+	}, func(context.Context) (*integrationIdempotentResult, int, error) {
+		t.Fatal("replay execution should not re-run")
+		return nil, 0, nil
+	})
+	if err != nil {
+		t.Fatalf("replay ExecuteIdempotent() error = %v", err)
+	}
+	if replayed == nil || replayed.Data == nil || replayed.Data.Value != "ok" || !replayed.Replayed || replayed.ResponseStatus != 202 {
+		t.Fatalf("replay execution = %+v, want replayed 202 ok", replayed)
+	}
+	if executions.Load() != 1 {
+		t.Fatalf("fresh executions = %d, want 1", executions.Load())
+	}
+
+	if _, err := ExecuteIdempotent(serviceTestContext(t), svc, IdempotencyOptions{
+		Scope:          "admin.notification.retry",
+		IdempotencyKey: "same-key",
+		Payload:        map[string]any{"notification_id": "n-2"},
+		RequireKey:     true,
+	}, func(context.Context) (*integrationIdempotentResult, int, error) {
+		t.Fatal("conflicting execution should not run")
+		return nil, 0, nil
+	}); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("conflicting execution error = %v, want ErrIdempotencyConflict", err)
 	}
 }

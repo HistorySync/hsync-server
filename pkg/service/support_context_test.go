@@ -140,3 +140,62 @@ type fakeSupportAudit struct {
 func (f *fakeSupportAudit) ListVisibleByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AuditLog, error) {
 	return append([]model.AuditLog(nil), f.logs...), nil
 }
+
+func (f *fakeSupportAudit) ListTimeline(ctx context.Context, filter model.AuditListFilter) ([]model.AuditLog, error) {
+	return append([]model.AuditLog(nil), f.logs...), nil
+}
+
+type fakeSupportErasureJobs struct {
+	jobs []model.AccountErasureJob
+}
+
+func (f *fakeSupportErasureJobs) ListByUser(ctx context.Context, userID uuid.UUID, limit int32) ([]model.AccountErasureJob, error) {
+	return append([]model.AccountErasureJob(nil), f.jobs...), nil
+}
+
+func TestSupportContextLookupBuildsIncidentView(t *testing.T) {
+	userID := uuid.New()
+	now := time.Now().UTC()
+	users := &fakeSupportUsers{
+		byID: map[uuid.UUID]*model.User{
+			userID: {ID: userID, Email: "user@example.com", Tier: model.TierPro, Status: model.StatusActive},
+		},
+		byEmail: map[string]*model.User{},
+	}
+	users.byEmail["user@example.com"] = users.byID[userID]
+	audit := &fakeSupportAudit{logs: []model.AuditLog{{
+		ID:          uuid.New(),
+		ActorUserID: &userID,
+		EventType:   model.AuditEventAccountErasureJobCreated,
+		TargetType:  "user",
+		TargetID:    userID.String(),
+		Metadata:    map[string]any{"email": "user@example.com", "token": "hidden"},
+		CreatedAt:   now,
+	}}}
+	svc := NewSupportContextService(SupportContextDeps{
+		Users:       users,
+		Audit:       audit,
+		ErasureJobs: &fakeSupportErasureJobs{jobs: []model.AccountErasureJob{{ID: uuid.New(), UserID: userID, RequestedAt: now, EligibleAt: now.Add(time.Hour), Status: model.AccountErasureJobStatusPending, UpdatedAt: now}}},
+		Timeline:    NewSecurityTimelineService(audit, nil),
+	})
+
+	ctx, err := svc.Lookup(context.Background(), SupportContextLookup{Email: "user@example.com", Limit: 5})
+	if err != nil {
+		t.Fatalf("Lookup() error = %v", err)
+	}
+	if ctx.IncidentTimeline == nil || len(ctx.IncidentTimeline.Events) != 1 {
+		t.Fatalf("Lookup() incident timeline = %#v", ctx.IncidentTimeline)
+	}
+	if len(ctx.RecentActions) != 1 || ctx.RecentActions[0].Metadata["token"] != nil {
+		t.Fatalf("Lookup() recent actions = %#v", ctx.RecentActions)
+	}
+	if ctx.ErasureStatus == nil || !ctx.ErasureStatus.Requested || !ctx.ErasureStatus.InProgress {
+		t.Fatalf("Lookup() erasure status = %#v", ctx.ErasureStatus)
+	}
+	if len(ctx.JobStatus) != 1 || ctx.JobStatus[0].Name != "account_erasure" {
+		t.Fatalf("Lookup() job status = %#v", ctx.JobStatus)
+	}
+	if len(ctx.AccountChanges) != 1 || ctx.AccountChanges[0].Action != model.AuditEventAccountErasureJobCreated {
+		t.Fatalf("Lookup() account changes = %#v", ctx.AccountChanges)
+	}
+}

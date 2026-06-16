@@ -38,6 +38,10 @@ func (s *handlerAuditStore) ListTimeline(_ context.Context, filter model.AuditLi
 	return s.logs, nil
 }
 
+func (s *handlerAuditStore) ListVisibleByUser(_ context.Context, userID uuid.UUID, limit int32) ([]model.AuditLog, error) {
+	return s.logs, nil
+}
+
 func TestAdminListAuditLogsParsesFilters(t *testing.T) {
 	actorID := uuid.New()
 	store := &handlerAuditStore{
@@ -211,5 +215,141 @@ func TestAdminSecurityTimelineReturnsJSONAndWritesAudit(t *testing.T) {
 	}
 	if len(store.created) != 1 || store.created[0].EventType != model.AuditEventAdminSecurityTimelineRead {
 		t.Fatalf("audit query event = %+v, want timeline read audit", store.created)
+	}
+}
+
+type handlerSupportUserStore struct {
+	byID    map[uuid.UUID]*model.User
+	byEmail map[string]*model.User
+}
+
+func (s *handlerSupportUserStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error) {
+	user := s.byID[id]
+	if user == nil {
+		return nil, nil
+	}
+	clone := *user
+	return &clone, nil
+}
+
+func (s *handlerSupportUserStore) GetByEmail(_ context.Context, email string) (*model.User, error) {
+	user := s.byEmail[email]
+	if user == nil {
+		return nil, nil
+	}
+	clone := *user
+	return &clone, nil
+}
+
+type handlerSupportDeviceStore struct {
+	devices []model.Device
+}
+
+func (s *handlerSupportDeviceStore) ListByUser(_ context.Context, userID uuid.UUID) ([]model.Device, error) {
+	return append([]model.Device(nil), s.devices...), nil
+}
+
+type handlerSupportQuotaStore struct {
+	usage  *model.QuotaUsage
+	limits *model.QuotaLimits
+}
+
+func (s *handlerSupportQuotaStore) GetUsage(_ context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
+	if s.usage == nil {
+		return &model.QuotaUsage{UserID: userID}, nil
+	}
+	clone := *s.usage
+	return &clone, nil
+}
+
+func (s *handlerSupportQuotaStore) GetLimits(_ context.Context, userID uuid.UUID) (*model.QuotaLimits, error) {
+	if s.limits == nil {
+		return nil, nil
+	}
+	clone := *s.limits
+	return &clone, nil
+}
+
+type handlerSupportErasureStore struct {
+	jobs []model.AccountErasureJob
+}
+
+func (s *handlerSupportErasureStore) ListByUser(_ context.Context, userID uuid.UUID, limit int32) ([]model.AccountErasureJob, error) {
+	return append([]model.AccountErasureJob(nil), s.jobs...), nil
+}
+
+func TestAdminSupportContextReturnsIncidentTimelineAndWritesAudit(t *testing.T) {
+	userID := uuid.New()
+	now := time.Now().UTC()
+	store := &handlerAuditStore{
+		logs: []model.AuditLog{{
+			ID:          uuid.New(),
+			ActorUserID: &userID,
+			EventType:   model.AuditEventAccountErasureJobCreated,
+			TargetType:  "user",
+			TargetID:    userID.String(),
+			Metadata:    map[string]any{"email": "user@example.com", "reason": "requested"},
+			CreatedAt:   now,
+		}},
+	}
+	supportSvc := service.NewSupportContextService(service.SupportContextDeps{
+		Users: &handlerSupportUserStore{
+			byID: map[uuid.UUID]*model.User{
+				userID: {ID: userID, Email: "user@example.com", Tier: model.TierPro, Status: model.StatusActive},
+			},
+			byEmail: map[string]*model.User{
+				"user@example.com": {ID: userID, Email: "user@example.com", Tier: model.TierPro, Status: model.StatusActive},
+			},
+		},
+		Devices: &handlerSupportDeviceStore{devices: []model.Device{{DeviceUUID: uuid.New(), DeviceName: "laptop", Platform: "windows", AppVersion: "1.2.3", CreatedAt: now}}},
+		Quota: &handlerSupportQuotaStore{
+			usage:  &model.QuotaUsage{UserID: userID, TotalBytes: 42, BundleCount: 1, SnapCount: 1},
+			limits: &model.QuotaLimits{UserID: userID, StorageLimitBytes: 100},
+		},
+		Audit:       store,
+		ErasureJobs: &handlerSupportErasureStore{jobs: []model.AccountErasureJob{{ID: uuid.New(), UserID: userID, RequestedAt: now, EligibleAt: now.Add(time.Hour), Status: model.AccountErasureJobStatusPending, UpdatedAt: now}}},
+		Timeline:    service.NewSecurityTimelineService(store, nil),
+	})
+	h := New(Deps{
+		Services: &service.Services{
+			Audit:   service.NewAuditService(store),
+			Support: supportSvc,
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("GET", "/admin/support/context?email=user@example.com", nil)
+	req.Header.Set("X-Admin-Key", "secret")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+
+	var body struct {
+		Context service.SupportBaseContext `json:"context"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Context.User == nil || body.Context.User.ID != userID {
+		t.Fatalf("context user = %#v, want %s", body.Context.User, userID)
+	}
+	if body.Context.IncidentTimeline == nil || len(body.Context.IncidentTimeline.Events) != 1 {
+		t.Fatalf("incident timeline = %#v", body.Context.IncidentTimeline)
+	}
+	if len(body.Context.RecentActions) != 1 {
+		t.Fatalf("recent actions = %#v", body.Context.RecentActions)
+	}
+	if body.Context.ErasureStatus == nil || !body.Context.ErasureStatus.Requested {
+		t.Fatalf("erasure status = %#v", body.Context.ErasureStatus)
+	}
+	if len(store.created) == 0 || store.created[len(store.created)-1].EventType != model.AuditEventAdminSupportContextRead {
+		t.Fatalf("audit query event = %+v, want support context read audit", store.created)
 	}
 }

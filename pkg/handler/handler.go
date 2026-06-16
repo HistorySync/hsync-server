@@ -368,6 +368,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	v1Admin := v1.Group("/admin", adminRL, auth.AdminMiddleware(h.deps.AdminKey))
 	get(v1Admin, "/api/v1/admin/security/stats", "/security/stats", h.AdminSecurityStats)
 	get(v1Admin, "/api/v1/admin/security/timeline", "/security/timeline", h.AdminSecurityTimeline)
+	get(v1Admin, "/api/v1/admin/support/context", "/support/context", h.AdminSupportContext)
+	post(v1Admin, "/api/v1/admin/support/context", "/support/context", h.AdminSupportContext)
 	get(v1Admin, "/api/v1/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
 	post(v1Admin, "/api/v1/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
 	post(v1Admin, "/api/v1/admin/notifications/failures/retry", "/notifications/failures/retry", h.AdminRetryNotificationFailures)
@@ -409,6 +411,8 @@ func (h *Handlers) RegisterRoutes(app *fiber.App) {
 	get(admin, "/admin/settings", "/settings", h.AdminListSettings)
 	put(admin, "/admin/settings/:key", "/settings/:key", h.AdminSetSetting, requireAdminIdempotency)
 	get(admin, "/admin/audit-logs", "/audit-logs", h.AdminListAuditLogs)
+	get(admin, "/admin/support/context", "/support/context", h.AdminSupportContext)
+	post(admin, "/admin/support/context", "/support/context", h.AdminSupportContext)
 	get(admin, "/admin/notifications/failures", "/notifications/failures", h.AdminNotificationFailures)
 	post(admin, "/admin/notifications/failures/:id/retry", "/notifications/failures/:id/retry", h.AdminRetryNotificationFailure)
 	post(admin, "/admin/notifications/failures/retry", "/notifications/failures/retry", h.AdminRetryNotificationFailures)
@@ -2614,6 +2618,84 @@ func (h *Handlers) AdminSecurityTimeline(c fiber.Ctx) error {
 	default:
 		return apierrors.NewBadRequest("format must be json or csv")
 	}
+}
+
+type adminSupportContextRequest struct {
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	Limit  int32  `json:"limit"`
+}
+
+func (h *Handlers) AdminSupportContext(c fiber.Ctx) error {
+	if h.deps.Services == nil || h.deps.Services.Support == nil {
+		return apierrors.NewInternal("support context service is not configured")
+	}
+	lookup, err := supportContextLookupFromRequest(c)
+	if err != nil {
+		h.recordSupportContextAudit(c, lookup, "invalid_request", "")
+		return apierrors.NewBadRequest("invalid support context request")
+	}
+	response, err := h.deps.Services.Support.Lookup(c.Context(), lookup)
+	if err != nil {
+		h.recordSupportContextAudit(c, lookup, "failure", err.Error())
+		switch {
+		case errors.Is(err, service.ErrSupportContextInvalidLookup),
+			errors.Is(err, service.ErrSupportContextLookupMismatch):
+			return apierrors.NewBadRequest(err.Error())
+		case errors.Is(err, service.ErrUserNotFound):
+			return apierrors.Newf(apierrors.CodeNotFound, "support context target not found")
+		default:
+			return apierrors.NewInternal(err.Error())
+		}
+	}
+	target := ""
+	if response != nil && response.User != nil {
+		target = response.User.ID.String()
+	}
+	h.recordSupportContextAudit(c, lookup, "success", target)
+	return c.JSON(fiber.Map{"context": response})
+}
+
+func supportContextLookupFromRequest(c fiber.Ctx) (service.SupportContextLookup, error) {
+	lookup := service.SupportContextLookup{
+		UserID: c.Query("user_id"),
+		Email:  c.Query("email"),
+	}
+	if limit, err := strconv.Atoi(c.Query("limit", "")); err == nil {
+		lookup.Limit = int32(limit)
+	}
+	if c.Method() != fiber.MethodPost || len(c.Body()) == 0 {
+		return lookup, nil
+	}
+	var req adminSupportContextRequest
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return lookup, err
+	}
+	if strings.TrimSpace(req.UserID) != "" {
+		lookup.UserID = req.UserID
+	}
+	if strings.TrimSpace(req.Email) != "" {
+		lookup.Email = req.Email
+	}
+	if req.Limit != 0 {
+		lookup.Limit = req.Limit
+	}
+	return lookup, nil
+}
+
+func (h *Handlers) recordSupportContextAudit(c fiber.Ctx, lookup service.SupportContextLookup, result, detail string) {
+	h.recordAudit(c, service.AuditEventInput{
+		EventType:  model.AuditEventAdminSupportContextRead,
+		TargetType: "support_context",
+		TargetID:   strings.TrimSpace(firstNonEmpty(lookup.UserID, lookup.Email, "query")),
+		Metadata: map[string]any{
+			"result":            result,
+			"user_id_query":     strings.TrimSpace(lookup.UserID) != "",
+			"email_query":       strings.TrimSpace(lookup.Email) != "",
+			"limit":             lookup.Limit,
+			"failure_or_target": detail,
+		},
+	})
 }
 
 func (h *Handlers) AdminNotificationFailures(c fiber.Ctx) error {

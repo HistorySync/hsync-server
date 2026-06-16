@@ -287,12 +287,14 @@ func New(deps Deps) *Services {
 	var supportQuota supportQuotaStore
 	var supportAudit supportAuditStore
 	var supportErasureJobs supportErasureJobStore
+	var supportTimeline supportTimelineStore
 	if deps.Repos != nil {
 		supportUsers = deps.Repos.Users
 		supportDevices = deps.Repos.Devices
 		supportQuota = deps.Repos.Quota
 		supportAudit = deps.Repos.AuditLogs
 		supportErasureJobs = deps.Repos.AccountErasureJobs
+		supportTimeline = securityTimelineSvc
 	}
 	supportSvc := NewSupportContextService(SupportContextDeps{
 		Users:       supportUsers,
@@ -300,6 +302,7 @@ func New(deps Deps) *Services {
 		Quota:       supportQuota,
 		Audit:       supportAudit,
 		ErasureJobs: supportErasureJobs,
+		Timeline:    supportTimeline,
 	})
 
 	// Dynamic system settings: a database-backed, whitelisted, typed override

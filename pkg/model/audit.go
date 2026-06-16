@@ -29,6 +29,7 @@ const (
 	AuditEventAccountErasureJobFailed   AuditEventType = "account.erasure.job_failed"
 	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
 	AuditEventAdminSecurityTimelineRead AuditEventType = "admin.security.timeline.read"
+	AuditEventAdminSupportContextRead   AuditEventType = "admin.support_context.lookup"
 	AuditEventNotificationOutboxRetry   AuditEventType = "admin.notification_outbox.retry"
 	AuditEventNotificationOutboxRequeue AuditEventType = "admin.notification_outbox.requeue"
 	AuditEventNotificationOutboxDiscard AuditEventType = "admin.notification_outbox.discard"

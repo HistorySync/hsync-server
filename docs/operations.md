@@ -8,6 +8,10 @@ This note complements [ce-operator-playbook.md](ce-operator-playbook.md) for CE 
 - Each scheduler task uses a PostgreSQL advisory lock with a stable task-specific key.
 - In a healthy fleet, only one instance runs a given task at a time, but different tasks can run on different instances.
 - A rolling restart can move task ownership between instances; treat that as normal behavior.
+- If one worker crashes after durable state changes but before it records its own
+  run summary, a later instance may rerun the task and produce a zero-work pass.
+  Treat the persisted row state as the source of truth, not any single process's
+  in-memory view.
 
 ## Notification outbox workers
 
@@ -28,6 +32,9 @@ This note complements [ce-operator-playbook.md](ce-operator-playbook.md) for CE 
 - Redis is optional in CE for cache and rate-limit support; it is not the scheduler coordination mechanism.
 - If Redis is unavailable but PostgreSQL and object storage are healthy, readiness and ops checks may report `degraded` rather than `unhealthy`.
 - In that mode, shared fleet-wide rate limiting may fall back to per-process memory or the configured fail mode. Do not assume cross-instance counters still exist.
+- Redis being down does not change scheduler ownership: advisory locks still
+  coordinate background work, and the outbox / retention / erasure state
+  transitions remain the duplicate-prevention boundary.
 
 ## Failure expectations
 

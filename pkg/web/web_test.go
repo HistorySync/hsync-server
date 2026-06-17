@@ -239,15 +239,51 @@ func TestLandingPageIncludesAdminConsoleInteractions(t *testing.T) {
 		`masked override`,
 		`id="ops-run-rows"`,
 		`refresh-ops`,
-		`Redrive`,
+		`retry-visible-notifications`,
+		`Retry visible failures`,
+		`notificationActionButton("Retry"`,
+		`notificationActionButton("Requeue"`,
+		`notificationActionButton("Discard"`,
+		`Idempotency-Key`,
+		`newIdempotencyKey()`,
 	}
 	for _, check := range checks {
 		if !strings.Contains(body, check) {
 			t.Fatalf("landing page missing %q", check)
 		}
 	}
+	if strings.Contains(body, `button.disabled=true;
+button.textContent="Redrive";`) {
+		t.Fatal("landing page still contains disabled notification action placeholder")
+	}
 	if strings.Contains(body, "localStorage") {
 		t.Fatal("landing page should not persist admin key in localStorage")
+	}
+}
+
+func TestLandingPageIncludesNotificationFailureActionWiring(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`adminPath+"/notifications/failures/"+encodeURIComponent(id)+"/"+action`,
+		`adminPath+"/notifications/failures/retry"`,
+		`setBanner(notificationActionSummary(label,response.body||{}),"");`,
+		`operatorError(error)`,
+		`body&&body.replayed?"replayed response":"fresh response"`,
+		`await loadNotifications();`,
+		`button.dataset.notificationAction=action;`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing notification action wiring %q", check)
+		}
 	}
 }
 

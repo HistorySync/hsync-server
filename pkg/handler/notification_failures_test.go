@@ -64,15 +64,37 @@ func (s *handlerNotificationOutboxStore) ClaimFailed(_ context.Context, limit in
 	return claimed, nil
 }
 
-func (s *handlerNotificationOutboxStore) MarkSent(context.Context, uuid.UUID, time.Time) error {
+func (s *handlerNotificationOutboxStore) MarkSent(_ context.Context, id uuid.UUID, sentAt time.Time) error {
+	for i := range s.items {
+		if s.items[i].ID == id {
+			s.items[i].Status = model.NotificationOutboxSent
+			s.items[i].SentAt = &sentAt
+			return nil
+		}
+	}
 	return nil
 }
 
-func (s *handlerNotificationOutboxStore) MarkRetry(context.Context, uuid.UUID, time.Time, string) error {
+func (s *handlerNotificationOutboxStore) MarkRetry(_ context.Context, id uuid.UUID, nextRetryAt time.Time, errText string) error {
+	for i := range s.items {
+		if s.items[i].ID == id {
+			s.items[i].Status = model.NotificationOutboxPending
+			s.items[i].NextRetryAt = nextRetryAt
+			s.items[i].LastError = errText
+			return nil
+		}
+	}
 	return nil
 }
 
-func (s *handlerNotificationOutboxStore) MarkFailed(context.Context, uuid.UUID, string) error {
+func (s *handlerNotificationOutboxStore) MarkFailed(_ context.Context, id uuid.UUID, errText string) error {
+	for i := range s.items {
+		if s.items[i].ID == id {
+			s.items[i].Status = model.NotificationOutboxFailed
+			s.items[i].LastError = errText
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -101,6 +123,71 @@ func (s *handlerNotificationOutboxStore) MarkDiscarded(_ context.Context, id uui
 
 func (s *handlerNotificationOutboxStore) ListFailures(context.Context, int32, int32) ([]model.NotificationOutbox, error) {
 	return s.items, nil
+}
+
+type handlerFailureNotificationUserStore struct {
+	users map[uuid.UUID]*model.User
+}
+
+func (s *handlerFailureNotificationUserStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error) {
+	if s == nil {
+		return nil, nil
+	}
+	return s.users[id], nil
+}
+
+type handlerFailureNotificationPreferenceStore struct {
+	prefs map[uuid.UUID]*model.NotificationPreferences
+}
+
+func (s *handlerFailureNotificationPreferenceStore) GetByUserID(_ context.Context, id uuid.UUID) (*model.NotificationPreferences, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if prefs := s.prefs[id]; prefs != nil {
+		return prefs, nil
+	}
+	return nil, nil
+}
+
+func (s *handlerFailureNotificationPreferenceStore) Upsert(_ context.Context, prefs *model.NotificationPreferences) error {
+	if s.prefs == nil {
+		s.prefs = map[uuid.UUID]*model.NotificationPreferences{}
+	}
+	s.prefs[prefs.UserID] = prefs
+	return nil
+}
+
+type handlerNotificationNotifier struct {
+	err  error
+	sent int
+}
+
+func (n *handlerNotificationNotifier) DeliveryEnabled() bool { return true }
+func (n *handlerNotificationNotifier) SendWelcome(context.Context, provider.WelcomeParams) error {
+	return nil
+}
+func (n *handlerNotificationNotifier) SendEmailVerification(context.Context, provider.EmailVerificationParams) error {
+	return nil
+}
+func (n *handlerNotificationNotifier) SendPasswordReset(context.Context, provider.PasswordResetParams) error {
+	return nil
+}
+func (n *handlerNotificationNotifier) SendQuotaWarning(context.Context, provider.QuotaWarningParams) error {
+	n.sent++
+	return n.err
+}
+func (n *handlerNotificationNotifier) SendQuotaExhausted(context.Context, provider.QuotaExhaustedParams) error {
+	n.sent++
+	return n.err
+}
+func (n *handlerNotificationNotifier) SendQuotaRestored(context.Context, provider.QuotaRestoredParams) error {
+	n.sent++
+	return n.err
+}
+func (n *handlerNotificationNotifier) SendNotification(context.Context, provider.NotificationParams) error {
+	n.sent++
+	return n.err
 }
 
 type handlerIdempotencyStore struct {
@@ -220,6 +307,187 @@ func TestAdminNotificationFailuresReturnsSanitizedFailureViews(t *testing.T) {
 	}
 }
 
+func TestAdminNotificationFailureActionsExecuteAndAudit(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		wantResult service.NotificationOutboxActionResultType
+		wantStatus model.NotificationOutboxStatus
+		wantEvent  model.AuditEventType
+	}{
+		{
+			name:       "retry single",
+			path:       "retry",
+			wantResult: service.NotificationOutboxActionRetried,
+			wantStatus: model.NotificationOutboxSent,
+			wantEvent:  model.AuditEventNotificationOutboxRetry,
+		},
+		{
+			name:       "requeue single",
+			path:       "requeue",
+			wantResult: service.NotificationOutboxActionRequeued,
+			wantStatus: model.NotificationOutboxPending,
+			wantEvent:  model.AuditEventNotificationOutboxRequeue,
+		},
+		{
+			name:       "discard single",
+			path:       "discard",
+			wantResult: service.NotificationOutboxActionDiscarded,
+			wantStatus: model.NotificationOutboxDiscarded,
+			wantEvent:  model.AuditEventNotificationOutboxDiscard,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userID := uuid.New()
+			notificationID := uuid.New()
+			outbox := &handlerNotificationOutboxStore{
+				items: []model.NotificationOutbox{{
+					ID:           notificationID,
+					UserID:       userID,
+					Channel:      model.NotificationChannelEmail,
+					Category:     service.NotificationCategorySecurity,
+					Type:         "security.login",
+					PayloadJSON:  json.RawMessage(`{"subject":"Login","message":"Detected"}`),
+					Status:       model.NotificationOutboxFailed,
+					AttemptCount: 4,
+					LastError:    "timeout",
+				}},
+			}
+			auditStore := &handlerAuditStore{}
+			h := New(Deps{
+				Services: &service.Services{
+					Notification: service.NewNotificationServiceWithStoresAndOutbox(
+						&handlerFailureNotificationUserStore{users: map[uuid.UUID]*model.User{
+							userID: {ID: userID, Email: "user@example.com", DisplayName: "User"},
+						}},
+						&handlerFailureNotificationPreferenceStore{prefs: map[uuid.UUID]*model.NotificationPreferences{
+							userID: {UserID: userID, SecurityEmail: true},
+						}},
+						outbox,
+						&handlerNotificationNotifier{},
+						nil,
+						service.NotificationConfig{Enabled: true},
+					),
+					Idempotency: service.NewIdempotencyService(&handlerIdempotencyStore{}),
+					Audit:       service.NewAuditService(auditStore),
+				},
+				AdminKey: "secret",
+			})
+			app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+			h.RegisterRoutes(app)
+
+			req := httptest.NewRequest("POST", "/admin/notifications/failures/"+notificationID.String()+"/"+tt.path, strings.NewReader(`{}`))
+			req.Header.Set("X-Admin-Key", "secret")
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Idempotency-Key", tt.name)
+			resp, err := app.Test(req)
+			if err != nil {
+				t.Fatalf("app.Test() error = %v", err)
+			}
+			if resp.StatusCode != fiber.StatusOK {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+			}
+			var body service.NotificationOutboxActionResult
+			if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			if body.Result != tt.wantResult || body.Replayed {
+				t.Fatalf("body = %+v, want fresh %s", body, tt.wantResult)
+			}
+			if outbox.items[0].Status != tt.wantStatus {
+				t.Fatalf("outbox status = %q, want %q", outbox.items[0].Status, tt.wantStatus)
+			}
+			if len(auditStore.created) != 1 {
+				t.Fatalf("audit count = %d, want 1", len(auditStore.created))
+			}
+			if auditStore.created[0].EventType != tt.wantEvent {
+				t.Fatalf("audit event = %q, want %q", auditStore.created[0].EventType, tt.wantEvent)
+			}
+		})
+	}
+}
+
+func TestAdminNotificationFailureBatchRetry(t *testing.T) {
+	userID := uuid.New()
+	firstID := uuid.New()
+	secondID := uuid.New()
+	outbox := &handlerNotificationOutboxStore{
+		items: []model.NotificationOutbox{
+			{
+				ID:           firstID,
+				UserID:       userID,
+				Channel:      model.NotificationChannelEmail,
+				Category:     service.NotificationCategorySecurity,
+				Type:         "security.login",
+				PayloadJSON:  json.RawMessage(`{"subject":"Login","message":"Detected"}`),
+				Status:       model.NotificationOutboxFailed,
+				AttemptCount: 4,
+			},
+			{
+				ID:           secondID,
+				UserID:       userID,
+				Channel:      model.NotificationChannelEmail,
+				Category:     service.NotificationCategorySecurity,
+				Type:         "security.login",
+				PayloadJSON:  json.RawMessage(`{"subject":"Login","message":"Detected"}`),
+				Status:       model.NotificationOutboxFailed,
+				AttemptCount: 4,
+			},
+		},
+	}
+	auditStore := &handlerAuditStore{}
+	h := New(Deps{
+		Services: &service.Services{
+			Notification: service.NewNotificationServiceWithStoresAndOutbox(
+				&handlerFailureNotificationUserStore{users: map[uuid.UUID]*model.User{
+					userID: {ID: userID, Email: "user@example.com", DisplayName: "User"},
+				}},
+				&handlerFailureNotificationPreferenceStore{prefs: map[uuid.UUID]*model.NotificationPreferences{
+					userID: {UserID: userID, SecurityEmail: true},
+				}},
+				outbox,
+				&handlerNotificationNotifier{},
+				nil,
+				service.NotificationConfig{Enabled: true},
+			),
+			Idempotency: service.NewIdempotencyService(&handlerIdempotencyStore{}),
+			Audit:       service.NewAuditService(auditStore),
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("POST", "/admin/notifications/failures/retry", strings.NewReader(`{"limit":2}`))
+	req.Header.Set("X-Admin-Key", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "batch-retry")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	var body service.NotificationOutboxActionResult
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Result != service.NotificationOutboxActionRetried || body.Retried != 2 || body.Sent != 2 {
+		t.Fatalf("body = %+v, want two retried and sent", body)
+	}
+	for _, item := range outbox.items {
+		if item.Status != model.NotificationOutboxSent {
+			t.Fatalf("item status = %q, want sent", item.Status)
+		}
+	}
+	if len(auditStore.created) != 1 || auditStore.created[0].TargetID != "batch" {
+		t.Fatalf("audit events = %+v, want one batch event", auditStore.created)
+	}
+}
+
 func TestAdminNotificationFailureActionReplaysIdempotentResponseAndAuditsOnce(t *testing.T) {
 	notificationID := uuid.New()
 	outbox := &handlerNotificationOutboxStore{
@@ -325,5 +593,41 @@ func TestAdminNotificationFailureActionRequiresIdempotencyKey(t *testing.T) {
 	}
 	if resp.StatusCode != fiber.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusBadRequest)
+	}
+}
+
+func TestAdminNotificationFailureActionReturnsErrorEnvelope(t *testing.T) {
+	h := New(Deps{
+		Services: &service.Services{
+			Notification: service.NewNotificationServiceWithStoresAndOutbox(nil, nil, &handlerNotificationOutboxStore{}, provider.NewLogNotifier(), nil, service.NotificationConfig{}),
+			Idempotency:  service.NewIdempotencyService(&handlerIdempotencyStore{}),
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	req := httptest.NewRequest("POST", "/admin/notifications/failures/not-a-uuid/retry", strings.NewReader(`{}`))
+	req.Header.Set("X-Admin-Key", "secret")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "retry-error")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, fiber.StatusBadRequest)
+	}
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if body.Error.Code != "BAD_REQUEST" || body.Error.Message != "invalid notification id" {
+		t.Fatalf("error = %+v, want code and backend message", body.Error)
 	}
 }

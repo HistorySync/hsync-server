@@ -518,6 +518,12 @@ All mutation routes require an `Idempotency-Key`.
 - `discard` is terminal from the operator perspective. Use it only when the
   notification is obsolete or harmful to keep retrying.
 - If `background_tasks_enabled=false`, the outbox will not self-drain.
+- The admin console exposes per-row `retry`, `requeue`, and `discard` actions,
+  plus a "Retry visible failures" batch action. Each console mutation sends a
+  fresh `Idempotency-Key`, refreshes the failure list after success, and shows
+  whether the server returned a fresh or replayed response.
+- Console error banners show the API error code and message. Treat the server
+  response as authoritative; the console does not duplicate outbox state rules.
 
 ### Recommended troubleshooting order
 

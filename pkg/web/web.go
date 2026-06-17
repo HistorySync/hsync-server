@@ -175,6 +175,19 @@ if(options&&options.headers){Object.assign(headers,options.headers);}
 return requestJSON(url,Object.assign({},options||{},{headers:headers}));
 }
 
+function operatorError(error){
+const body=error&&error.body||{};
+const apiError=body.error||{};
+const code=apiError.code||body.code||("HTTP "+(error&&error.status||"error"));
+const message=apiError.message||body.message||(error&&error.message)||"request failed";
+return code+": "+message;
+}
+
+function newIdempotencyKey(){
+if(window.crypto&&window.crypto.randomUUID){return window.crypto.randomUUID();}
+return "console-"+Date.now().toString(36)+"-"+Math.random().toString(36).slice(2);
+}
+
 function numberValue(value){
 if(value===null||value===undefined||value===""){return "n/a";}
 if(typeof value==="number"){return value.toLocaleString();}
@@ -670,6 +683,11 @@ renderNotifications(response.body.notifications||[]);
 
 function renderNotifications(items){
 const tbody=document.getElementById("notification-failure-rows");
+const batch=document.getElementById("retry-visible-notifications");
+if(batch){
+batch.disabled=!items.length;
+batch.dataset.limit=String(items.length||0);
+}
 tbody.textContent="";
 if(!items.length){
 emptyRow(tbody,8,"no failed notifications");
@@ -685,14 +703,79 @@ tr.appendChild(makeCell(item.type));
 tr.appendChild(makeCell(numberValue(item.attempt_count)));
 tr.appendChild(makeCell(item.error_summary||"n/a"));
 const action=document.createElement("td");
-const button=document.createElement("button");
-button.type="button";
-button.className="button secondary";
-button.disabled=true;
-button.textContent="Redrive";
-action.appendChild(button);
+action.className="row-actions";
+action.appendChild(notificationActionButton("Retry",item.id,"retry","secondary"));
+action.appendChild(notificationActionButton("Requeue",item.id,"requeue","warn"));
+action.appendChild(notificationActionButton("Discard",item.id,"discard","danger"));
 tr.appendChild(action);
 tbody.appendChild(tr);
+}
+}
+
+function notificationActionButton(label,id,action,tone){
+const button=document.createElement("button");
+button.type="button";
+button.className="button compact "+tone;
+button.textContent=label;
+button.dataset.notificationAction=action;
+button.dataset.notificationId=id||"";
+button.setAttribute("aria-label",label+" notification "+shortID(id));
+button.addEventListener("click",function(){runNotificationAction(button,id,action,label);});
+if(!id){button.disabled=true;}
+return button;
+}
+
+function notificationActionSummary(action,body){
+const result=body&&body.result?String(body.result):"completed";
+const replayed=body&&body.replayed?"replayed response":"fresh response";
+const counts=[];
+for(const field of ["sent","failed","scheduled_retry","retried","requeued","discarded","skipped","not_found"]){
+if(body&&body[field]){counts.push(field.replace("_"," ")+": "+body[field]);}
+}
+return action+" succeeded: "+result+" ("+replayed+")"+(counts.length?" - "+counts.join(", "):"");
+}
+
+async function mutateNotificationFailure(url,body){
+return requestAdmin(url,{
+method:"POST",
+headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()},
+body:JSON.stringify(body||{})
+});
+}
+
+async function runNotificationAction(button,id,action,label){
+const buttons=button.parentElement?button.parentElement.querySelectorAll("button"):[button];
+for(const item of buttons){item.disabled=true;}
+const original=button.textContent;
+button.textContent="Working";
+try{
+const response=await mutateNotificationFailure(adminPath+"/notifications/failures/"+encodeURIComponent(id)+"/"+action,{});
+setBanner(notificationActionSummary(label,response.body||{}),"");
+await loadNotifications();
+}catch(error){
+setBanner(label+" failed - "+operatorError(error),"err");
+}finally{
+if(!button.isConnected){return;}
+button.textContent=original;
+for(const item of buttons){item.disabled=false;}
+}
+}
+
+async function retryVisibleNotifications(button){
+const limit=Math.max(1,parseInt(button.dataset.limit||"50",10)||50);
+button.disabled=true;
+const original=button.textContent;
+button.textContent="Working";
+try{
+const response=await mutateNotificationFailure(adminPath+"/notifications/failures/retry",{limit:limit});
+setBanner(notificationActionSummary("Retry visible failures",response.body||{}),"");
+await loadNotifications();
+}catch(error){
+setBanner("Retry visible failures failed - "+operatorError(error),"err");
+}finally{
+if(!button.isConnected){return;}
+button.textContent=original;
+button.disabled=false;
 }
 }
 
@@ -773,6 +856,7 @@ document.getElementById("refresh-settings").addEventListener("click",function(){
 document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-ops").addEventListener("click",function(){loadOps().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-notifications").addEventListener("click",function(){loadNotifications().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("retry-visible-notifications").addEventListener("click",function(event){retryVisibleNotifications(event.currentTarget).catch(function(error){setBanner(operatorError(error),"err");});});
 document.getElementById("refresh-health").addEventListener("click",function(){loadHealth().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("audit-filter").addEventListener("submit",function(event){event.preventDefault();loadAuditLogs().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("clear-audit-filter").addEventListener("click",function(){

@@ -287,6 +287,83 @@ func TestLandingPageIncludesNotificationFailureActionWiring(t *testing.T) {
 	}
 }
 
+func TestLandingPageIncludesOpsActionPanel(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`id="ops-actions"`,
+		`Ops actions`,
+		`id="run-dependency-check"`,
+		`Run dependency check`,
+		`id="run-consistency-check"`,
+		`Run consistency check`,
+		`id="ops-consistency-limit"`,
+		`id="restore-rehearsal-form"`,
+		`id="restore-rehearsal-mode"`,
+		`value="baseline">Generate restore baseline`,
+		`value="verify">Verify restore manifest`,
+		`id="restore-manifest-json"`,
+		`Manifest JSON`,
+		`id="support-bundle-form"`,
+		`Download support bundle`,
+		`id="operational-export-form"`,
+		`id="export-record-type"`,
+		`value="audit_logs"`,
+		`value="ops_history"`,
+		`value="notification_outbox"`,
+		`id="export-format"`,
+		`id="export-source"`,
+		`id="export-limit"`,
+		`id="export-from"`,
+		`id="export-to"`,
+		`id="ops-action-result"`,
+		`id="ops-action-summary"`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing %q", check)
+		}
+	}
+}
+
+func TestLandingPageIncludesOpsActionWiring(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()}`,
+		`runOpsPost("Run dependency check",adminPath+"/ops/check",{})`,
+		`runOpsPost("Run consistency check",adminPath+"/ops/consistency?limit="+encodeURIComponent(String(limit)),{})`,
+		`adminPath+"/ops/restore-rehearsal"`,
+		`restoreManifestPayload(document.getElementById("restore-manifest-json").value)`,
+		`parsed.manifest||parsed`,
+		`downloadAdminURL("Download support bundle",adminPath+"/support-bundle"`,
+		`downloadAdminURL("Export operational records",adminPath+"/exports/operational-records?"+params.toString()`,
+		`URL.createObjectURL(raw)`,
+		`link.download=filename`,
+		`renderOpsActionResult("Restore rehearsal failed"`,
+		`setBanner(operatorError(error),"err")`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing ops action wiring %q", check)
+		}
+	}
+}
+
 func TestLandingPageIncludesTimelineLookupPanel(t *testing.T) {
 	body := landingPage(normalizeOptions(Options{
 		Enabled:     true,

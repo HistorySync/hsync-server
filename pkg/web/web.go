@@ -152,6 +152,12 @@ function writeJSON(node,value){
 node.textContent=JSON.stringify(value||{},null,2);
 }
 
+function readJSONInput(value,label){
+const raw=(value||"").trim();
+if(!raw){return null;}
+try{return JSON.parse(raw);}catch(error){throw new Error(label+" must be valid JSON: "+error.message);}
+}
+
 async function requestJSON(url,options){
 const response=await fetch(url,Object.assign({headers:{Accept:"application/json"}},options||{}));
 const raw=await response.text();
@@ -676,6 +682,96 @@ tbody.appendChild(tr);
 }
 }
 
+function renderOpsActionResult(label,body){
+const result=document.getElementById("ops-action-result");
+if(result){writeJSON(result,body||{});}
+const status=document.getElementById("ops-action-status");
+if(status){
+const overall=body&&body.overall||body&&body.status||"complete";
+status.className="pill"+(overall==="ok"?" ok":overall==="degraded"||overall==="disabled"?" warn":overall==="complete"?" ok":" err");
+status.textContent=overall;
+}
+const summary=document.getElementById("ops-action-summary");
+if(!summary){return;}
+summary.textContent="";
+summary.appendChild(detailItem("Last action",label));
+if(body&&body.overall){summary.appendChild(detailItem("Overall",body.overall));}
+if(body&&body.checked_at){summary.appendChild(detailItem("Checked",dateValue(body.checked_at)));}
+if(body&&body.duration_millis!==undefined){summary.appendChild(detailItem("Duration",numberValue(body.duration_millis)+" ms"));}
+if(body&&body.mode){summary.appendChild(detailItem("Mode",body.mode));}
+if(body&&body.limit){summary.appendChild(detailItem("Limit",numberValue(body.limit)));}
+if(body&&body.summary){summary.appendChild(detailItem("Summary",JSON.stringify(body.summary)));}
+if(body&&body.manifest&&body.manifest.objects){summary.appendChild(detailItem("Manifest objects",numberValue(body.manifest.objects.length)));}
+if(body&&body.records){summary.appendChild(detailItem("Records",numberValue(body.records.length)));}
+}
+
+async function runOpsPost(label,url,body){
+const response=await requestAdmin(url,{
+method:"POST",
+headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()},
+body:body?JSON.stringify(body):"{}"
+});
+renderOpsActionResult(label,response.body||{});
+setBanner(label+" completed.","");
+await loadOps();
+return response.body;
+}
+
+function restoreManifestPayload(raw){
+const parsed=readJSONInput(raw,"Restore manifest");
+if(!parsed){return null;}
+return parsed.manifest||parsed;
+}
+
+async function runRestoreRehearsal(){
+const mode=document.getElementById("restore-rehearsal-mode").value;
+const limit=parseInt(document.getElementById("restore-rehearsal-limit").value,10)||1000;
+const body={mode:mode,limit:limit};
+if(mode==="verify"){
+const manifest=restoreManifestPayload(document.getElementById("restore-manifest-json").value);
+if(!manifest){throw new Error("Manifest JSON is required for verify mode.");}
+body.manifest=manifest;
+}
+return runOpsPost(mode==="verify"?"Verify restore manifest":"Generate restore baseline",adminPath+"/ops/restore-rehearsal",body);
+}
+
+function downloadFilename(prefix,format){
+const stamp=new Date().toISOString().replace(/[:.]/g,"-");
+return prefix+"-"+stamp+"."+(format||"json");
+}
+
+async function downloadAdminURL(label,url,filename){
+const response=await fetch(url,{headers:adminHeaders()});
+const raw=await response.blob();
+if(!response.ok){
+let body={};
+try{body=JSON.parse(await raw.text());}catch(_err){}
+const error=new Error((body.error&&body.error.message)||body.message||("HTTP "+response.status));
+error.status=response.status;
+error.body=body;
+throw error;
+}
+const link=document.createElement("a");
+const objectURL=URL.createObjectURL(raw);
+link.href=objectURL;
+link.download=filename;
+document.body.appendChild(link);
+link.click();
+link.remove();
+window.setTimeout(function(){URL.revokeObjectURL(objectURL);},1000);
+renderOpsActionResult(label,{status:"complete",download:filename});
+setBanner(label+" download started.","");
+}
+
+function queryFromForm(form){
+const params=new URLSearchParams();
+for(const field of form.querySelectorAll("input,select")){
+const value=(field.value||"").trim();
+if(value){params.set(field.name,value);}
+}
+return params;
+}
+
 async function loadNotifications(){
 const response=await requestAdmin(adminPath+"/notifications/failures?limit=50");
 renderNotifications(response.body.notifications||[]);
@@ -855,6 +951,23 @@ renderSupportTimelineLookup(null);
 document.getElementById("refresh-settings").addEventListener("click",function(){loadSettings().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-ops").addEventListener("click",function(){loadOps().catch(function(error){setBanner(error.message,"err");});});
+document.getElementById("run-dependency-check").addEventListener("click",function(){runOpsPost("Run dependency check",adminPath+"/ops/check",{}).catch(function(error){renderOpsActionResult("Run dependency check failed",{error:operatorError(error),body:error.body||{}});setBanner(operatorError(error),"err");});});
+document.getElementById("run-consistency-check").addEventListener("click",function(){
+const limit=parseInt(document.getElementById("ops-consistency-limit").value,10)||1000;
+runOpsPost("Run consistency check",adminPath+"/ops/consistency?limit="+encodeURIComponent(String(limit)),{}).catch(function(error){renderOpsActionResult("Run consistency check failed",{error:operatorError(error),body:error.body||{}});setBanner(operatorError(error),"err");});
+});
+document.getElementById("restore-rehearsal-form").addEventListener("submit",function(event){event.preventDefault();runRestoreRehearsal().catch(function(error){renderOpsActionResult("Restore rehearsal failed",{error:operatorError(error),body:error.body||{}});setBanner(operatorError(error),"err");});});
+document.getElementById("support-bundle-form").addEventListener("submit",function(event){
+event.preventDefault();
+const params=queryFromForm(event.currentTarget);
+downloadAdminURL("Download support bundle",adminPath+"/support-bundle"+(params.toString()?"?"+params.toString():""),downloadFilename("support-bundle","json")).catch(function(error){renderOpsActionResult("Download support bundle failed",{error:operatorError(error),body:error.body||{}});setBanner(operatorError(error),"err");});
+});
+document.getElementById("operational-export-form").addEventListener("submit",function(event){
+event.preventDefault();
+const params=queryFromForm(event.currentTarget);
+const format=params.get("format")||"json";
+downloadAdminURL("Export operational records",adminPath+"/exports/operational-records?"+params.toString(),downloadFilename("operational-records",format)).catch(function(error){renderOpsActionResult("Export operational records failed",{error:operatorError(error),body:error.body||{}});setBanner(operatorError(error),"err");});
+});
 document.getElementById("refresh-notifications").addEventListener("click",function(){loadNotifications().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("retry-visible-notifications").addEventListener("click",function(event){retryVisibleNotifications(event.currentTarget).catch(function(error){setBanner(operatorError(error),"err");});});
 document.getElementById("refresh-health").addEventListener("click",function(){loadHealth().catch(function(error){setBanner(error.message,"err");});});

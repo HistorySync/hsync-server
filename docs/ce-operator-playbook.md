@@ -268,6 +268,15 @@ jq '{mode:"verify", limit:1000, manifest:.manifest}' restore-baseline.json \
   > restore-verify.json
 ```
 
+The admin console exposes the same workflow under **Ops checks** ->
+**Ops actions**. Enter the admin key, use **Generate restore baseline** on the
+source environment, save the JSON response, then switch to **Verify restore
+manifest** on the restored environment and paste either the saved `manifest`
+object or the full baseline response. The console also runs dependency and
+consistency checks with fresh idempotency keys, downloads support bundles, and
+exports operational records with `record_type`, `format`, `source`, `limit`,
+`from`, and `to` filters.
+
 Review these fields before cutover:
 
 - `summary.missing_objects`: restore referenced PostgreSQL metadata but the S3

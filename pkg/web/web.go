@@ -125,6 +125,7 @@ const versionPath="/api/meta/version";
 const adminKeyInput=document.getElementById("admin-key");
 const statusText=document.getElementById("console-status");
 const banner=document.getElementById("status-banner");
+let lastSupportRepairResult=null;
 
 function text(id,value){
 const node=document.getElementById(id);
@@ -490,15 +491,14 @@ setBanner("Timeline lookup loaded and audited.","");
 
 function renderSupportTimelineLookup(context){
 text("support-timeline-user-card",context&&context.user?(context.user.email||shortID(context.user.id)):"no match");
-const erasure=context&&context.erasure_status||{};
-let erasureState="not requested";
-if(erasure.completed){erasureState="completed";}
-else if(erasure.in_progress){erasureState="in progress";}
-else if(erasure.requested){erasureState="requested";}
-text("support-timeline-erasure-card",erasureState);
-text("support-timeline-job-card",context?numberValue((context.job_status||[]).length):"0");
-text("support-timeline-action-card",context?numberValue((context.recent_actions||[]).length):"0");
+const quota=context&&context.quota||{};
+const usage=quota.usage||{};
+const limit=quota.effective_limit||{};
+text("support-timeline-quota-card",quota.usage?bytesValue(usage.total_bytes||0)+" / "+bytesValue(limit.storage_limit_bytes||0):"n/a");
+text("support-timeline-device-card",context?numberValue((context.devices||[]).length):"0");
+text("support-timeline-event-card",context&&context.incident_timeline?numberValue(context.incident_timeline.total):"0");
 renderSupportTimelineDetails(context);
+renderSupportRepairPanel(context,lastSupportRepairResult);
 renderSupportTimelineActions(context&&context.recent_actions||[]);
 renderSupportTimelineJobs(context&&context.job_status||[]);
 writeJSON(document.getElementById("support-timeline-json"),context||{status:"no lookup"});
@@ -519,11 +519,106 @@ const limit=quota.effective_limit||{};
 grid.appendChild(detailItem("User",user.email||user.id||"n/a"));
 grid.appendChild(detailItem("Tier",user.tier||"n/a"));
 grid.appendChild(detailItem("Status",user.status||"n/a"));
-grid.appendChild(detailItem("Storage",quota.usage?bytesValue(usage.total_bytes||0)+" / "+bytesValue(limit.storage_limit_bytes||0):"n/a"));
-grid.appendChild(detailItem("Devices",numberValue((context.devices||[]).length)));
+grid.appendChild(detailItem("Quota usage",quota.usage?bytesValue(usage.total_bytes||0):"n/a"));
+grid.appendChild(detailItem("Effective limit",quota.usage?bytesValue(limit.storage_limit_bytes||0):"n/a"));
+grid.appendChild(detailItem("Bundles / snapshots",numberValue(usage.bundle_count||0)+" / "+numberValue(usage.snap_count||0)));
+grid.appendChild(detailItem("Devices count",numberValue((context.devices||[]).length)));
 grid.appendChild(detailItem("Erasure jobs",numberValue((context.erasure_jobs||[]).length)));
+grid.appendChild(detailItem("Erasure state",erasureStateForContext(context)));
 grid.appendChild(detailItem("Account changes",numberValue((context.account_changes||[]).length)));
-grid.appendChild(detailItem("Timeline events",context.incident_timeline?numberValue(context.incident_timeline.total):"0"));
+grid.appendChild(detailItem("Timeline totals",timelineTotals(context.incident_timeline)));
+}
+
+function erasureStateForContext(context){
+const erasure=context&&context.erasure_status||{};
+if(erasure.completed){return "completed";}
+if(erasure.in_progress){return "in progress";}
+if(erasure.requested){return "requested";}
+return "not requested";
+}
+
+function timelineTotals(timeline){
+if(!timeline){return "0";}
+const summary=timeline.summary||{};
+const parts=["events "+numberValue(timeline.total||summary.total_events||0)];
+if(summary.auth_failures){parts.push("auth failures "+numberValue(summary.auth_failures));}
+if(summary.step_up_events){parts.push("step-up "+numberValue(summary.step_up_events));}
+if(summary.account_deletion_or_export){parts.push("lifecycle "+numberValue(summary.account_deletion_or_export));}
+return parts.join(", ");
+}
+
+function renderSupportRepairPanel(context,result){
+const user=context&&context.user||null;
+if(user&&result&&result.user_id&&String(result.user_id)!==String(user.id)){result=null;}
+if(!user&&context){result=null;}
+const button=document.getElementById("recalculate-support-quota");
+const refresh=document.getElementById("refresh-support-context-after-action");
+if(button){
+button.disabled=!user||!user.id;
+button.dataset.userId=user&&user.id||"";
+}
+if(refresh){refresh.disabled=!user||!user.id;}
+const summary=document.getElementById("support-timeline-repair-summary");
+if(summary){
+summary.textContent="";
+summary.appendChild(detailItem("Selected user",user?(user.email||shortID(user.id)):"none"));
+if(context&&context.quota){
+summary.appendChild(detailItem("Quota usage",bytesValue(context.quota.usage.total_bytes||0)));
+summary.appendChild(detailItem("Effective limit",bytesValue(context.quota.effective_limit.storage_limit_bytes||0)));
+}
+if(result){
+summary.appendChild(detailItem("Last action",result.replayed?"replayed":"recalculated"));
+if(result.before&&result.after){summary.appendChild(detailItem("Correction",bytesValue((result.after.total_bytes||0)-(result.before.total_bytes||0))));}
+}
+}
+const status=document.getElementById("support-timeline-repair-status");
+if(status&&!result){
+status.className="pill"+(user?" ok":"");
+status.textContent=user?"ready":"idle";
+}
+if(result){renderSupportRepairResult(result);}
+}
+
+function renderSupportRepairResult(body){
+const result=document.getElementById("support-timeline-repair-result");
+if(result){writeJSON(result,body||{});}
+const status=document.getElementById("support-timeline-repair-status");
+if(status){
+status.className="pill "+(body&&body.error?"err":"ok");
+status.textContent=body&&body.error?"error":body&&body.replayed?"replayed":"recalculated";
+}
+}
+
+async function recalculateSupportQuota(){
+const button=document.getElementById("recalculate-support-quota");
+const userID=button&&button.dataset.userId;
+if(!userID){throw new Error("Look up a user before recalculating quota.");}
+button.disabled=true;
+const original=button.textContent;
+button.textContent="Working";
+try{
+const response=await requestAdmin(adminPath+"/users/"+encodeURIComponent(userID)+"/recalculate-quota",{
+method:"POST",
+headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()},
+body:"{}"
+});
+lastSupportRepairResult=response.body||{};
+renderSupportRepairPanel(null,lastSupportRepairResult);
+setBanner((response.body&&response.body.replayed?"Quota recalculation replayed.":"Quota recalculated."),"");
+await loadSupportTimelineLookup();
+return response.body;
+}catch(error){
+const body={error:operatorError(error),body:error.body||{}};
+lastSupportRepairResult=body;
+renderSupportRepairResult(body);
+setBanner("Quota recalculation error - "+operatorError(error),"err");
+throw error;
+}finally{
+if(button.isConnected){
+button.textContent=original;
+button.disabled=!button.dataset.userId;
+}
+}
 }
 
 function detailItem(label,value){
@@ -946,8 +1041,11 @@ document.getElementById("support-timeline-form").addEventListener("submit",funct
 document.getElementById("refresh-support-timeline").addEventListener("click",function(){loadSupportTimelineLookup().catch(function(error){writeJSON(document.getElementById("support-timeline-json"),{error:error.message,body:error.body||{}});setBanner(error.message,"err");});});
 document.getElementById("clear-support-timeline").addEventListener("click",function(){
 for(const input of document.querySelectorAll("#support-timeline-form input")){input.value=input.name==="limit"?"10":"";}
+lastSupportRepairResult=null;
 renderSupportTimelineLookup(null);
 });
+document.getElementById("recalculate-support-quota").addEventListener("click",function(){recalculateSupportQuota().catch(function(){});});
+document.getElementById("refresh-support-context-after-action").addEventListener("click",function(){loadSupportTimelineLookup().catch(function(error){setBanner(operatorError(error),"err");});});
 document.getElementById("refresh-settings").addEventListener("click",function(){loadSettings().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-security").addEventListener("click",function(){loadSecurity().catch(function(error){setBanner(error.message,"err");});});
 document.getElementById("refresh-ops").addEventListener("click",function(){loadOps().catch(function(error){setBanner(error.message,"err");});});

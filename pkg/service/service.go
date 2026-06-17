@@ -240,10 +240,7 @@ func New(deps Deps) *Services {
 		tokenManager:  deps.TokenManager,
 		notifications: notifSvc,
 	}
-	quotaSvc := &QuotaService{
-		repos:         deps.Repos,
-		notifications: notifSvc,
-	}
+	quotaSvc := NewQuotaService(deps.Repos, notifSvc)
 	bundleSvc := &BundleService{
 		repos:       deps.Repos,
 		blobStore:   deps.BlobStore,
@@ -1480,8 +1477,48 @@ func (s *AuthService) ListRevocations(ctx context.Context, userID uuid.UUID) ([]
 // QuotaService
 // QuotaService checks and enforces resource limits.
 type QuotaService struct {
-	repos         *repository.Repos
+	users         quotaUserStore
+	devices       quotaDeviceStore
+	quota         quotaUsageStore
 	notifications *NotificationService
+}
+
+// NewQuotaService wires quota logic for tests and small embeddings that already
+// have repository dependencies assembled.
+func NewQuotaService(repos *repository.Repos, notifications *NotificationService) *QuotaService {
+	var users quotaUserStore
+	var devices quotaDeviceStore
+	var quota quotaUsageStore
+	if repos != nil {
+		users = repos.Users
+		devices = repos.Devices
+		quota = repos.Quota
+	}
+	return NewQuotaServiceWithStores(users, devices, quota, notifications)
+}
+
+// NewQuotaServiceWithStores wires quota logic with the narrow persistence
+// surface it uses. Production code passes repository.Repos through NewQuotaService.
+func NewQuotaServiceWithStores(users quotaUserStore, devices quotaDeviceStore, quota quotaUsageStore, notifications *NotificationService) *QuotaService {
+	return &QuotaService{users: users, devices: devices, quota: quota, notifications: notifications}
+}
+
+type quotaUserStore interface {
+	GetByID(ctx context.Context, id uuid.UUID) (*model.User, error)
+}
+
+type quotaDeviceStore interface {
+	CountActiveByUser(ctx context.Context, userID uuid.UUID) (int32, error)
+}
+
+type quotaUsageStore interface {
+	GetUsage(ctx context.Context, userID uuid.UUID) (*model.QuotaUsage, error)
+	TryAddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error)
+	TryAddSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error)
+	RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error
+	RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error
+	RecalculateUsage(ctx context.Context, userID uuid.UUID) (*model.QuotaUsage, error)
+	RecalculateAllUsage(ctx context.Context) (int64, error)
 }
 
 // QuotaInfo contains a user's current usage and limits.
@@ -1492,7 +1529,10 @@ type QuotaInfo struct {
 
 // GetQuota returns the full quota picture for a user.
 func (s *QuotaService) GetQuota(ctx context.Context, userID uuid.UUID, tier model.UserTier) (*QuotaInfo, error) {
-	usage, err := s.repos.Quota.GetUsage(ctx, userID)
+	if s == nil || s.quota == nil {
+		return nil, fmt.Errorf("quota store is not configured")
+	}
+	usage, err := s.quota.GetUsage(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get usage: %w", err)
 	}
@@ -1510,7 +1550,10 @@ func (s *QuotaService) GetQuota(ctx context.Context, userID uuid.UUID, tier mode
 // current tier. Upload paths pass it to repository.TryAdd*Usage, whose atomic
 // conditional UPDATE is the single authoritative, race-safe quota check.
 func (s *QuotaService) StorageLimit(ctx context.Context, userID uuid.UUID) (int64, error) {
-	user, err := s.repos.Users.GetByID(ctx, userID)
+	if s == nil || s.users == nil {
+		return 0, fmt.Errorf("user store is not configured")
+	}
+	user, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		return 0, fmt.Errorf("get user: %w", err)
 	}
@@ -1521,18 +1564,18 @@ func (s *QuotaService) StorageLimit(ctx context.Context, userID uuid.UUID) (int6
 }
 
 func (s *QuotaService) TryAddBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
-	return s.repos.Quota.TryAddBundleUsage(ctx, userID, sizeBytes, storageLimitBytes)
+	return s.quota.TryAddBundleUsage(ctx, userID, sizeBytes, storageLimitBytes)
 }
 
 func (s *QuotaService) TryAddSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) (bool, error) {
-	return s.repos.Quota.TryAddSnapshotUsage(ctx, userID, sizeBytes, storageLimitBytes)
+	return s.quota.TryAddSnapshotUsage(ctx, userID, sizeBytes, storageLimitBytes)
 }
 
 func (s *QuotaService) NotifyBundleUsageAdded(ctx context.Context, userID uuid.UUID, sizeBytes, storageLimitBytes int64) {
 	if s.notifications == nil || storageLimitBytes <= 0 {
 		return
 	}
-	after, err := s.repos.Quota.GetUsage(ctx, userID)
+	after, err := s.quota.GetUsage(ctx, userID)
 	if err != nil || after == nil {
 		return
 	}
@@ -1552,7 +1595,7 @@ func (s *QuotaService) NotifySnapshotUsageAdded(ctx context.Context, userID uuid
 	if s.notifications == nil || storageLimitBytes <= 0 {
 		return
 	}
-	after, err := s.repos.Quota.GetUsage(ctx, userID)
+	after, err := s.quota.GetUsage(ctx, userID)
 	if err != nil || after == nil {
 		return
 	}
@@ -1570,12 +1613,12 @@ func (s *QuotaService) NotifySnapshotUsageAdded(ctx context.Context, userID uuid
 
 func (s *QuotaService) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
 	limit, limitErr := s.StorageLimit(ctx, userID)
-	before, beforeErr := s.repos.Quota.GetUsage(ctx, userID)
-	if err := s.repos.Quota.RemoveBundleUsage(ctx, userID, sizeBytes); err != nil {
+	before, beforeErr := s.quota.GetUsage(ctx, userID)
+	if err := s.quota.RemoveBundleUsage(ctx, userID, sizeBytes); err != nil {
 		return err
 	}
 	if limitErr == nil && beforeErr == nil && before != nil && s.notifications != nil {
-		if after, err := s.repos.Quota.GetUsage(ctx, userID); err == nil && after != nil {
+		if after, err := s.quota.GetUsage(ctx, userID); err == nil && after != nil {
 			s.notifications.MaybeNotifyQuotaRestored(userID, *before, *after, limit)
 		}
 	}
@@ -1584,12 +1627,12 @@ func (s *QuotaService) RemoveBundleUsage(ctx context.Context, userID uuid.UUID, 
 
 func (s *QuotaService) RemoveSnapshotUsage(ctx context.Context, userID uuid.UUID, sizeBytes int64) error {
 	limit, limitErr := s.StorageLimit(ctx, userID)
-	before, beforeErr := s.repos.Quota.GetUsage(ctx, userID)
-	if err := s.repos.Quota.RemoveSnapshotUsage(ctx, userID, sizeBytes); err != nil {
+	before, beforeErr := s.quota.GetUsage(ctx, userID)
+	if err := s.quota.RemoveSnapshotUsage(ctx, userID, sizeBytes); err != nil {
 		return err
 	}
 	if limitErr == nil && beforeErr == nil && before != nil && s.notifications != nil {
-		if after, err := s.repos.Quota.GetUsage(ctx, userID); err == nil && after != nil {
+		if after, err := s.quota.GetUsage(ctx, userID); err == nil && after != nil {
 			s.notifications.MaybeNotifyQuotaRestored(userID, *before, *after, limit)
 		}
 	}
@@ -1607,7 +1650,10 @@ type UsageRecalculation struct {
 // from the authoritative bundle and snapshot rows, returning the before/after so
 // callers can see the magnitude of any correction.
 func (s *QuotaService) RecalculateUsage(ctx context.Context, userID uuid.UUID) (*UsageRecalculation, error) {
-	user, err := s.repos.Users.GetByID(ctx, userID)
+	if s == nil || s.users == nil || s.quota == nil {
+		return nil, fmt.Errorf("quota service is not configured")
+	}
+	user, err := s.users.GetByID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
@@ -1615,11 +1661,11 @@ func (s *QuotaService) RecalculateUsage(ctx context.Context, userID uuid.UUID) (
 		return nil, ErrUserNotFound
 	}
 
-	before, err := s.repos.Quota.GetUsage(ctx, userID)
+	before, err := s.quota.GetUsage(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("get usage: %w", err)
 	}
-	after, err := s.repos.Quota.RecalculateUsage(ctx, userID)
+	after, err := s.quota.RecalculateUsage(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1630,12 +1676,15 @@ func (s *QuotaService) RecalculateUsage(ctx context.Context, userID uuid.UUID) (
 // pass, returning the number of users reconciled. It backs the periodic
 // maintenance task; per-user corrections use RecalculateUsage.
 func (s *QuotaService) RecalculateAllUsage(ctx context.Context) (int64, error) {
-	return s.repos.Quota.RecalculateAllUsage(ctx)
+	return s.quota.RecalculateAllUsage(ctx)
 }
 
 // CheckDeviceLimit verifies the user can register more devices.
 func (s *QuotaService) CheckDeviceLimit(ctx context.Context, userID uuid.UUID, tier model.UserTier) error {
-	count, err := s.repos.Devices.CountActiveByUser(ctx, userID)
+	if s == nil || s.devices == nil {
+		return fmt.Errorf("device store is not configured")
+	}
+	count, err := s.devices.CountActiveByUser(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("count devices: %w", err)
 	}

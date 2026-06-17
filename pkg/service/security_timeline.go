@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -16,10 +16,10 @@ import (
 )
 
 const (
-	defaultSecurityTimelineLimit   = int32(200)
-	maxSecurityTimelineLimit       = int32(1000)
+	defaultSecurityTimelineLimit    = int32(200)
+	maxSecurityTimelineLimit        = int32(1000)
 	defaultSecurityTimelineLookback = 7 * 24 * time.Hour
-	maxSecurityTimelineScan        = 5000
+	maxSecurityTimelineScan         = 5000
 )
 
 type securityTimelineAuditStore interface {
@@ -293,7 +293,8 @@ func securityTimelineCategory(log model.AuditLog) string {
 		model.AuditEventAccountErasureJobFinished,
 		model.AuditEventAccountErasureJobFailed:
 		return "account_lifecycle"
-	case model.AuditEventAdminSecurityTimelineRead:
+	case model.AuditEventAdminSecurityTimelineRead,
+		model.AuditEventAdminQuotaRecalculate:
 		return "admin_investigation"
 	case model.AuditEventLoginSuccess:
 		return "auth"

@@ -2591,17 +2591,17 @@ func (h *Handlers) AdminSecurityTimeline(c fiber.Ctx) error {
 		TargetType: "security_timeline",
 		TargetID:   strings.TrimSpace(firstNonEmpty(response.Filter.UserID, response.Filter.Email, response.Filter.IPHash, response.Filter.Action, "query")),
 		Metadata: map[string]any{
-			"user_id":     response.Filter.UserID,
-			"email_hint":  response.Filter.Email,
-			"ip_hash":     response.Filter.IPHash,
-			"action":      response.Filter.Action,
-			"since":       response.Filter.Since,
-			"until":       response.Filter.Until,
-			"limit":       response.Filter.Limit,
-			"offset":      response.Filter.Offset,
+			"user_id":      response.Filter.UserID,
+			"email_hint":   response.Filter.Email,
+			"ip_hash":      response.Filter.IPHash,
+			"action":       response.Filter.Action,
+			"since":        response.Filter.Since,
+			"until":        response.Filter.Until,
+			"limit":        response.Filter.Limit,
+			"offset":       response.Filter.Offset,
 			"result_count": len(response.Events),
-			"total":       response.Total,
-			"format":      strings.ToLower(strings.TrimSpace(c.Query("format", "json"))),
+			"total":        response.Total,
+			"format":       strings.ToLower(strings.TrimSpace(c.Query("format", "json"))),
 		},
 	})
 
@@ -2883,18 +2883,59 @@ func (h *Handlers) AdminRecalculateQuota(c fiber.Ctx) error {
 		return apierrors.New(apierrors.CodeInvalidUserID, "invalid user id")
 	}
 
-	result, err := h.deps.Services.Quota.RecalculateUsage(c.Context(), userID)
-	if err != nil {
-		if err == service.ErrUserNotFound {
-			return apierrors.New(apierrors.CodeUserNotFound, "user not found")
+	if h.deps.Services == nil || h.deps.Services.Quota == nil {
+		return apierrors.NewInternal("quota service is not configured")
+	}
+	if h.deps.Services.Idempotency == nil {
+		return apierrors.NewInternal("idempotency service is not configured")
+	}
+	execution, err := service.ExecuteIdempotent[service.UsageRecalculation](c.Context(), h.deps.Services.Idempotency, service.IdempotencyOptions{
+		Scope:          "admin.users.recalculate_quota",
+		IdempotencyKey: c.Get("Idempotency-Key"),
+		Payload:        fiber.Map{"user_id": userID.String()},
+		RequireKey:     true,
+	}, func(ctx context.Context) (*service.UsageRecalculation, int, error) {
+		result, err := h.deps.Services.Quota.RecalculateUsage(ctx, userID)
+		if err != nil {
+			if err == service.ErrUserNotFound {
+				return nil, 0, apierrors.New(apierrors.CodeUserNotFound, "user not found")
+			}
+			return nil, 0, apierrors.NewInternal(err.Error())
 		}
-		return apierrors.NewInternal(err.Error())
+		h.recordAudit(c, service.AuditEventInput{
+			EventType:  model.AuditEventAdminQuotaRecalculate,
+			TargetType: "user",
+			TargetID:   userID.String(),
+			Metadata: map[string]any{
+				"user_id":             userID.String(),
+				"before_total_bytes":  result.Before.TotalBytes,
+				"after_total_bytes":   result.After.TotalBytes,
+				"before_bundle_count": result.Before.BundleCount,
+				"after_bundle_count":  result.After.BundleCount,
+				"before_snap_count":   result.Before.SnapCount,
+				"after_snap_count":    result.After.SnapCount,
+			},
+		})
+		return result, fiber.StatusOK, nil
+	})
+	if err != nil {
+		if errors.Is(err, service.ErrIdempotencyKeyRequired) ||
+			errors.Is(err, service.ErrIdempotencyConflict) ||
+			errors.Is(err, service.ErrIdempotencyInProgress) ||
+			errors.Is(err, service.ErrIdempotencyStoreUnavailable) {
+			return mapIdempotencyError(err)
+		}
+		return err
 	}
 
+	if execution.Data == nil {
+		return apierrors.NewInternal("idempotency response is missing")
+	}
 	return c.JSON(fiber.Map{
-		"user_id": userID,
-		"before":  result.Before,
-		"after":   result.After,
+		"user_id":  userID,
+		"before":   execution.Data.Before,
+		"after":    execution.Data.After,
+		"replayed": execution.Replayed,
 	})
 }
 

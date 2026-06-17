@@ -278,6 +278,57 @@ func (s *handlerSupportErasureStore) ListByUser(_ context.Context, userID uuid.U
 	return append([]model.AccountErasureJob(nil), s.jobs...), nil
 }
 
+type handlerQuotaUserStore struct {
+	users map[uuid.UUID]*model.User
+}
+
+func (s *handlerQuotaUserStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error) {
+	if user := s.users[id]; user != nil {
+		clone := *user
+		return &clone, nil
+	}
+	return nil, nil
+}
+
+type handlerQuotaUsageStore struct {
+	before      model.QuotaUsage
+	after       model.QuotaUsage
+	recalculate int
+}
+
+func (s *handlerQuotaUsageStore) GetUsage(_ context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
+	clone := s.before
+	clone.UserID = userID
+	return &clone, nil
+}
+
+func (s *handlerQuotaUsageStore) TryAddBundleUsage(context.Context, uuid.UUID, int64, int64) (bool, error) {
+	return true, nil
+}
+
+func (s *handlerQuotaUsageStore) TryAddSnapshotUsage(context.Context, uuid.UUID, int64, int64) (bool, error) {
+	return true, nil
+}
+
+func (s *handlerQuotaUsageStore) RemoveBundleUsage(context.Context, uuid.UUID, int64) error {
+	return nil
+}
+
+func (s *handlerQuotaUsageStore) RemoveSnapshotUsage(context.Context, uuid.UUID, int64) error {
+	return nil
+}
+
+func (s *handlerQuotaUsageStore) RecalculateUsage(_ context.Context, userID uuid.UUID) (*model.QuotaUsage, error) {
+	s.recalculate++
+	clone := s.after
+	clone.UserID = userID
+	return &clone, nil
+}
+
+func (s *handlerQuotaUsageStore) RecalculateAllUsage(context.Context) (int64, error) {
+	return 1, nil
+}
+
 func TestAdminSupportContextReturnsIncidentTimelineAndWritesAudit(t *testing.T) {
 	userID := uuid.New()
 	now := time.Now().UTC()
@@ -351,5 +402,92 @@ func TestAdminSupportContextReturnsIncidentTimelineAndWritesAudit(t *testing.T) 
 	}
 	if len(store.created) == 0 || store.created[len(store.created)-1].EventType != model.AuditEventAdminSupportContextRead {
 		t.Fatalf("audit query event = %+v, want support context read audit", store.created)
+	}
+}
+
+func TestAdminRecalculateQuotaConsolePathIsIdempotentAndAudited(t *testing.T) {
+	userID := uuid.New()
+	auditStore := &handlerAuditStore{}
+	quotaStore := &handlerQuotaUsageStore{
+		before: model.QuotaUsage{UserID: userID, TotalBytes: 500, BundleCount: 3, SnapCount: 2},
+		after:  model.QuotaUsage{UserID: userID, TotalBytes: 320, BundleCount: 2, SnapCount: 1},
+	}
+	h := New(Deps{
+		Services: &service.Services{
+			Quota: service.NewQuotaServiceWithStores(
+				&handlerQuotaUserStore{users: map[uuid.UUID]*model.User{
+					userID: {ID: userID, Email: "user@example.com", Tier: model.TierFree, Status: model.StatusActive},
+				}},
+				nil,
+				quotaStore,
+				nil,
+			),
+			Idempotency: service.NewIdempotencyService(&handlerIdempotencyStore{}),
+			Audit:       service.NewAuditService(auditStore),
+		},
+		AdminKey: "secret",
+	})
+	app := fiber.New(fiber.Config{ErrorHandler: h.ErrorHandler})
+	h.RegisterRoutes(app)
+
+	url := "/admin/users/" + userID.String() + "/recalculate-quota"
+	first := httptest.NewRequest("POST", url, strings.NewReader(`{}`))
+	first.Header.Set("X-Admin-Key", "secret")
+	first.Header.Set("Content-Type", "application/json")
+	first.Header.Set("Idempotency-Key", "quota-repair")
+	resp, err := app.Test(first)
+	if err != nil {
+		t.Fatalf("first app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("first status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	var firstBody struct {
+		UserID   uuid.UUID        `json:"user_id"`
+		Before   model.QuotaUsage `json:"before"`
+		After    model.QuotaUsage `json:"after"`
+		Replayed bool             `json:"replayed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&firstBody); err != nil {
+		t.Fatalf("decode first response: %v", err)
+	}
+	if firstBody.UserID != userID || firstBody.Before.TotalBytes != 500 || firstBody.After.TotalBytes != 320 || firstBody.Replayed {
+		t.Fatalf("first body = %+v, want fresh recalculation", firstBody)
+	}
+	if quotaStore.recalculate != 1 {
+		t.Fatalf("recalculate count = %d, want 1", quotaStore.recalculate)
+	}
+	if len(auditStore.created) != 1 {
+		t.Fatalf("audit count = %d, want 1", len(auditStore.created))
+	}
+	if event := auditStore.created[0]; event.EventType != model.AuditEventAdminQuotaRecalculate || event.TargetType != "user" || event.TargetID != userID.String() {
+		t.Fatalf("audit event = %+v, want quota recalculate user event", event)
+	}
+
+	second := httptest.NewRequest("POST", url, strings.NewReader(`{}`))
+	second.Header.Set("X-Admin-Key", "secret")
+	second.Header.Set("Content-Type", "application/json")
+	second.Header.Set("Idempotency-Key", "quota-repair")
+	resp, err = app.Test(second)
+	if err != nil {
+		t.Fatalf("second app.Test() error = %v", err)
+	}
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("second status = %d, want %d", resp.StatusCode, fiber.StatusOK)
+	}
+	var secondBody struct {
+		Replayed bool `json:"replayed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&secondBody); err != nil {
+		t.Fatalf("decode second response: %v", err)
+	}
+	if !secondBody.Replayed {
+		t.Fatalf("second body replayed = false, want true")
+	}
+	if quotaStore.recalculate != 1 {
+		t.Fatalf("recalculate count after replay = %d, want 1", quotaStore.recalculate)
+	}
+	if len(auditStore.created) != 1 {
+		t.Fatalf("audit count after replay = %d, want 1", len(auditStore.created))
 	}
 }

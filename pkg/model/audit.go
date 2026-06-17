@@ -30,6 +30,7 @@ const (
 	AuditEventAdminConfigChange         AuditEventType = "admin.config.change"
 	AuditEventAdminSecurityTimelineRead AuditEventType = "admin.security.timeline.read"
 	AuditEventAdminSupportContextRead   AuditEventType = "admin.support_context.lookup"
+	AuditEventAdminQuotaRecalculate     AuditEventType = "admin.quota.recalculate"
 	AuditEventNotificationOutboxRetry   AuditEventType = "admin.notification_outbox.retry"
 	AuditEventNotificationOutboxRequeue AuditEventType = "admin.notification_outbox.requeue"
 	AuditEventNotificationOutboxDiscard AuditEventType = "admin.notification_outbox.discard"

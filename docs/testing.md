@@ -139,21 +139,26 @@ The CE release gate runs these checks in order against a temporary local stack:
 Every step must pass. The gate does not skip failures, does not update
 baselines, and does not mark the RC green if any step fails.
 
-The script writes a machine-readable report to `build/release-report-ce.json`
-with:
+The script writes the stable release evidence bundle to
+`build/release-report-ce.json` and a human summary to
+`build/release-summary-ce.txt`. Start with
+`release_evidence.overall_status` and then read the grouped statuses under
+`release_evidence`:
 
-- `commit`
-- `version`
-- `edition`
-- `build_info`
-- `artifact_manifest_path`
-- `artifacts.binary.sha256`
-- `artifacts.image.digest`
-- `artifacts.sbom`
-- `vulnerability_reports`
-- `passed_steps`
-- `failed_steps`
-- `duration_ms`
+- `build.status` and `build.build_info`
+- `migration.status`, `pending_count`, and `tracking_table_ok`
+- `schema_drift.status`
+- `doctor.status`
+- `ops_rehearsal.status`
+- `smoke_load.smoke_status` and `smoke_load.load_status`
+- `supply_chain.sbom_status`, `supply_chain.vuln_status`, and report paths
+- `blocking_failures`
+- `operator_next_action`
+
+Statuses use `ok`, `warn`, and `error`. `error` blocks release. `warn` requires
+operator review and sign-off before promotion. The report intentionally stores
+paths, statuses, hashes, and counts only; it must not contain raw secrets,
+tokens, DSNs, provider credentials, or license material.
 
 Per-step stdout/stderr logs are written under `build/release-check/`. CI keeps
 those artifacts even when the gate fails so release blockers can be inspected

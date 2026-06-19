@@ -1,5 +1,7 @@
 param(
     [string]$ReportPath = (Join-Path "build" "release-report-ce.json"),
+    [string]$HumanSummaryPath = (Join-Path "build" "release-summary-ce.txt"),
+    [switch]$DryRunReport,
     [switch]$KeepEnvironment
 )
 
@@ -37,6 +39,16 @@ $resolvedReportPath = if ([System.IO.Path]::IsPathRooted($ReportPath)) {
 $reportParent = Split-Path -Parent $resolvedReportPath
 if ($reportParent) {
     New-Item -ItemType Directory -Force -Path $reportParent | Out-Null
+}
+
+$resolvedHumanSummaryPath = if ([System.IO.Path]::IsPathRooted($HumanSummaryPath)) {
+    $HumanSummaryPath
+} else {
+    Join-Path $RepoRoot $HumanSummaryPath
+}
+$summaryParent = Split-Path -Parent $resolvedHumanSummaryPath
+if ($summaryParent) {
+    New-Item -ItemType Directory -Force -Path $summaryParent | Out-Null
 }
 
 function Invoke-External {
@@ -162,7 +174,51 @@ function Wait-ForDockerHealth {
 function Convert-CommandForDisplay {
     param([string[]]$Parts)
 
-    return ($Parts | ForEach-Object {
+    $sensitiveFlags = @(
+        "-admin-key",
+        "--admin-key",
+        "-token",
+        "--token",
+        "-password",
+        "--password",
+        "-secret",
+        "--secret",
+        "-license-key",
+        "--license-key"
+    )
+    $redacted = @()
+    $redactNext = $false
+    foreach ($part in $Parts) {
+        if ($part -match 'HSYNC_.*(KEY|TOKEN|SECRET|PASSWORD)') {
+            $redacted += "[redacted-script]"
+            $redactNext = $false
+            continue
+        }
+        if ($redactNext) {
+            $redacted += "[redacted]"
+            $redactNext = $false
+            continue
+        }
+        $matchedFlag = $false
+        foreach ($flag in $sensitiveFlags) {
+            if ($part -eq $flag) {
+                $matchedFlag = $true
+                $redacted += $part
+                $redactNext = $true
+                break
+            }
+            if ($part.StartsWith("$flag=")) {
+                $matchedFlag = $true
+                $redacted += "$flag=[redacted]"
+                break
+            }
+        }
+        if (-not $matchedFlag) {
+            $redacted += $part
+        }
+    }
+
+    return ($redacted | ForEach-Object {
         if ($_ -match '\s') { '"' + $_ + '"' } else { $_ }
     }) -join ' '
 }
@@ -400,6 +456,370 @@ function Get-ReportSummary {
     }
 }
 
+function Convert-StepStatusLevel {
+    param([string]$Status)
+
+    switch ($Status) {
+        "passed" { return "ok" }
+        "failed" { return "error" }
+        "pending" { return "warn" }
+        default { return "warn" }
+    }
+}
+
+function Convert-OverallLevel {
+    param([string]$Status)
+
+    switch ($Status) {
+        "ok" { return "ok" }
+        "passed" { return "ok" }
+        "success" { return "ok" }
+        "warn" { return "warn" }
+        "warning" { return "warn" }
+        "degraded" { return "warn" }
+        "" { return "warn" }
+        default { return "error" }
+    }
+}
+
+function Merge-StatusLevel {
+    param([string[]]$Statuses)
+
+    if ($Statuses -contains "error") {
+        return "error"
+    }
+    if ($Statuses -contains "warn") {
+        return "warn"
+    }
+    return "ok"
+}
+
+function Find-Step {
+    param(
+        [array]$Steps,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    return ($Steps | Where-Object { $_.name -eq $Name } | Select-Object -First 1)
+}
+
+function Get-StepLevel {
+    param(
+        [array]$Steps,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $step = Find-Step -Steps $Steps -Name $Name
+    if ($null -eq $step) {
+        return "warn"
+    }
+    return Convert-StepStatusLevel -Status $step.status
+}
+
+function Read-StepJSON {
+    param($Step)
+
+    if ($null -eq $Step -or [string]::IsNullOrWhiteSpace($Step.stdout_path) -or -not (Test-Path -LiteralPath $Step.stdout_path)) {
+        return $null
+    }
+    try {
+        return (Get-Content -LiteralPath $Step.stdout_path -Raw | ConvertFrom-Json)
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-RelativePathOrNull {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+    return Get-RelativePath -Path $Path
+}
+
+function Get-NamedCheckStatus {
+    param(
+        $Json,
+        [Parameter(Mandatory = $true)][string[]]$IDs
+    )
+
+    if ($null -eq $Json -or $null -eq $Json.PSObject.Properties["checks"]) {
+        return "warn"
+    }
+    foreach ($check in @($Json.PSObject.Properties["checks"].Value)) {
+        if ($IDs -contains [string]$check.id) {
+            return Convert-OverallLevel -Status ([string]$check.severity)
+        }
+    }
+    return "warn"
+}
+
+function Get-RehearsalStepStatus {
+    param(
+        $Json,
+        [Parameter(Mandatory = $true)][string[]]$IDs
+    )
+
+    if ($null -eq $Json -or $null -eq $Json.PSObject.Properties["steps"]) {
+        return "warn"
+    }
+    foreach ($step in @($Json.PSObject.Properties["steps"].Value)) {
+        if ($IDs -contains [string]$step.id) {
+            return Convert-OverallLevel -Status ([string]$step.status)
+        }
+    }
+    return "warn"
+}
+
+function New-CEEvidenceSummary {
+    param(
+        [array]$Steps,
+        $ArtifactManifest,
+        [bool]$ReleasePassed,
+        [string]$ReportRelativePath,
+        [string]$HumanSummaryRelativePath,
+        [string]$ArtifactManifestRelativePath,
+        [string]$VulnJSONRelativePath,
+        [string]$VulnTextRelativePath
+    )
+
+    $migrationStep = Find-Step -Steps $Steps -Name "migration-status"
+    $doctorStep = Find-Step -Steps $Steps -Name "doctor"
+    $rehearsalStep = Find-Step -Steps $Steps -Name "rehearsal"
+    $loadStep = Find-Step -Steps $Steps -Name "load"
+
+    $migration = Read-StepJSON -Step $migrationStep
+    $doctor = Read-StepJSON -Step $doctorStep
+    $rehearsal = Read-StepJSON -Step $rehearsalStep
+    $load = Read-StepJSON -Step $loadStep
+
+    $blockingFailures = @($Steps | Where-Object { $_.status -eq "failed" } | ForEach-Object {
+        [ordered]@{
+            step = $_.name
+            status = "error"
+            detail = $_.detail
+            stdout_path = $(if ($_.stdout_path) { Get-RelativePath -Path $_.stdout_path } else { $null })
+            stderr_path = $(if ($_.stderr_path) { Get-RelativePath -Path $_.stderr_path } else { $null })
+        }
+    })
+
+    $vulnReports = [ordered]@{
+        govulncheck_json = $VulnJSONRelativePath
+        govulncheck_text = $VulnTextRelativePath
+    }
+    $vulnStatus = $(if ($vulnReports.govulncheck_json -and $vulnReports.govulncheck_text) { Get-StepLevel -Steps $Steps -Name "vulnerability-check" } else { "warn" })
+    $sbomStatus = $(if ($ArtifactManifest -and $ArtifactManifest.sbom -and $ArtifactManifestRelativePath) { Get-StepLevel -Steps $Steps -Name "artifact-verification" } else { "warn" })
+    $buildStatus = $(if ($ArtifactManifest -and $ArtifactManifest.build_info) { "ok" } else { "warn" })
+    $migrationStatus = $(if ($migration) {
+        if (-not [bool]$migration.consistent -or -not [bool]$migration.tracking_table_ok) {
+            "error"
+        }
+        elseif (@($migration.pending).Count -gt 0 -or (@($migration.problems).Count -gt 0)) {
+            "warn"
+        }
+        else {
+            "ok"
+        }
+    } else { "warn" })
+    $schemaDriftStatus = Merge-StatusLevel -Statuses @(
+        (Get-NamedCheckStatus -Json $doctor -IDs @("schema_drift")),
+        (Get-RehearsalStepStatus -Json $rehearsal -IDs @("schema.drift"))
+    )
+    $doctorStatus = $(if ($doctor) { Convert-OverallLevel -Status ([string]$doctor.overall) } else { "warn" })
+    $rehearsalStatus = $(if ($rehearsal) { Convert-OverallLevel -Status ([string]$rehearsal.overall) } else { "warn" })
+    $smokeStatus = Get-StepLevel -Steps $Steps -Name "smoke"
+    $loadStatus = $(if ($load) {
+        if ([int64]$load.status_classes.http_5xx -gt 0 -or [int64]$load.status_classes.other -gt 0 -or [int64]$load.quota_rollback_count -gt 0) {
+            "error"
+        }
+        elseif ([int64]$load.status_classes.http_403 -gt 0 -or [int64]$load.status_classes.http_429 -gt 0) {
+            "warn"
+        }
+        else {
+            Get-StepLevel -Steps $Steps -Name "load"
+        }
+    } else { "warn" })
+    $overallStatus = Merge-StatusLevel -Statuses @(
+        $(if ($ReleasePassed -and $blockingFailures.Count -eq 0) { "ok" } else { "error" }),
+        $buildStatus,
+        $migrationStatus,
+        $schemaDriftStatus,
+        $doctorStatus,
+        $rehearsalStatus,
+        $smokeStatus,
+        $loadStatus,
+        $vulnStatus,
+        $sbomStatus
+    )
+
+    return [ordered]@{
+        schema_version = 1
+        overall_status = $overallStatus
+        report_path = $ReportRelativePath
+        human_summary_path = $HumanSummaryRelativePath
+        commit = $gitCommit
+        version = $gitVersion
+        edition = "community"
+        build = [ordered]@{
+            status = $buildStatus
+            build_info = $(if ($ArtifactManifest) { $ArtifactManifest.build_info } else { $null })
+            artifact_manifest_path = $ArtifactManifestRelativePath
+        }
+        migration = [ordered]@{
+            status = $migrationStatus
+            consistent = $(if ($migration) { $migration.consistent } else { $null })
+            tracking_table_ok = $(if ($migration) { $migration.tracking_table_ok } else { $null })
+            pending_count = $(if ($migration) { @($migration.pending).Count } else { $null })
+            rollback_available_count = $(if ($migration) { @($migration.rollback_available).Count } else { $null })
+        }
+        schema_drift = [ordered]@{
+            status = $schemaDriftStatus
+            doctor_status = Get-NamedCheckStatus -Json $doctor -IDs @("schema_drift")
+            rehearsal_status = Get-RehearsalStepStatus -Json $rehearsal -IDs @("schema.drift")
+        }
+        doctor = [ordered]@{
+            status = $doctorStatus
+            overall = $(if ($doctor) { $doctor.overall } else { $null })
+        }
+        ops_rehearsal = [ordered]@{
+            status = $rehearsalStatus
+            overall = $(if ($rehearsal) { $rehearsal.overall } else { $null })
+        }
+        smoke_load = [ordered]@{
+            smoke_status = $smokeStatus
+            load_status = $loadStatus
+            load_status_classes = $(if ($load) { $load.status_classes } else { $null })
+            load_quota_rollback_count = $(if ($load) { $load.quota_rollback_count } else { $null })
+        }
+        supply_chain = [ordered]@{
+            sbom_status = $sbomStatus
+            vuln_status = $vulnStatus
+            artifact_manifest_path = $ArtifactManifestRelativePath
+            sbom = $(if ($ArtifactManifest) { $ArtifactManifest.sbom } else { $null })
+            vulnerability_reports = $vulnReports
+        }
+        blocking_failures = $blockingFailures
+        operator_next_action = $(if ($overallStatus -eq "ok") { "Archive this evidence bundle with the release tag, then proceed with the planned upgrade and rollback rehearsal." } elseif ($overallStatus -eq "warn") { "Review the warning sections, confirm the warnings are intentional, and only then promote the release." } else { "Do not release. Inspect blocking_failures and the referenced stdout/stderr logs, fix the failing gate, and rerun make release-check." })
+    }
+}
+
+function Write-HumanReleaseSummary {
+    param(
+        [Parameter(Mandatory = $true)]$Summary,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $lines = @(
+        "HistorySync CE Release Evidence",
+        "overall_status: $($Summary.overall_status)",
+        "version: $($Summary.version)",
+        "commit: $($Summary.commit)",
+        "migration_status: $($Summary.migration.status)",
+        "schema_drift_status: $($Summary.schema_drift.status)",
+        "doctor_status: $($Summary.doctor.status)",
+        "ops_rehearsal_status: $($Summary.ops_rehearsal.status)",
+        "smoke_status: $($Summary.smoke_load.smoke_status)",
+        "load_status: $($Summary.smoke_load.load_status)",
+        "sbom_status: $($Summary.supply_chain.sbom_status)",
+        "vuln_status: $($Summary.supply_chain.vuln_status)",
+        "artifact_manifest_path: $($Summary.supply_chain.artifact_manifest_path)",
+        "govulncheck_json: $($Summary.supply_chain.vulnerability_reports.govulncheck_json)",
+        "govulncheck_text: $($Summary.supply_chain.vulnerability_reports.govulncheck_text)",
+        "blocking_failures: $(@($Summary.blocking_failures).Count)",
+        "operator_next_action: $($Summary.operator_next_action)"
+    )
+    Set-Content -LiteralPath $Path -Value ($lines -join [Environment]::NewLine)
+}
+
+function Complete-DryRunStep {
+    param(
+        [Parameter(Mandatory = $true)]$Step,
+        [string]$StdoutJSON = ""
+    )
+
+    $stdoutFile = Join-Path $ArtifactsDir ($Step.name + ".stdout.log")
+    $stderrFile = Join-Path $ArtifactsDir ($Step.name + ".stderr.log")
+    $Step.stdout_path = $stdoutFile
+    $Step.stderr_path = $stderrFile
+    Start-Step -Step $Step
+    if ($StdoutJSON) {
+        Set-Content -LiteralPath $stdoutFile -Value $StdoutJSON
+    }
+    else {
+        Set-Content -LiteralPath $stdoutFile -Value "dry-run"
+    }
+    Set-Content -LiteralPath $stderrFile -Value ""
+    Complete-StepFromResult -Step $Step -ExitCode 0 -Status "passed" -Detail "dry-run report construction"
+}
+
+function Invoke-DryRunReport {
+    param([array]$Steps)
+
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ArtifactManifestPath) | Out-Null
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $VulnJSONPath) | Out-Null
+
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "test")
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "openapi-compatibility")
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "migration-status") -StdoutJSON @"
+{
+  "scope": "community",
+  "tracking_table": "schema_migrations",
+  "tracking_table_ok": true,
+  "consistent": true,
+  "applied": [],
+  "pending": [],
+  "rollback_available": [],
+  "problems": []
+}
+"@
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "doctor") -StdoutJSON @"
+{
+  "overall": "ok",
+  "checks": [
+    {"id": "schema_drift", "severity": "ok"}
+  ]
+}
+"@
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "rehearsal") -StdoutJSON @"
+{
+  "overall": "ok",
+  "steps": [
+    {"id": "schema.drift", "status": "ok"}
+  ]
+}
+"@
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "smoke")
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "load") -StdoutJSON @"
+{
+  "status_classes": {"http_403": 0, "http_429": 0, "http_5xx": 0, "other": 0},
+  "quota_rollback_count": 0,
+  "scenarios": []
+}
+"@
+    Set-Content -LiteralPath $VulnJSONPath -Value "{}"
+    Set-Content -LiteralPath $VulnTextPath -Value "dry-run"
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "vulnerability-check")
+    $manifest = [ordered]@{
+        build_info = [ordered]@{
+            version = $gitVersion
+            commit = $gitCommit
+            build_time = $buildTime
+            edition = "community"
+            schema_version = 1
+        }
+        binary = [ordered]@{ path = "build/artifacts/hsync-server"; sha256 = "dry-run"; size_bytes = 0 }
+        image = [ordered]@{ tag = "historysync/server:dry-run"; digest = "dry-run"; repo_digests = @() }
+        sbom = [ordered]@{
+            go_modules = [ordered]@{ path = "build/sbom/go-modules-ce.cdx.json"; format = "cyclonedx-json" }
+            docker_image = [ordered]@{ path = "build/sbom/image-ce.cdx.json"; format = "cyclonedx-json" }
+        }
+    }
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $ArtifactManifestPath
+    Complete-DryRunStep -Step (Find-Step -Steps $Steps -Name "artifact-verification")
+}
+
 function Start-ReleaseDataStack {
     param(
         [Parameter(Mandatory = $true)][string]$StdoutFile,
@@ -512,10 +932,12 @@ S3_SECRET_KEY=$s3SecretKey
 $steps = @(
     (New-ReleaseStep -Name "test" -Command @("go", "test", "-count=1", "-timeout", "60s", "./...")),
     (New-ReleaseStep -Name "openapi-compatibility" -Command @("go", "test", "./docs/api")),
+    (New-ReleaseStep -Name "migration-status" -Command @($BinaryPath, "migrate", "status", "--json")),
     (New-ReleaseStep -Name "doctor" -Command @($BinaryPath, "doctor", "--format", "json")),
     (New-ReleaseStep -Name "rehearsal" -Command @($BinaryPath, "ops", "rehearsal", "--format", "json")),
     (New-ReleaseStep -Name "smoke" -Command @("go", "test", "-tags=smoke", "-count=1", "-timeout", "300s", "./cmd/hsync-server")),
     (New-ReleaseStep -Name "load" -Command @("go", "run", "./cmd/loadtest", "-json", "-base-url", $baseUrl, "-admin-key", $adminKey)),
+    (New-ReleaseStep -Name "vulnerability-check" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\vuln-check.ps1"), "-JSONReportPath", $VulnJSONPath, "-TextReportPath", $VulnTextPath)),
     (New-ReleaseStep -Name "artifact-verification" -Command @("pwsh", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $RepoRoot "scripts\supply-chain.ps1"), "-ManifestPath", $ArtifactManifestPath, "-BinaryPath", $BinaryPath, "-Version", $gitVersion, "-Commit", $gitCommit, "-BuildTime", $buildTime))
 )
 
@@ -530,39 +952,52 @@ try {
     $previousExtraFiles = $env:HSYNC_CONFIG_EXTRA_FILES
     $env:HSYNC_CONFIG_EXTRA_FILES = "config.release-check"
 
-    $setupStdout = Join-Path $ArtifactsDir "_setup.stdout.log"
-    $setupStderr = Join-Path $ArtifactsDir "_setup.stderr.log"
-    Build-ReleaseBinary
-    Start-ReleaseDataStack -StdoutFile $setupStdout -StderrFile $setupStderr
-    Start-ReleaseServer
+    if ($DryRunReport) {
+        Invoke-DryRunReport -Steps $steps
+    }
+    else {
+        $setupStdout = Join-Path $ArtifactsDir "_setup.stdout.log"
+        $setupStderr = Join-Path $ArtifactsDir "_setup.stderr.log"
+        Build-ReleaseBinary
+        Start-ReleaseDataStack -StdoutFile $setupStdout -StderrFile $setupStderr
+        Start-ReleaseServer
 
-    Invoke-ReleaseStep -Step $steps[0]
-    Invoke-ReleaseStep -Step $steps[1]
-    Invoke-ReleaseStep -Step $steps[2] -Inspector {
-        param($stdout, $stderr, $exitCode)
-        if ($exitCode -ne 0) {
-            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+        Invoke-ReleaseStep -Step $steps[0]
+        Invoke-ReleaseStep -Step $steps[1]
+        Invoke-ReleaseStep -Step $steps[2] -Inspector {
+            param($stdout, $stderr, $exitCode)
+            if ($exitCode -ne 0) {
+                return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+            }
+            return Test-MigrateStatusJSON -Path $stdout
         }
-        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
-    }
-    Invoke-ReleaseStep -Step $steps[3] -Inspector {
-        param($stdout, $stderr, $exitCode)
-        if ($exitCode -ne 0) {
-            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+        Invoke-ReleaseStep -Step $steps[3] -Inspector {
+            param($stdout, $stderr, $exitCode)
+            if ($exitCode -ne 0) {
+                return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+            }
+            return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
         }
-        return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
-    }
-    Invoke-ReleaseStep -Step $steps[4]
-    Invoke-ReleaseStep -Step $steps[5] -Inspector {
-        param($stdout, $stderr, $exitCode)
-        if ($exitCode -ne 0) {
-            return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+        Invoke-ReleaseStep -Step $steps[4] -Inspector {
+            param($stdout, $stderr, $exitCode)
+            if ($exitCode -ne 0) {
+                return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+            }
+            return Test-JSONOverallOK -Path $stdout -PropertyName "overall"
         }
-        return Test-CEReleaseLoadReport -Path $stdout
+        Invoke-ReleaseStep -Step $steps[5]
+        Invoke-ReleaseStep -Step $steps[6] -Inspector {
+            param($stdout, $stderr, $exitCode)
+            if ($exitCode -ne 0) {
+                return [PSCustomObject]@{ Status = "failed"; Detail = "Command exited with code $exitCode." }
+            }
+            return Test-CEReleaseLoadReport -Path $stdout
+        }
+        Stop-ProcessTree -Process $serverProcess
+        $serverProcess = $null
+        Invoke-ReleaseStep -Step $steps[7]
+        Invoke-ReleaseStep -Step $steps[8]
     }
-    Stop-ProcessTree -Process $serverProcess
-    $serverProcess = $null
-    Invoke-ReleaseStep -Step $steps[6]
 
     $summary = Get-ReportSummary -Steps $steps
     $releasePassed = ($summary.failed.Count -eq 0)
@@ -583,35 +1018,26 @@ finally {
     }
 
     $report = [ordered]@{
+        schema_version = 1
+        edition = "community"
         commit = $gitCommit
         version = $gitVersion
-        edition = "community"
         build_info = $(if ($artifactManifest) { $artifactManifest.build_info } else { $null })
         artifact_manifest_path = $(if (Test-Path -LiteralPath $ArtifactManifestPath) { Get-RelativePath -Path $ArtifactManifestPath } else { $null })
-        vulnerability_reports = [ordered]@{
-            govulncheck_json = $(if (Test-Path -LiteralPath $VulnJSONPath) { Get-RelativePath -Path $VulnJSONPath } else { $null })
-            govulncheck_text = $(if (Test-Path -LiteralPath $VulnTextPath) { Get-RelativePath -Path $VulnTextPath } else { $null })
-        }
-        artifacts = $(if ($artifactManifest) {
-            [ordered]@{
-                binary = $artifactManifest.binary
-                image = $artifactManifest.image
-                sbom = $artifactManifest.sbom
-            }
-        } else {
-            $null
-        })
         started_at = $releaseStartedAt.ToString("o")
         finished_at = $releaseFinishedAt.ToString("o")
         duration_ms = $durationMs
-        overall = $(if ($releasePassed) { "passed" } else { "failed" })
-        passed_steps = $summary.passed
-        failed_steps = $summary.failed
+        overall_status = $(if ($releasePassed) { "ok" } else { "error" })
+        summary = [ordered]@{
+            passed = $summary.passed
+            failed = $summary.failed
+        }
         steps = @($steps | ForEach-Object {
             [ordered]@{
                 name = $_.name
                 command = (Convert-CommandForDisplay -Parts $_.command)
                 status = $_.status
+                status_level = (Convert-StepStatusLevel -Status $_.status)
                 exit_code = $_.exit_code
                 detail = $_.detail
                 started_at = $(if ($_.started_at) { $_.started_at.ToString("o") } else { $null })
@@ -621,8 +1047,10 @@ finally {
                 stderr_path = $_.stderr_path
             }
         })
+        release_evidence = New-CEEvidenceSummary -Steps $steps -ArtifactManifest $artifactManifest -ReleasePassed $releasePassed -ReportRelativePath (Get-RelativePath -Path $resolvedReportPath) -HumanSummaryRelativePath (Get-RelativePath -Path $resolvedHumanSummaryPath) -ArtifactManifestRelativePath (Get-RelativePathOrNull -Path $ArtifactManifestPath) -VulnJSONRelativePath (Get-RelativePathOrNull -Path $VulnJSONPath) -VulnTextRelativePath (Get-RelativePathOrNull -Path $VulnTextPath)
     }
-    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resolvedReportPath
+    $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $resolvedReportPath
+    Write-HumanReleaseSummary -Summary $report.release_evidence -Path $resolvedHumanSummaryPath
 
     Stop-ProcessTree -Process $serverProcess
     if ($null -ne $previousExtraFiles) {
@@ -631,7 +1059,7 @@ finally {
     else {
         Remove-Item Env:\HSYNC_CONFIG_EXTRA_FILES -ErrorAction SilentlyContinue
     }
-    if (-not $KeepEnvironment) {
+    if (-not $KeepEnvironment -and -not $DryRunReport) {
         try {
             Push-Location $RepoRoot
             Invoke-External -FilePath "docker" -Arguments @("compose", "--env-file", $EnvFile, "-f", $ComposeFile, "down", "-v") -AllowFailure

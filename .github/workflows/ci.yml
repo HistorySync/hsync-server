@@ -60,10 +60,12 @@ jobs:
           name: ce-release-report
           path: |
             build/release-report-ce.json
+            build/release-summary-ce.txt
             build/release-artifact-manifest-ce.json
             build/release-check/**
             build/release-artifacts/**
             build/sbom/**
+            build/vuln/**
 
   api-compatibility:
     name: API compatibility

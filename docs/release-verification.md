@@ -17,8 +17,27 @@ The main outputs are:
 
 - `build/release-artifact-manifest-ce.json`
 - `build/release-report-ce.json`
+- `build/release-summary-ce.txt`
 - `build/sbom/go-modules-ce.cdx.json`
 - `build/sbom/image-ce.cdx.json`
+- `build/vuln/govulncheck-ce.json`
+- `build/vuln/govulncheck-ce.txt`
+
+## Read the CE release evidence
+
+Open `build/release-report-ce.json` and start with
+`release_evidence.overall_status`.
+
+- `ok`: archive the JSON, human summary, SBOM, vulnerability reports, and
+  artifact manifest with the release tag.
+- `warn`: review the named warning sections and record operator sign-off before
+  promotion.
+- `error`: do not release; inspect `release_evidence.blocking_failures` and the
+  referenced logs under `build/release-check/`.
+
+`release_evidence.operator_next_action` is the short operator-facing decision.
+The evidence bundle records paths, status, hashes, and counts only and should
+not contain raw secrets, DSNs, tokens, or provider credentials.
 
 `build/release-artifact-manifest-ce.json` records:
 

@@ -530,6 +530,18 @@ function Read-StepJSON {
     }
 }
 
+function Get-PropertyArrayCount {
+    param(
+        $Object,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Object -or $null -eq $Object.PSObject.Properties[$Name]) {
+        return 0
+    }
+    return @($Object.PSObject.Properties[$Name].Value).Count
+}
+
 function Get-RelativePathOrNull {
     param([string]$Path)
 
@@ -636,7 +648,7 @@ function New-CEEvidenceSummary {
         if (-not [bool]$migration.consistent -or -not [bool]$migration.tracking_table_ok) {
             "error"
         }
-        elseif (@($migration.pending).Count -gt 0 -or (@($migration.problems).Count -gt 0)) {
+        elseif ((Get-PropertyArrayCount -Object $migration -Name "pending") -gt 0 -or (Get-PropertyArrayCount -Object $migration -Name "problems") -gt 0) {
             "warn"
         }
         else {
@@ -691,8 +703,8 @@ function New-CEEvidenceSummary {
             status = $migrationStatus
             consistent = $(if ($migration) { $migration.consistent } else { $null })
             tracking_table_ok = $(if ($migration) { $migration.tracking_table_ok } else { $null })
-            pending_count = $(if ($migration) { @($migration.pending).Count } else { $null })
-            rollback_available_count = $(if ($migration) { @($migration.rollback_available).Count } else { $null })
+            pending_count = $(if ($migration) { Get-PropertyArrayCount -Object $migration -Name "pending" } else { $null })
+            rollback_available_count = $(if ($migration) { Get-PropertyArrayCount -Object $migration -Name "rollback_available" } else { $null })
         }
         schema_drift = [ordered]@{
             status = $schemaDriftStatus

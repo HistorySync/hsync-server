@@ -105,7 +105,7 @@ func TestAccountErasureJobsListByUserUsesRecentIndex(t *testing.T) {
 			UserID:      user.ID,
 			RequestedAt: now.Add(-time.Duration(i) * time.Hour),
 			EligibleAt:  now.Add(-time.Duration(i) * time.Hour),
-			Status:      model.AccountErasureJobStatusPending,
+			Status:      model.AccountErasureJobStatusCompleted,
 		}
 		if err := repo.Create(ctx, job); err != nil {
 			t.Fatalf("create erasure job %d: %v", i, err)

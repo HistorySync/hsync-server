@@ -112,6 +112,9 @@ func main() {
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
 		http: &http.Client{
 			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+			},
 		},
 	}
 

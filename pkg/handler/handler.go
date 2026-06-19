@@ -1553,13 +1553,12 @@ func (h *Handlers) DownloadBundle(c fiber.Ctx) error {
 		}
 		return apierrors.NewInternal(err.Error())
 	}
-	defer reader.Close()
 
 	c.Set("Content-Type", "application/octet-stream")
 	c.Set("Content-Disposition", "attachment; filename=\""+meta.BundleID+".hsb\"")
 	c.Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
 
-	return c.SendStream(reader)
+	return c.SendStream(reader, int(meta.SizeBytes))
 }
 
 func (h *Handlers) DeleteBundle(c fiber.Ctx) error {
@@ -1678,12 +1677,11 @@ func (h *Handlers) DownloadSnapshot(c fiber.Ctx) error {
 		}
 		return apierrors.NewInternal(err.Error())
 	}
-	defer reader.Close()
 
 	c.Set("Content-Type", "application/octet-stream")
 	c.Set("Content-Disposition", "attachment; filename=\""+meta.SnapshotID+".hsb\"")
 	c.Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
-	return c.SendStream(reader)
+	return c.SendStream(reader, int(meta.SizeBytes))
 }
 
 // Devices

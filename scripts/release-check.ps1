@@ -539,6 +539,14 @@ function Get-RelativePathOrNull {
     return Get-RelativePath -Path $Path
 }
 
+function Clear-PreviousReleaseOutputs {
+    foreach ($path in @($resolvedReportPath, $resolvedHumanSummaryPath, $ArtifactManifestPath, $VulnJSONPath, $VulnTextPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($path) -and (Test-Path -LiteralPath $path)) {
+            Remove-Item -LiteralPath $path -Force
+        }
+    }
+}
+
 function Get-NamedCheckStatus {
     param(
         $Json,
@@ -578,6 +586,9 @@ function New-CEEvidenceSummary {
         [array]$Steps,
         $ArtifactManifest,
         [bool]$ReleasePassed,
+        $ReleaseError,
+        [string]$SetupStdoutPath,
+        [string]$SetupStderrPath,
         [string]$ReportRelativePath,
         [string]$HumanSummaryRelativePath,
         [string]$ArtifactManifestRelativePath,
@@ -604,6 +615,15 @@ function New-CEEvidenceSummary {
             stderr_path = $(if ($_.stderr_path) { Get-RelativePath -Path $_.stderr_path } else { $null })
         }
     })
+    if ($null -ne $ReleaseError -and $blockingFailures.Count -eq 0) {
+        $blockingFailures += [ordered]@{
+            step = "release-setup"
+            status = "error"
+            detail = $ReleaseError.Exception.Message
+            stdout_path = $(if ($SetupStdoutPath -and (Test-Path -LiteralPath $SetupStdoutPath)) { Get-RelativePath -Path $SetupStdoutPath } else { $null })
+            stderr_path = $(if ($SetupStderrPath -and (Test-Path -LiteralPath $SetupStderrPath)) { Get-RelativePath -Path $SetupStderrPath } else { $null })
+        }
+    }
 
     $vulnReports = [ordered]@{
         govulncheck_json = $VulnJSONRelativePath
@@ -946,18 +966,19 @@ $releaseEnvironmentStarted = $false
 $releaseStartedAt = (Get-Date).ToUniversalTime()
 $releasePassed = $false
 $releaseError = $null
+$setupStdout = Join-Path $ArtifactsDir "_setup.stdout.log"
+$setupStderr = Join-Path $ArtifactsDir "_setup.stderr.log"
 
 try {
     Push-Location $RepoRoot
     $previousExtraFiles = $env:HSYNC_CONFIG_EXTRA_FILES
     $env:HSYNC_CONFIG_EXTRA_FILES = "config.release-check"
+    Clear-PreviousReleaseOutputs
 
     if ($DryRunReport) {
         Invoke-DryRunReport -Steps $steps
     }
     else {
-        $setupStdout = Join-Path $ArtifactsDir "_setup.stdout.log"
-        $setupStderr = Join-Path $ArtifactsDir "_setup.stderr.log"
         Build-ReleaseBinary
         Start-ReleaseDataStack -StdoutFile $setupStdout -StderrFile $setupStderr
         Start-ReleaseServer
@@ -1047,7 +1068,7 @@ finally {
                 stderr_path = $_.stderr_path
             }
         })
-        release_evidence = New-CEEvidenceSummary -Steps $steps -ArtifactManifest $artifactManifest -ReleasePassed $releasePassed -ReportRelativePath (Get-RelativePath -Path $resolvedReportPath) -HumanSummaryRelativePath (Get-RelativePath -Path $resolvedHumanSummaryPath) -ArtifactManifestRelativePath (Get-RelativePathOrNull -Path $ArtifactManifestPath) -VulnJSONRelativePath (Get-RelativePathOrNull -Path $VulnJSONPath) -VulnTextRelativePath (Get-RelativePathOrNull -Path $VulnTextPath)
+        release_evidence = New-CEEvidenceSummary -Steps $steps -ArtifactManifest $artifactManifest -ReleasePassed $releasePassed -ReleaseError $releaseError -SetupStdoutPath $setupStdout -SetupStderrPath $setupStderr -ReportRelativePath (Get-RelativePath -Path $resolvedReportPath) -HumanSummaryRelativePath (Get-RelativePath -Path $resolvedHumanSummaryPath) -ArtifactManifestRelativePath (Get-RelativePathOrNull -Path $ArtifactManifestPath) -VulnJSONRelativePath (Get-RelativePathOrNull -Path $VulnJSONPath) -VulnTextRelativePath (Get-RelativePathOrNull -Path $VulnTextPath)
     }
     $report | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $resolvedReportPath
     Write-HumanReleaseSummary -Summary $report.release_evidence -Path $resolvedHumanSummaryPath

@@ -1095,7 +1095,7 @@ finally {
     if (-not $KeepEnvironment -and -not $DryRunReport) {
         try {
             Push-Location $RepoRoot
-            Invoke-External -FilePath "docker" -Arguments @("compose", "--env-file", $EnvFile, "-f", $ComposeFile, "down", "-v") -AllowFailure
+            Invoke-External -FilePath "docker" -Arguments @("compose", "--env-file", $EnvFile, "-f", $ComposeFile, "down", "-v") -AllowFailure | Out-Null
         }
         finally {
             Pop-Location

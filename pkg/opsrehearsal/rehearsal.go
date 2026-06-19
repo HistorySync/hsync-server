@@ -305,11 +305,12 @@ func runtimeFor(ctx context.Context, opts Options) (*Runtime, error) {
 		redisClient, _ = repository.NewRedisClient(ctx, opts.Config.RedisURL)
 	}
 	blobStore, err := storage.NewS3Storage(ctx, storage.S3Config{
-		Endpoint:  opts.Config.S3Endpoint,
-		Bucket:    opts.Config.S3Bucket,
-		AccessKey: opts.Config.S3AccessKey,
-		SecretKey: opts.Config.S3SecretKey,
-		UseSSL:    opts.Config.S3UseSSL,
+		Endpoint:     opts.Config.S3Endpoint,
+		Bucket:       opts.Config.S3Bucket,
+		AccessKey:    opts.Config.S3AccessKey,
+		SecretKey:    opts.Config.S3SecretKey,
+		UseSSL:       opts.Config.S3UseSSL,
+		StorageClass: opts.Config.S3StorageClass,
 	})
 	if err != nil {
 		runtime.Close()

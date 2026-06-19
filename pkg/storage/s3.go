@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -13,18 +14,20 @@ import (
 
 // S3Config holds the connection parameters for an S3-compatible service.
 type S3Config struct {
-	Endpoint  string
-	Bucket    string
-	AccessKey string
-	SecretKey string
-	UseSSL    bool
-	Region    string // optional, defaults to "us-east-1"
+	Endpoint     string
+	Bucket       string
+	AccessKey    string
+	SecretKey    string
+	UseSSL       bool
+	Region       string // optional, defaults to "us-east-1"
+	StorageClass string // optional, omit for S3-compatible stores that reject AWS-only classes
 }
 
 // S3Storage implements BlobStorage using the MinIO/S3 API.
 type S3Storage struct {
-	client *minio.Client
-	bucket string
+	client       *minio.Client
+	bucket       string
+	storageClass string
 }
 
 // NewS3Storage creates a new S3-backed blob store and verifies the bucket exists.
@@ -55,8 +58,9 @@ func NewS3Storage(ctx context.Context, cfg S3Config) (*S3Storage, error) {
 	}
 
 	return &S3Storage{
-		client: client,
-		bucket: cfg.Bucket,
+		client:       client,
+		bucket:       cfg.Bucket,
+		storageClass: strings.TrimSpace(cfg.StorageClass),
 	}, nil
 }
 
@@ -67,9 +71,11 @@ func (s *S3Storage) Put(ctx context.Context, key string, reader io.Reader, size 
 	}
 
 	opts := minio.PutObjectOptions{
-		ContentType:  contentType,
-		PartSize:     5 * 1024 * 1024, // 5 MB parts
-		StorageClass: "STANDARD_IA",   // Infrequent access for cost savings
+		ContentType: contentType,
+		PartSize:    5 * 1024 * 1024, // 5 MB parts
+	}
+	if s.storageClass != "" {
+		opts.StorageClass = s.storageClass
 	}
 
 	_, err := s.client.PutObject(ctx, s.bucket, key, reader, size, opts)

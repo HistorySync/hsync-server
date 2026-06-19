@@ -128,11 +128,12 @@ func main() {
 
 	// Blob Storage
 	blobStore, err := storage.NewS3Storage(ctx, storage.S3Config{
-		Endpoint:  cfg.S3Endpoint,
-		Bucket:    cfg.S3Bucket,
-		AccessKey: cfg.S3AccessKey,
-		SecretKey: cfg.S3SecretKey,
-		UseSSL:    cfg.S3UseSSL,
+		Endpoint:     cfg.S3Endpoint,
+		Bucket:       cfg.S3Bucket,
+		AccessKey:    cfg.S3AccessKey,
+		SecretKey:    cfg.S3SecretKey,
+		UseSSL:       cfg.S3UseSSL,
+		StorageClass: cfg.S3StorageClass,
 	})
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize blob storage")

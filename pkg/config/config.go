@@ -50,11 +50,12 @@ type Config struct {
 	RateLimitRedisUnavailableFallback  string `mapstructure:"rate_limit_redis_unavailable_fallback"`
 
 	// S3 / MinIO
-	S3Endpoint  string `mapstructure:"s3_endpoint"`
-	S3Bucket    string `mapstructure:"s3_bucket"`
-	S3AccessKey string `mapstructure:"s3_access_key"`
-	S3SecretKey string `mapstructure:"s3_secret_key"`
-	S3UseSSL    bool   `mapstructure:"s3_use_ssl"`
+	S3Endpoint     string `mapstructure:"s3_endpoint"`
+	S3Bucket       string `mapstructure:"s3_bucket"`
+	S3AccessKey    string `mapstructure:"s3_access_key"`
+	S3SecretKey    string `mapstructure:"s3_secret_key"`
+	S3UseSSL       bool   `mapstructure:"s3_use_ssl"`
+	S3StorageClass string `mapstructure:"s3_storage_class"`
 
 	// JWT
 	JWTPrivateKey string `mapstructure:"jwt_private_key"` // Ed25519 private key, PEM or base64(raw seed)
@@ -295,6 +296,7 @@ func load(extraNames []string) (*Config, error) {
 	v.SetDefault("s3_access_key", cfg.S3AccessKey)
 	v.SetDefault("s3_secret_key", cfg.S3SecretKey)
 	v.SetDefault("s3_use_ssl", cfg.S3UseSSL)
+	v.SetDefault("s3_storage_class", cfg.S3StorageClass)
 	v.SetDefault("security_secret", cfg.SecuritySecret)
 	v.SetDefault("stripe_disabled", cfg.StripeDisabled)
 	v.SetDefault("oidc_enabled", cfg.OIDCEnabled)

@@ -149,8 +149,129 @@ if(key){headers["X-Admin-Key"]=key;}
 return headers;
 }
 
+function hasAdminKey(){
+return !!(adminKeyInput&&(adminKeyInput.value||"").trim());
+}
+
 function writeJSON(node,value){
-node.textContent=JSON.stringify(value||{},null,2);
+if(node){node.textContent=JSON.stringify(value||{},null,2);}
+}
+
+function describeJSON(value){
+if(!value){return "empty result";}
+if(Array.isArray(value)){return numberValue(value.length)+" item(s)";}
+if(typeof value!=="object"){return String(value);}
+const keys=Object.keys(value);
+const parts=[];
+for(const key of ["status","overall","result","download","records","replayed"]){
+if(value[key]!==undefined){
+if(Array.isArray(value[key])){parts.push(key+": "+numberValue(value[key].length));}
+else{parts.push(key+": "+String(value[key]));}
+}
+}
+return parts.length?parts.join(" | "):(numberValue(keys.length)+" field(s): "+keys.slice(0,5).join(", "));
+}
+
+function writeJSONPanel(prefix,title,summary,value){
+text(prefix+"-title",title||"Result JSON");
+text(prefix+"-summary",summary||describeJSON(value));
+writeJSON(document.getElementById(prefix),value||{});
+}
+
+function setPill(id,state,label){
+const node=document.getElementById(id);
+if(!node){return;}
+const tone=state==="success"?" ok":state==="replayed"||state==="pending"?" warn":state==="failure"?" err":"";
+node.className="pill"+tone;
+node.textContent=label||state||"idle";
+}
+
+function setButtonsDisabled(buttons,disabled){
+for(const button of buttons||[]){
+if(button){button.disabled=disabled;}
+}
+}
+
+function mutationBanner(label,state,summary){
+if(state==="pending"){return label+" pending...";}
+if(state==="replayed"){return label+" replayed"+(summary?": "+summary:"");}
+if(state==="success"){return label+" succeeded"+(summary?": "+summary:"");}
+if(state==="failure"){return label+" failed"+(summary?": "+summary:"");}
+return label;
+}
+
+async function runConsoleMutation(config){
+const label=config.label;
+const buttons=config.buttons||[];
+const statusId=config.statusId;
+const resultPrefix=config.resultPrefix;
+const before=config.before;
+const after=config.after;
+const originalLabels=buttons.map(function(button){return button&&button.textContent;});
+if(config.requireAdminKey!==false&&!hasAdminKey()){
+const body={error:"admin key required"};
+if(resultPrefix){writeJSONPanel(resultPrefix,label+" failed","Admin key required",body);}
+if(statusId){setPill(statusId,"failure","failure");}
+setBanner(label+" failed: enter an admin key first.","warn");
+return null;
+}
+try{
+setButtonsDisabled(buttons,true);
+for(const button of buttons){if(button){button.textContent="Pending";}}
+if(resultPrefix){writeJSONPanel(resultPrefix,label+" pending","Request in flight",{status:"pending"});}
+if(statusId){setPill(statusId,"pending","pending");}
+setBanner(mutationBanner(label,"pending"),"warn");
+if(before){before();}
+const body=await config.run();
+const state=body&&body.replayed?"replayed":"success";
+const summary=config.summary?config.summary(body):describeJSON(body);
+if(config.render){config.render(body,state,summary);}
+else if(resultPrefix){writeJSONPanel(resultPrefix,label+" result",summary,body||{});}
+if(statusId){setPill(statusId,state,state);}
+setBanner(mutationBanner(label,state,summary),state==="replayed"?"warn":"");
+if(after){await after(body,state);}
+return body;
+}catch(error){
+const body={error:operatorError(error),body:error.body||{}};
+if(config.renderError){config.renderError(error,body);}
+else if(resultPrefix){writeJSONPanel(resultPrefix,label+" failed",body.error,body);}
+if(statusId){setPill(statusId,"failure","failure");}
+setBanner(mutationBanner(label,"failure",body.error),"err");
+throw error;
+}finally{
+for(let index=0;index<buttons.length;index++){
+const button=buttons[index];
+if(button&&button.isConnected){button.textContent=originalLabels[index];}
+}
+setButtonsDisabled(buttons,false);
+if(config.finally){config.finally();}
+}
+}
+
+async function runConsoleDownload(config){
+return runConsoleMutation(Object.assign({},config,{
+run:async function(){
+const response=await fetch(config.url,{headers:adminHeaders()});
+const raw=await response.blob();
+if(!response.ok){
+let body={};
+try{body=JSON.parse(await raw.text());}catch(_err){}
+const error=new Error((body.error&&body.error.message)||body.message||("HTTP "+response.status));
+error.status=response.status;
+error.body=body;
+throw error;
+}
+const link=document.createElement("a");
+const objectURL=URL.createObjectURL(raw);
+link.href=objectURL;
+link.download=config.filename;
+document.body.appendChild(link);
+link.click();
+link.remove();
+window.setTimeout(function(){URL.revokeObjectURL(objectURL);},1000);
+return {status:"success",download:config.filename,content_type:response.headers.get("Content-Type")||"unknown"};
+}
+}));
 }
 
 function readJSONInput(value,label){
@@ -430,20 +551,21 @@ return row;
 }
 
 async function saveSetting(key,value,button){
-button.disabled=true;
-try{
-await requestAdmin(adminPath+"/settings/"+encodeURIComponent(key),{
+await runConsoleMutation({
+label:"Update setting "+key,
+buttons:[button],
+statusId:"ops-action-status",
+resultPrefix:"ops-action-result",
+run:async function(){
+const response=await requestAdmin(adminPath+"/settings/"+encodeURIComponent(key),{
 method:"PUT",
 headers:{"Content-Type":"application/json"},
 body:JSON.stringify({value:value})
 });
-setBanner("Updated setting "+key,"");
-await loadSettings();
-}catch(error){
-setBanner("Setting update failed: "+error.message,"err");
-}finally{
-button.disabled=false;
-}
+return response.body||{status:"success",setting:key};
+},
+after:loadSettings
+}).catch(function(){});
 }
 
 async function loadAuditLogs(){
@@ -501,7 +623,7 @@ renderSupportTimelineDetails(context);
 renderSupportRepairPanel(context,lastSupportRepairResult);
 renderSupportTimelineActions(context&&context.recent_actions||[]);
 renderSupportTimelineJobs(context&&context.job_status||[]);
-writeJSON(document.getElementById("support-timeline-json"),context||{status:"no lookup"});
+writeJSONPanel("support-timeline-json","Timeline context JSON",context?timelineTotals(context.incident_timeline):"No lookup yet",context||{status:"no lookup"});
 }
 
 function renderSupportTimelineDetails(context){
@@ -582,6 +704,7 @@ if(result){renderSupportRepairResult(result);}
 function renderSupportRepairResult(body){
 const result=document.getElementById("support-timeline-repair-result");
 if(result){writeJSON(result,body||{});}
+writeJSONPanel("support-timeline-repair-result","Repair result",describeJSON(body),body||{});
 const status=document.getElementById("support-timeline-repair-status");
 if(status){
 status.className="pill "+(body&&body.error?"err":"ok");
@@ -593,32 +716,33 @@ async function recalculateSupportQuota(){
 const button=document.getElementById("recalculate-support-quota");
 const userID=button&&button.dataset.userId;
 if(!userID){throw new Error("Look up a user before recalculating quota.");}
-button.disabled=true;
-const original=button.textContent;
-button.textContent="Working";
-try{
+return runConsoleMutation({
+label:"Quota recalculation",
+buttons:[button],
+statusId:"support-timeline-repair-status",
+resultPrefix:"support-timeline-repair-result",
+run:async function(){
 const response=await requestAdmin(adminPath+"/users/"+encodeURIComponent(userID)+"/recalculate-quota",{
 method:"POST",
 headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()},
 body:"{}"
 });
-lastSupportRepairResult=response.body||{};
-renderSupportRepairPanel(null,lastSupportRepairResult);
-setBanner((response.body&&response.body.replayed?"Quota recalculation replayed.":"Quota recalculated."),"");
-await loadSupportTimelineLookup();
 return response.body;
-}catch(error){
-const body={error:operatorError(error),body:error.body||{}};
+},
+summary:function(body){return body&&body.replayed?"replayed response":"fresh response";},
+render:function(body){
+lastSupportRepairResult=body||{};
+renderSupportRepairPanel(null,lastSupportRepairResult);
+},
+renderError:function(_error,body){
 lastSupportRepairResult=body;
 renderSupportRepairResult(body);
-setBanner("Quota recalculation error - "+operatorError(error),"err");
-throw error;
-}finally{
-if(button.isConnected){
-button.textContent=original;
-button.disabled=!button.dataset.userId;
+},
+after:loadSupportTimelineLookup,
+finally:function(){
+if(button&&button.isConnected){button.disabled=!button.dataset.userId;}
 }
-}
+});
 }
 
 function detailItem(label,value){
@@ -780,10 +904,11 @@ tbody.appendChild(tr);
 function renderOpsActionResult(label,body){
 const result=document.getElementById("ops-action-result");
 if(result){writeJSON(result,body||{});}
+writeJSONPanel("ops-action-result",label,describeJSON(body),body||{});
 const status=document.getElementById("ops-action-status");
 if(status){
 const overall=body&&body.overall||body&&body.status||"complete";
-status.className="pill"+(overall==="ok"?" ok":overall==="degraded"||overall==="disabled"?" warn":overall==="complete"?" ok":" err");
+status.className="pill"+(body&&body.replayed?" warn":overall==="ok"?" ok":overall==="degraded"||overall==="disabled"?" warn":overall==="complete"||overall==="success"?" ok":" err");
 status.textContent=overall;
 }
 const summary=document.getElementById("ops-action-summary");
@@ -801,15 +926,22 @@ if(body&&body.records){summary.appendChild(detailItem("Records",numberValue(body
 }
 
 async function runOpsPost(label,url,body){
+return runConsoleMutation({
+label:label,
+buttons:[document.activeElement&&document.activeElement.tagName==="BUTTON"?document.activeElement:null],
+statusId:"ops-action-status",
+resultPrefix:"ops-action-result",
+run:async function(){
 const response=await requestAdmin(url,{
 method:"POST",
 headers:{"Content-Type":"application/json","Idempotency-Key":newIdempotencyKey()},
 body:body?JSON.stringify(body):"{}"
 });
-renderOpsActionResult(label,response.body||{});
-setBanner(label+" completed.","");
-await loadOps();
-return response.body;
+return response.body||{};
+},
+render:function(result){renderOpsActionResult(label,result||{});},
+after:loadOps
+});
 }
 
 function restoreManifestPayload(raw){
@@ -836,26 +968,15 @@ return prefix+"-"+stamp+"."+(format||"json");
 }
 
 async function downloadAdminURL(label,url,filename){
-const response=await fetch(url,{headers:adminHeaders()});
-const raw=await response.blob();
-if(!response.ok){
-let body={};
-try{body=JSON.parse(await raw.text());}catch(_err){}
-const error=new Error((body.error&&body.error.message)||body.message||("HTTP "+response.status));
-error.status=response.status;
-error.body=body;
-throw error;
-}
-const link=document.createElement("a");
-const objectURL=URL.createObjectURL(raw);
-link.href=objectURL;
-link.download=filename;
-document.body.appendChild(link);
-link.click();
-link.remove();
-window.setTimeout(function(){URL.revokeObjectURL(objectURL);},1000);
-renderOpsActionResult(label,{status:"complete",download:filename});
-setBanner(label+" download started.","");
+return runConsoleDownload({
+label:label,
+url:url,
+filename:filename,
+buttons:[document.activeElement&&document.activeElement.tagName==="BUTTON"?document.activeElement:null],
+statusId:"ops-action-status",
+resultPrefix:"ops-action-result",
+render:function(result){renderOpsActionResult(label,result||{});}
+});
 }
 
 function queryFromForm(form){
@@ -936,38 +1057,37 @@ body:JSON.stringify(body||{})
 
 async function runNotificationAction(button,id,action,label){
 const buttons=button.parentElement?button.parentElement.querySelectorAll("button"):[button];
-for(const item of buttons){item.disabled=true;}
-const original=button.textContent;
-button.textContent="Working";
-try{
+await runConsoleMutation({
+label:label+" notification",
+buttons:Array.from(buttons),
+statusId:"ops-action-status",
+resultPrefix:"ops-action-result",
+run:async function(){
 const response=await mutateNotificationFailure(adminPath+"/notifications/failures/"+encodeURIComponent(id)+"/"+action,{});
-setBanner(notificationActionSummary(label,response.body||{}),"");
-await loadNotifications();
-}catch(error){
-setBanner(label+" failed - "+operatorError(error),"err");
-}finally{
-if(!button.isConnected){return;}
-button.textContent=original;
-for(const item of buttons){item.disabled=false;}
-}
+return response.body||{};
+},
+summary:function(body){return notificationActionSummary(label,body||{});},
+render:function(body){renderOpsActionResult(label+" notification",body||{});},
+after:loadNotifications
+}).catch(function(){});
 }
 
 async function retryVisibleNotifications(button){
 const limit=Math.max(1,parseInt(button.dataset.limit||"50",10)||50);
-button.disabled=true;
-const original=button.textContent;
-button.textContent="Working";
-try{
+await runConsoleMutation({
+label:"Retry visible failures",
+buttons:[button],
+statusId:"ops-action-status",
+resultPrefix:"ops-action-result",
+run:async function(){
 const response=await mutateNotificationFailure(adminPath+"/notifications/failures/retry",{limit:limit});
-setBanner(notificationActionSummary("Retry visible failures",response.body||{}),"");
-await loadNotifications();
-}catch(error){
-setBanner("Retry visible failures failed - "+operatorError(error),"err");
-}finally{
-if(!button.isConnected){return;}
-button.textContent=original;
-button.disabled=false;
-}
+return response.body||{};
+},
+summary:function(body){return notificationActionSummary("Retry visible failures",body||{});},
+render:function(body){renderOpsActionResult("Retry visible failures",body||{});},
+after:loadNotifications,
+finally:function(){if(button&&button.isConnected){button.disabled=(button.dataset.limit||"0")==="0";}}
+}).catch(function(){});
 }
 
 async function loadHealth(){

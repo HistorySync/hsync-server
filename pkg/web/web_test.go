@@ -274,10 +274,11 @@ func TestLandingPageIncludesNotificationFailureActionWiring(t *testing.T) {
 	checks := []string{
 		`adminPath+"/notifications/failures/"+encodeURIComponent(id)+"/"+action`,
 		`adminPath+"/notifications/failures/retry"`,
-		`setBanner(notificationActionSummary(label,response.body||{}),"");`,
+		`summary:function(body){return notificationActionSummary(label,body||{});}`,
+		`renderOpsActionResult(label+" notification",body||{});`,
 		`operatorError(error)`,
 		`body&&body.replayed?"replayed response":"fresh response"`,
-		`await loadNotifications();`,
+		`after:loadNotifications`,
 		`button.dataset.notificationAction=action;`,
 	}
 	for _, check := range checks {
@@ -352,8 +353,9 @@ func TestLandingPageIncludesOpsActionWiring(t *testing.T) {
 		`parsed.manifest||parsed`,
 		`downloadAdminURL("Download support bundle",adminPath+"/support-bundle"`,
 		`downloadAdminURL("Export operational records",adminPath+"/exports/operational-records?"+params.toString()`,
+		`runConsoleDownload({`,
 		`URL.createObjectURL(raw)`,
-		`link.download=filename`,
+		`link.download=config.filename`,
 		`renderOpsActionResult("Restore rehearsal failed"`,
 		`setBanner(operatorError(error),"err")`,
 	}
@@ -396,9 +398,9 @@ func TestLandingPageIncludesTimelineLookupPanel(t *testing.T) {
 		`requestAdmin(adminPath+"/support/context?"+params.toString())`,
 		`requestAdmin(adminPath+"/users/"+encodeURIComponent(userID)+"/recalculate-quota"`,
 		`"Idempotency-Key":newIdempotencyKey()`,
-		`Quota recalculated.`,
-		`Quota recalculation replayed.`,
-		`Quota recalculation error - `,
+		`label:"Quota recalculation"`,
+		`state=body&&body.replayed?"replayed":"success"`,
+		`mutationBanner(label,"failure",body.error)`,
 		`renderSupportTimelineLookup(response.body.context||null);`,
 		`["timeline lookup",loadSupportTimelineLookup]`,
 		`Timeline lookup loaded and audited.`,
@@ -406,6 +408,64 @@ func TestLandingPageIncludesTimelineLookupPanel(t *testing.T) {
 	for _, check := range checks {
 		if !strings.Contains(body, check) {
 			t.Fatalf("landing page missing %q", check)
+		}
+	}
+}
+
+func TestLandingPageIncludesUnifiedConsoleFeedback(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`function runConsoleMutation(config)`,
+		`function runConsoleDownload(config)`,
+		`function mutationBanner(label,state,summary)`,
+		`if(state==="pending"){return label+" pending...";}`,
+		`if(state==="replayed"){return label+" replayed"`,
+		`if(state==="success"){return label+" succeeded"`,
+		`if(state==="failure"){return label+" failed"`,
+		`enter an admin key first`,
+		`writeJSONPanel(resultPrefix,label+" pending","Request in flight",{status:"pending"})`,
+		`writeJSONPanel(resultPrefix,label+" failed",body.error,body)`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing unified feedback wiring %q", check)
+		}
+	}
+}
+
+func TestLandingPageIncludesReadableJSONPanels(t *testing.T) {
+	body := landingPage(normalizeOptions(Options{
+		Enabled:     true,
+		AppName:     "HistorySync CE",
+		ConsolePath: "/console",
+		Edition:     "community",
+		APIPrefix:   "/api/v1",
+		AdminPath:   "/admin",
+	}))
+
+	checks := []string{
+		`class="json-panel"`,
+		`class="json-panel-header"`,
+		`id="support-timeline-json-title"`,
+		`id="support-timeline-json-summary"`,
+		`id="support-timeline-repair-result-title"`,
+		`id="support-timeline-repair-result-summary"`,
+		`id="ops-action-result-title"`,
+		`id="ops-action-result-summary"`,
+		`function describeJSON(value)`,
+		`max-height:360px;overflow:auto`,
+	}
+	for _, check := range checks {
+		if !strings.Contains(body, check) {
+			t.Fatalf("landing page missing readable JSON panel %q", check)
 		}
 	}
 }

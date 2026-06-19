@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -102,6 +103,8 @@ type responseEnvelope struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
+
+const getRetryAttempts = 3
 
 func main() {
 	cfg := parseFlags()
@@ -662,10 +665,37 @@ func (c *client) postJSON(ctx context.Context, path string, payload any, headers
 }
 
 func (c *client) getJSON(ctx context.Context, path string, headers http.Header, out any) error {
-	return c.doJSON(ctx, http.MethodGet, path, headers, "", nil, out)
+	raw, err := c.getRaw(ctx, path, headers)
+	if err != nil {
+		return err
+	}
+	if out != nil && len(raw) > 0 {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("decode %s %s: %w", http.MethodGet, path, err)
+		}
+	}
+	return nil
 }
 
 func (c *client) getRaw(ctx context.Context, path string, headers http.Header) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= getRetryAttempts; attempt++ {
+		body, err := c.doGetRaw(ctx, path, headers)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+		if !shouldRetryGET(ctx, err, attempt) {
+			return nil, err
+		}
+		if err := sleepContext(ctx, time.Duration(attempt)*100*time.Millisecond); err != nil {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("after %d attempts: %w", getRetryAttempts, lastErr)
+}
+
+func (c *client) doGetRaw(ctx context.Context, path string, headers http.Header) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
 		return nil, err
@@ -684,6 +714,28 @@ func (c *client) getRaw(ctx context.Context, path string, headers http.Header) (
 		return nil, decodeEnvelopeError(resp.StatusCode, body)
 	}
 	return body, nil
+}
+
+func shouldRetryGET(ctx context.Context, err error, attempt int) bool {
+	if attempt >= getRetryAttempts || ctx.Err() != nil {
+		return false
+	}
+	var statusErr *statusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status >= http.StatusInternalServerError
+	}
+	return true
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *client) doNoJSON(ctx context.Context, method, path string, headers http.Header, contentType string, body io.Reader) error {

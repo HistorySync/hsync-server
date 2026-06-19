@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -55,5 +58,41 @@ func TestScenarioTrackerFailRecordsStatusClassAndReason(t *testing.T) {
 	}
 	if got := classes["http_429"]; got != 1 {
 		t.Fatalf("classes[http_429] = %d, want 1", got)
+	}
+}
+
+func TestGetRawRetriesTransientNetworkError(t *testing.T) {
+	t.Parallel()
+
+	var attempts int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Error("response writer does not support hijacking")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	cl := &client{baseURL: server.URL, http: server.Client()}
+	body, err := cl.getRaw(context.Background(), "/", nil)
+	if err != nil {
+		t.Fatalf("getRaw() error = %v", err)
+	}
+	if got := string(body); got != "ok" {
+		t.Fatalf("getRaw() body = %q, want ok", got)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
 	}
 }
